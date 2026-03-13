@@ -1,0 +1,14 @@
+.venv/
+node_modules/
+dist/
+build/
+coverage/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.log
+*.tmp
+third_party/
+src/project_os_core/__pycache__/
+src/project_os_core/*/__pycache__/

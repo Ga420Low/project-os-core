@@ -1,0 +1,349 @@
+from __future__ import annotations
+
+import json
+from dataclasses import replace
+from typing import Any
+
+from ..artifacts import write_json_artifact
+from ..database import CanonicalDatabase, dump_json
+from ..embedding import EmbeddingService, EmbeddingStrategy
+from ..models import MemoryRecord, MemoryTier, RetrievalContext, MemoryType, new_id, to_jsonable
+from ..paths import PathPolicy, ProjectPaths
+from ..secrets import SecretResolver
+from .adapter import OpenMemoryAdapter
+
+
+class MemoryStore:
+    def __init__(
+        self,
+        database: CanonicalDatabase,
+        paths: ProjectPaths,
+        path_policy: PathPolicy,
+        embedding_strategy: EmbeddingStrategy,
+        secret_resolver: SecretResolver,
+    ):
+        self.database = database
+        self.paths = paths
+        self.path_policy = path_policy
+        self.embedding_strategy = embedding_strategy
+        self.secret_resolver = secret_resolver
+        self.embedding_service = EmbeddingService(embedding_strategy, secret_resolver)
+        self.openmemory = OpenMemoryAdapter(paths, embedding_strategy, secret_resolver)
+        self._ensure_embedding_index_current()
+
+    def remember(
+        self,
+        *,
+        content: str,
+        user_id: str,
+        project_id: str | None = None,
+        mission_id: str | None = None,
+        memory_type: MemoryType = MemoryType.EPISODIC,
+        tier: MemoryTier = MemoryTier.HOT,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> MemoryRecord:
+        metadata = dict(metadata or {})
+        record = MemoryRecord(
+            memory_id=new_id("memory"),
+            user_id=user_id,
+            project_id=project_id,
+            mission_id=mission_id,
+            content=content,
+            memory_type=memory_type,
+            tier=tier,
+            tags=tags or [],
+            metadata=metadata,
+        )
+
+        if self.openmemory.status.available:
+            try:
+                added = self.openmemory.add_record(record)
+                record.openmemory_id = added.get("id") or added.get("root_memory_id")
+            except Exception as exc:
+                self.openmemory.mark_unavailable(str(exc))
+                record.metadata["openmemory_warning"] = str(exc)
+
+        self.database.execute(
+            """
+            INSERT OR REPLACE INTO memory_records(
+                memory_id, openmemory_id, user_id, project_id, mission_id, content,
+                memory_type, tier, tags_json, metadata_json, archived_artifact_path,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                record.memory_id,
+                record.openmemory_id,
+                record.user_id,
+                record.project_id,
+                record.mission_id,
+                record.content,
+                record.memory_type.value,
+                record.tier.value,
+                dump_json(record.tags),
+                dump_json(record.metadata),
+                record.archived_artifact_path,
+                record.created_at,
+                record.updated_at,
+            ),
+        )
+        try:
+            vector = self.embedding_service.embed_text(content)
+        except Exception as exc:
+            vector = self.embedding_service._local_hash_embedding(content, self.database.vector_dimensions)
+            record.metadata["embedding_fallback"] = {
+                "provider": "local_hash",
+                "reason": str(exc),
+            }
+            self.database.execute(
+                """
+                UPDATE memory_records
+                SET metadata_json = ?, updated_at = ?
+                WHERE memory_id = ?
+                """,
+                (
+                    dump_json(record.metadata),
+                    record.updated_at,
+                    record.memory_id,
+                ),
+            )
+        self.database.upsert_vector(
+            record.memory_id,
+            self.embedding_service.vector_literal(vector),
+        )
+
+        if tier is MemoryTier.WARM:
+            artifact_path = self._persist_artifact(record, MemoryTier.WARM)
+            record.archived_artifact_path = artifact_path
+            self._update_archive_path(record)
+        if tier is MemoryTier.COLD:
+            record = self.move_to_cold(record.memory_id)
+
+        return record
+
+    def _update_archive_path(self, record: MemoryRecord) -> None:
+        self.database.execute(
+            """
+            UPDATE memory_records
+            SET archived_artifact_path = ?, updated_at = ?
+            WHERE memory_id = ?
+            """,
+            (
+                record.archived_artifact_path,
+                record.updated_at,
+                record.memory_id,
+            ),
+        )
+
+    def _persist_artifact(self, record: MemoryRecord, target_tier: MemoryTier) -> str:
+        artifact = write_json_artifact(
+            paths=self.paths,
+            path_policy=self.path_policy,
+            owner_id=record.memory_id,
+            artifact_kind="episode",
+            storage_tier=target_tier,
+            payload=to_jsonable(record),
+        )
+        self.database.execute(
+            """
+            INSERT OR REPLACE INTO artifact_pointers(
+                artifact_id, owner_type, owner_id, artifact_kind, storage_tier, path,
+                checksum_sha256, size_bytes, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                artifact.artifact_id,
+                "memory_record",
+                record.memory_id,
+                artifact.artifact_kind,
+                artifact.storage_tier.value,
+                artifact.path,
+                artifact.checksum_sha256,
+                artifact.size_bytes,
+                artifact.created_at,
+            ),
+        )
+        return artifact.path
+
+    def move_to_cold(self, memory_id: str) -> MemoryRecord:
+        record = self.get(memory_id)
+        archive_path = self._persist_artifact(record, MemoryTier.COLD)
+        updated = replace(
+            record,
+            tier=MemoryTier.COLD,
+            archived_artifact_path=archive_path,
+        )
+        self.database.execute(
+            """
+            UPDATE memory_records
+            SET tier = ?, archived_artifact_path = ?, updated_at = ?
+            WHERE memory_id = ?
+            """,
+            (
+                updated.tier.value,
+                updated.archived_artifact_path,
+                updated.updated_at,
+                updated.memory_id,
+            ),
+        )
+        return updated
+
+    def get(self, memory_id: str) -> MemoryRecord:
+        row = self.database.fetchone("SELECT * FROM memory_records WHERE memory_id = ?", (memory_id,))
+        if row is None:
+            raise KeyError(f"Unknown memory_id: {memory_id}")
+        return self._row_to_memory_record(row)
+
+    def search(self, context: RetrievalContext) -> list[dict[str, Any]]:
+        hits: dict[str, dict[str, Any]] = {}
+        try:
+            query_vector = self.embedding_service.vector_literal(self.embedding_service.embed_text(context.query))
+        except Exception:
+            fallback = self.embedding_service._local_hash_embedding(context.query, self.database.vector_dimensions)
+            query_vector = self.embedding_service.vector_literal(fallback)
+        for row in self.database.search_vectors(query_vector, context.limit):
+            record = self.get(str(row["memory_id"]))
+            hits[record.memory_id] = {
+                "memory_id": record.memory_id,
+                "source": "sqlite_vec",
+                "distance": float(row["distance"]),
+                "record": to_jsonable(record),
+            }
+
+        if self.openmemory.status.available:
+            try:
+                for result in self.openmemory.search(context):
+                    result_id = result.get("id") or result.get("root_memory_id")
+                    canonical = None
+                    if result_id:
+                        row = self.database.fetchone(
+                            "SELECT memory_id FROM memory_records WHERE openmemory_id = ?",
+                            (result_id,),
+                        )
+                        canonical = str(row["memory_id"]) if row else None
+                    if canonical and canonical in hits:
+                        hits[canonical]["source"] = "hybrid"
+                        hits[canonical]["openmemory"] = result
+                        continue
+                    if canonical:
+                        record = self.get(canonical)
+                        hits[canonical] = {
+                            "memory_id": canonical,
+                            "source": "openmemory",
+                            "record": to_jsonable(record),
+                            "openmemory": result,
+                        }
+                        continue
+                    orphan_id = new_id("memory_orphan")
+                    hits[orphan_id] = {
+                        "memory_id": orphan_id,
+                        "source": "openmemory_only",
+                        "record": {
+                            "content": result.get("content") or result.get("text"),
+                            "user_id": context.user_id,
+                        },
+                        "openmemory": result,
+                    }
+            except Exception as exc:
+                self.openmemory.mark_unavailable(str(exc))
+
+        ordered = list(hits.values())
+        ordered.sort(key=lambda item: item.get("distance", 0.0))
+        return ordered[: context.limit]
+
+    def reindex(self) -> dict[str, Any]:
+        return self._ensure_embedding_index_current(force=True)
+
+    def close(self) -> None:
+        self.openmemory.close()
+
+    def _ensure_embedding_index_current(self, force: bool = False) -> dict[str, Any]:
+        signature = self.embedding_strategy.signature
+        existing_signature = self.database.get_meta("embedding_strategy_signature")
+        openmemory_signature = self.database.get_meta("openmemory_strategy_signature")
+        reindex_state = self.database.get_meta("embedding_reindex_state")
+        if reindex_state == "running":
+            raise RuntimeError("Embedding reindex already running")
+        rows = self.database.fetchall(
+            """
+            SELECT memory_id, openmemory_id, user_id, project_id, mission_id, content, memory_type, tier,
+                   tags_json, metadata_json, archived_artifact_path, created_at, updated_at
+            FROM memory_records
+            ORDER BY created_at ASC
+            """
+        )
+        rebuilt_canonical = False
+        rebuilt_openmemory = False
+        if not force and existing_signature == signature and openmemory_signature == signature:
+            return {
+                "status": "completed",
+                "signature": signature,
+                "canonical_rebuilt": False,
+                "openmemory_rebuilt": False,
+                "row_count": len(rows),
+            }
+
+        self.database.set_meta("embedding_reindex_state", "running")
+        self.database.set_meta("embedding_reindex_failure_reason", "")
+        try:
+            if force or existing_signature != signature:
+                with self.database.transaction() as connection:
+                    if self.database.vector_enabled:
+                        connection.execute("DELETE FROM memory_embeddings")
+                        connection.execute("DELETE FROM memory_embedding_map")
+                    for row in rows:
+                        vector = self.embedding_service.embed_text(str(row["content"]))
+                        self.database.upsert_vector(
+                            str(row["memory_id"]),
+                            self.embedding_service.vector_literal(vector),
+                            connection=connection,
+                        )
+                    self.database.set_meta("embedding_strategy_signature", signature, connection=connection)
+                rebuilt_canonical = True
+
+            if self.openmemory.status.available and (force or openmemory_signature != signature):
+                self.openmemory.reset_storage()
+                self.openmemory = OpenMemoryAdapter(self.paths, self.embedding_strategy, self.secret_resolver)
+                for row in rows:
+                    record = self._row_to_memory_record(row)
+                    added = self.openmemory.add_record(record)
+                    record.openmemory_id = added.get("id") or added.get("root_memory_id")
+                    self.database.execute(
+                        "UPDATE memory_records SET openmemory_id = ?, updated_at = ? WHERE memory_id = ?",
+                        (record.openmemory_id, record.updated_at, record.memory_id),
+                    )
+                self.database.set_meta("openmemory_strategy_signature", signature)
+                rebuilt_openmemory = True
+
+            self.database.set_meta("embedding_reindex_state", "completed")
+            self.database.set_meta("embedding_reindex_failure_reason", "")
+            return {
+                "status": "completed",
+                "signature": signature,
+                "canonical_rebuilt": rebuilt_canonical,
+                "openmemory_rebuilt": rebuilt_openmemory,
+                "row_count": len(rows),
+            }
+        except Exception as exc:
+            self.database.set_meta("embedding_reindex_state", "failed")
+            self.database.set_meta("embedding_reindex_failure_reason", str(exc))
+            raise
+
+    @staticmethod
+    def _row_to_memory_record(row) -> MemoryRecord:
+        return MemoryRecord(
+            memory_id=str(row["memory_id"]),
+            openmemory_id=row["openmemory_id"],
+            user_id=str(row["user_id"]),
+            project_id=row["project_id"],
+            mission_id=row["mission_id"],
+            content=str(row["content"]),
+            memory_type=MemoryType(str(row["memory_type"])),
+            tier=MemoryTier(str(row["tier"])),
+            tags=json.loads(row["tags_json"]),
+            metadata=json.loads(row["metadata_json"]),
+            archived_artifact_path=row["archived_artifact_path"],
+            created_at=str(row["created_at"]),
+            updated_at=str(row["updated_at"]),
+        )

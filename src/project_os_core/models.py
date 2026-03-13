@@ -1,0 +1,609 @@
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field, is_dataclass
+from datetime import datetime, timezone
+from enum import Enum
+from pathlib import Path
+from typing import Any, Literal
+from uuid import uuid4
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def new_id(prefix: str) -> str:
+    return f"{prefix}_{uuid4().hex}"
+
+
+class MemoryTier(str, Enum):
+    HOT = "hot"
+    WARM = "warm"
+    COLD = "cold"
+
+
+class MemoryType(str, Enum):
+    EPISODIC = "episodic"
+    SEMANTIC = "semantic"
+    PROCEDURAL = "procedural"
+    EMOTIONAL = "emotional"
+    REFLECTIVE = "reflective"
+
+
+class MissionStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    PAUSED = "paused"
+    WAITING_APPROVAL = "waiting_approval"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class MissionExecutionClass(str, Enum):
+    DETERMINISTIC = "deterministic"
+    ASSISTED = "assisted"
+    SUPERVISED = "supervised"
+    BLOCKED = "blocked"
+
+
+class RuntimeVerdict(str, Enum):
+    READY = "ready"
+    DEGRADED = "degraded"
+    BLOCKED = "blocked"
+    AWAY_FROM_TARGET = "away_from_target"
+
+
+class ApprovalStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+
+class ActionRiskClass(str, Enum):
+    READ_ONLY = "read_only"
+    SAFE_WRITE = "safe_write"
+    DESTRUCTIVE = "destructive"
+    EXCEPTIONAL = "exceptional"
+
+
+class CostClass(str, Enum):
+    CHEAP = "cheap"
+    STANDARD = "standard"
+    HARD = "hard"
+    EXCEPTIONAL = "exceptional"
+
+
+class OperatorMessageKind(str, Enum):
+    CHAT = "chat"
+    TASKING = "tasking"
+    IDEA = "idea"
+    DECISION = "decision"
+    NOTE = "note"
+    ARTIFACT_REF = "artifact_ref"
+
+
+class PromotionAction(str, Enum):
+    PROMOTE = "promote"
+    SKIP = "skip"
+
+
+class AgentRole(str, Enum):
+    OPERATOR_CONCIERGE = "operator_concierge"
+    PLANNER = "planner"
+    MEMORY_CURATOR = "memory_curator"
+    CRITIC = "critic"
+    GUARDIAN = "guardian"
+    EXECUTOR_COORDINATOR = "executor_coordinator"
+
+
+def to_jsonable(value: Any) -> Any:
+    if is_dataclass(value):
+        return {key: to_jsonable(item) for key, item in asdict(value).items()}
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, dict):
+        return {key: to_jsonable(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [to_jsonable(item) for item in value]
+    return value
+
+
+@dataclass(slots=True)
+class StorageRoots:
+    runtime_root: str
+    memory_hot_root: str
+    memory_warm_root: str
+    index_root: str
+    session_root: str
+    cache_root: str
+    archive_drive: str
+    archive_do_not_touch_root: str
+    archive_root: str
+    archive_episodes_root: str
+    archive_evidence_root: str
+    archive_screens_root: str
+    archive_reports_root: str
+    archive_logs_root: str
+    archive_snapshots_root: str
+
+
+@dataclass(slots=True)
+class ForbiddenZonePolicy:
+    roots: list[str]
+    mode: Literal["deny_subtree"] = "deny_subtree"
+
+
+@dataclass(slots=True)
+class ArtifactPointer:
+    artifact_id: str
+    artifact_kind: str
+    storage_tier: MemoryTier
+    path: str
+    checksum_sha256: str | None = None
+    size_bytes: int | None = None
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class MemoryRecord:
+    memory_id: str
+    user_id: str
+    content: str
+    memory_type: MemoryType
+    tier: MemoryTier
+    project_id: str | None = None
+    mission_id: str | None = None
+    tags: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    openmemory_id: str | None = None
+    archived_artifact_path: str | None = None
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class RetrievalContext:
+    query: str
+    user_id: str
+    project_id: str | None = None
+    mission_id: str | None = None
+    tags: list[str] = field(default_factory=list)
+    limit: int = 5
+
+
+@dataclass(slots=True)
+class ConversationThreadRef:
+    thread_id: str
+    channel: str
+    external_thread_id: str | None = None
+    parent_thread_id: str | None = None
+    title: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class OperatorAttachment:
+    attachment_id: str
+    name: str
+    kind: str
+    mime_type: str | None = None
+    path: str | None = None
+    url: str | None = None
+    size_bytes: int | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class OperatorMessage:
+    message_id: str
+    actor_id: str
+    channel: str
+    text: str
+    thread_ref: ConversationThreadRef
+    kind: OperatorMessageKind | None = None
+    attachments: list[OperatorAttachment] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ChannelEvent:
+    event_id: str
+    surface: str
+    event_type: str
+    message: OperatorMessage
+    raw_payload: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class OperatorEnvelope:
+    envelope_id: str
+    actor_id: str
+    channel: str
+    objective: str
+    target_profile: str | None = None
+    requested_worker: str | None = None
+    requested_risk_class: ActionRiskClass | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class OperatorReply:
+    reply_id: str
+    channel: str
+    envelope_id: str
+    thread_ref: ConversationThreadRef
+    summary: str
+    mission_run_id: str | None = None
+    decision_id: str | None = None
+    reply_kind: str = "ack"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class MissionIntent:
+    intent_id: str
+    source: str
+    actor_id: str
+    channel: str
+    objective: str
+    target_profile: str | None = None
+    requested_worker: str | None = None
+    requested_risk_class: ActionRiskClass | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class Checkpoint:
+    checkpoint_id: str
+    mission_run_id: str
+    label: str
+    graph_state: dict[str, Any]
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class MissionRun:
+    mission_run_id: str
+    intent_id: str
+    objective: str
+    profile_name: str | None
+    status: MissionStatus = MissionStatus.QUEUED
+    execution_class: MissionExecutionClass | None = None
+    routing_decision_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class HumanArtifact:
+    artifact_id: str
+    source_event_id: str
+    thread_ref: ConversationThreadRef
+    actor_id: str
+    kind: str
+    text_excerpt: str | None = None
+    attachment: OperatorAttachment | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ConversationMemoryCandidate:
+    candidate_id: str
+    source_event_id: str
+    thread_ref: ConversationThreadRef
+    actor_id: str
+    classification: OperatorMessageKind
+    summary: str
+    content: str
+    tags: list[str] = field(default_factory=list)
+    tier: MemoryTier = MemoryTier.WARM
+    should_promote: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class PromotionDecision:
+    promotion_decision_id: str
+    candidate_id: str
+    action: PromotionAction
+    reason: str
+    memory_type: MemoryType | None = None
+    tier: MemoryTier | None = None
+    memory_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class GatewayDispatchResult:
+    dispatch_id: str
+    channel_event_id: str
+    envelope_id: str
+    intent_id: str
+    decision_id: str | None
+    mission_run_id: str | None
+    operator_reply: OperatorReply
+    promoted_memory_ids: list[str] = field(default_factory=list)
+    memory_candidate_id: str | None = None
+    promotion_decision_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class RuntimeState:
+    runtime_state_id: str
+    session_id: str
+    verdict: RuntimeVerdict
+    active_profile: str | None = None
+    mission_run_id: str | None = None
+    status_summary: str | None = None
+    blockers: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    captured_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class SessionState:
+    session_id: str
+    profile_name: str
+    owner: str
+    status: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ApprovalRecord:
+    approval_id: str
+    requested_by: str
+    risk_tier: str
+    reason: str
+    status: ApprovalStatus = ApprovalStatus.PENDING
+    mission_run_id: str | None = None
+    expires_at: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ActionEvidence:
+    evidence_id: str
+    session_id: str
+    action_name: str
+    success: bool
+    summary: str | None = None
+    result_code: str | None = None
+    failure_reason: str | None = None
+    policy_verdict: str | None = None
+    artifact_count: int = 0
+    pre_state: dict[str, Any] = field(default_factory=dict)
+    post_state: dict[str, Any] = field(default_factory=dict)
+    artifacts: list[ArtifactPointer] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class WorkerRequest:
+    request_id: str
+    worker_kind: str
+    action_name: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    precheck_required: bool = True
+    postcheck_required: bool = True
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class WorkerResult:
+    request_id: str
+    success: bool
+    summary: str
+    evidence_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class RoutingAssignment:
+    assignment_id: str
+    mission_run_id: str
+    decision_id: str
+    worker_kind: str
+    execution_class: MissionExecutionClass
+    model_route: ModelRoute
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ExecutionTicket:
+    ticket_id: str
+    mission_run_id: str
+    assignment_id: str
+    worker_kind: str
+    action_name: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    policy_verdict: str | None = None
+    status: str = "issued"
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class WorkerDispatchEnvelope:
+    dispatch_id: str
+    ticket: ExecutionTicket
+    worker_request: WorkerRequest
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ProfileCapability:
+    profile_name: str
+    capability_names: list[str]
+    default_paths: dict[str, str] = field(default_factory=dict)
+    allowed_workers: list[str] = field(default_factory=list)
+    required_secrets: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ExecutionPolicy:
+    default_model: str
+    default_reasoning_effort: str
+    escalation_reasoning_effort: str
+    exceptional_model: str
+    daily_soft_limit_eur: float
+    monthly_limit_eur: float
+    deterministic_first: bool = True
+    allow_pro_default: bool = False
+    secret_mode: str = "infisical_first"
+
+
+@dataclass(slots=True)
+class ModelRoute:
+    provider: str
+    model: str | None
+    reasoning_effort: str | None
+    route_class: CostClass
+    allowed: bool
+    reason: str
+
+
+@dataclass(slots=True)
+class BudgetState:
+    daily_soft_limit_eur: float
+    monthly_limit_eur: float
+    daily_spend_estimate_eur: float
+    monthly_spend_estimate_eur: float
+    mission_estimate_eur: float
+    mission_cost_class: CostClass
+    within_daily_soft: bool
+    within_monthly_limit: bool
+    route_reason: str
+
+
+@dataclass(slots=True)
+class ApprovalGate:
+    required: bool
+    approved: bool
+    approval_id: str | None = None
+    reason: str | None = None
+
+
+@dataclass(slots=True)
+class RoutingDecision:
+    decision_id: str
+    intent_id: str
+    mission_run_id: str | None
+    execution_class: MissionExecutionClass
+    risk_class: ActionRiskClass
+    allowed: bool
+    chosen_worker: str | None
+    model_route: ModelRoute
+    approval_gate: ApprovalGate
+    budget_state: BudgetState
+    route_reason: str
+    blocked_reasons: list[str] = field(default_factory=list)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class RoutingDecisionTrace:
+    trace_id: str
+    decision_id: str
+    runtime_state_id: str | None
+    inputs: dict[str, Any]
+    outputs: dict[str, Any]
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class GraphState:
+    graph_state_id: str
+    mission_run_id: str
+    objective: str
+    active_role: AgentRole
+    status: str
+    role_sequence: list[str]
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class RoleHandoff:
+    handoff_id: str
+    mission_run_id: str
+    from_role: AgentRole | None
+    to_role: AgentRole
+    reason: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ExecutionCheckpoint:
+    execution_checkpoint_id: str
+    mission_run_id: str
+    role: AgentRole
+    label: str
+    payload: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class RetryDecision:
+    retry_decision_id: str
+    mission_run_id: str
+    role: AgentRole
+    attempt_number: int
+    retry_allowed: bool
+    next_reasoning_effort: str | None
+    reason: str
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class MissionOutcome:
+    outcome_id: str
+    mission_run_id: str
+    status: MissionStatus
+    summary: str
+    produced_artifact_ids: list[str] = field(default_factory=list)
+    next_steps: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class BootstrapState:
+    bootstrap_state_id: str
+    strict_ready: bool
+    status: str
+    failures: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    checks: dict[str, Any] = field(default_factory=dict)
+    roots: dict[str, str] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class HealthSnapshot:
+    snapshot_id: str
+    overall_status: str
+    payload: dict[str, Any]
+    path: str | None = None
+    created_at: str = field(default_factory=utc_now_iso)

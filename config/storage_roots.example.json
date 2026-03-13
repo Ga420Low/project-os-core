@@ -1,0 +1,15 @@
+{
+  "runtime_root": "D:\\ProjectOS\\runtime",
+  "memory_hot_root": "D:\\ProjectOS\\memory_hot",
+  "memory_warm_root": "D:\\ProjectOS\\memory_warm",
+  "index_root": "D:\\ProjectOS\\indexes",
+  "session_root": "D:\\ProjectOS\\sessions",
+  "cache_root": "D:\\ProjectOS\\cache",
+  "archive_drive_placeholder": "<ARCHIVE_DRIVE>",
+  "archive_episodes_root": "<ARCHIVE_DRIVE>:\\ProjectOSArchive\\episodes",
+  "archive_evidence_root": "<ARCHIVE_DRIVE>:\\ProjectOSArchive\\evidence",
+  "archive_screens_root": "<ARCHIVE_DRIVE>:\\ProjectOSArchive\\screens",
+  "archive_reports_root": "<ARCHIVE_DRIVE>:\\ProjectOSArchive\\reports",
+  "archive_logs_root": "<ARCHIVE_DRIVE>:\\ProjectOSArchive\\logs",
+  "archive_snapshots_root": "<ARCHIVE_DRIVE>:\\ProjectOSArchive\\snapshots"
+}

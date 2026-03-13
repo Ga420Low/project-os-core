@@ -1,0 +1,34 @@
+{
+  "secret_config": {
+    "mode": "infisical_first",
+    "required_secret_names": [
+      "OPENAI_API_KEY"
+    ],
+    "local_fallback_path": "%LOCALAPPDATA%/ProjectOS/secrets.json",
+    "infisical_environment": "dev",
+    "infisical_project_id": null,
+    "infisical_path": "/",
+    "infisical_token_env": "INFISICAL_TOKEN",
+    "infisical_universal_auth_client_id_env": "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+    "infisical_universal_auth_client_secret_env": "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"
+  },
+  "embedding_policy": {
+    "provider_mode": "auto",
+    "quality": "balanced",
+    "default_openai_model": "text-embedding-3-small",
+    "max_openai_model": "text-embedding-3-large",
+    "local_model": "local-hash-v1",
+    "local_dimensions": 64
+  },
+  "execution_policy": {
+    "default_model": "gpt-5.4",
+    "default_reasoning_effort": "high",
+    "escalation_reasoning_effort": "xhigh",
+    "exceptional_model": "gpt-5.4-pro",
+    "daily_soft_limit_eur": 1.5,
+    "monthly_limit_eur": 50.0,
+    "deterministic_first": true,
+    "allow_pro_default": false,
+    "secret_mode": "infisical_first"
+  }
+}
