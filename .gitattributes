@@ -1,0 +1,39 @@
+# Project OS line-ending policy
+# Keep the repo deterministic across Windows/macOS/Linux.
+
+* text=auto
+
+# Default: LF for source, config, docs, and structured text.
+*.md text eol=lf
+*.txt text eol=lf
+*.py text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.sh text eol=lf
+*.env text eol=lf
+
+# Windows-native scripts stay CRLF to avoid shell/editor edge cases.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary assets must never be normalized.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+*.exe binary
+*.dll binary
+
