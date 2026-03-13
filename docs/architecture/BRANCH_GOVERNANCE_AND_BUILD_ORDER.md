@@ -227,6 +227,38 @@ On garde l'ambition maximale, mais on sequence.
 Le cap n'est pas de faire petit.
 Le cap est de faire grand sans casser la structure.
 
+## Workflow de construction
+
+Le projet suit maintenant un workflow hybride explicite:
+
+- direction et inspection via `Codex`
+- runs grands contextes via `OpenAI API`
+- integration et verification dans le repo local
+
+Regle:
+
+- un gros lot peut etre pense par l'API
+- mais il est toujours inspecte et integre proprement avant d'entrer dans le coeur
+
+Reference:
+
+- `docs/architecture/HYBRID_LARGE_CONTEXT_WORKFLOW.md`
+
+## Discipline de decision continue
+
+Les grandes decisions d'architecture ne doivent jamais etre implicites.
+
+On utilise regulierement:
+
+- `DECISION CONFIRMED`
+- `DECISION CHANGED`
+
+Ces marqueurs servent a:
+
+- eviter les glissements de cap
+- garder la coherence d'ensemble
+- alimenter proprement la memoire durable
+
 ## Les 6 capacites obligatoires du super agent
 
 Le systeme final doit etre fort dans:

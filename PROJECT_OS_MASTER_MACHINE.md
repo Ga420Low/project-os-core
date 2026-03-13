@@ -29,6 +29,25 @@ Construire une surcouche d'intelligence locale capable de:
 - demander une approbation lorsque le risque augmente
 - reprendre une mission sans perdre le contexte
 
+## Workflow officiel
+
+Le workflow officiel du projet est maintenant hybride:
+
+- `OpenAI API` grande fenetre = force de frappe principale de raisonnement
+- `Codex` = penseur directeur, inspecteur, integrateur, verificateur
+- `Project OS` runtime = verite machine, memoire canonique, tests et evidence
+
+Regles:
+
+- l'API pense large et peut diriger un gros lot
+- `Codex` prepare, inspecte, challenge et integre
+- le runtime local reste la verite finale
+- aucune branche n'entre dans le coeur sans inspection locale et verification reelle
+
+Reference detaillee:
+
+- `docs/architecture/HYBRID_LARGE_CONTEXT_WORKFLOW.md`
+
 ## Vision produit
 
 Project OS doit devenir une `master machine`:
@@ -56,6 +75,46 @@ Le systeme final est:
 - des workers specialises
 - des preuves et des garde-fous
 - une interface operateur distante
+
+## Discipline de decision
+
+Le projet doit garder une discipline explicite de decision, sans changement implicite de cap.
+
+Marqueurs obligatoires:
+
+- `DECISION CONFIRMED`
+- `DECISION CHANGED`
+
+Usage:
+
+- `DECISION CONFIRMED` quand une direction importante est revalidee
+- `DECISION CHANGED` quand on remplace proprement une direction precedente
+
+Ces decisions doivent etre promues regulierement dans la memoire durable.
+L'humain n'a pas besoin de le redire a chaque fois.
+
+## Compensation cognitive et anti-boucle
+
+Le systeme doit agir comme une couche de compensation cognitive haut niveau pour le fondateur.
+
+Cela veut dire:
+
+- supposer que des decisions importantes peuvent etre oubliees
+- supposer que des suivis utiles peuvent etre manques
+- supposer que des erreurs deja vues peuvent revenir
+- supposer que le systeme peut tourner en rond sans s'en rendre compte
+
+Obligations:
+
+- automatiser autant que possible la memoire des decisions, contraintes, lecons et incidents
+- aller chercher plus loin quand le niveau de profondeur baisse ou que le raisonnement s'appauvrit
+- detecter les repetitions steriles, faux progres et boucles de pensee
+- detecter une baisse de capacite, de qualite ou de coherence
+- faire un `refresh` de contexte et prendre du recul quand le systeme se degrade
+- preferer une correction structurelle plutot qu'un patch opportuniste
+
+Le projet ne doit pas attendre que l'humain pense a rappeler ce genre de besoin.
+Cette exigence est structurelle.
 
 ## Architecture cible
 
@@ -184,6 +243,27 @@ Le graphe mission officiel part sur 6 roles:
 Le premier graphe reste unique et canonique.
 On ne multiplie pas les graphes metier avant d'avoir valide cette forme.
 
+## Skills de mega prompt
+
+Les gros runs API doivent declarer explicitement leurs skills de run.
+
+Base minimale:
+
+- `CODE`
+- `AUDIT`
+- `DESIGN`
+- `PATCH_PLAN`
+- `GENERATE_PATCH`
+- `UEFN`
+- `WINDOWS`
+- `BROWSER`
+- `MEMORY`
+- `SECURITY`
+- `OPS`
+
+Ces skills de run servent a borner le mega prompt.
+Ils ne remplacent pas les skills locaux Codex.
+
 ## Etat operationnel actuel
 
 Le noyau local a maintenant les fondations suivantes en etat reel:
@@ -207,6 +287,28 @@ Le projet secrets actif est:
 - repo relie via `.infisical.json`
 - mode local: `infisical_required`
 - support `Universal Auth` machine identity implemente dans le coeur
+
+## Etat OpenClaw actuel
+
+Le lot `OpenClaw` est maintenant pose en deux etages:
+
+- frontiere d'architecture figee
+- adaptateur local `OpenClaw -> Project OS` code dans le repo
+
+Le package live est:
+
+- `integrations/openclaw/project-os-gateway-adapter`
+
+Role actuel:
+
+- capter `message_received` depuis `OpenClaw`
+- convertir l'evenement en charge utile canonique `Project OS`
+- appeler `gateway ingest-openclaw-event`
+
+Ce qui reste avant de considerer le lot 4 totalement termine:
+
+- brancher cet adaptateur sur un runtime `OpenClaw` reel du poste
+- valider Discord/WebChat avec un message live
 
 ## Memory OS locale
 
@@ -236,6 +338,21 @@ Pipeline retenu:
 2. classification (`chat`, `tasking`, `idea`, `decision`, `note`, `artifact_ref`)
 3. decision explicite de promotion
 4. promotion selective vers la memoire canonique
+
+## Standard attendu
+
+Le projet doit rester:
+
+- optimise
+- autonome
+- intelligent
+- securise
+- sans doublon
+- bien ecrit
+- protege
+- haut niveau
+
+Le but assume est de construire `Jarvis`.
 5. sinon conservation comme evenement tracable uniquement
 
 On promeut les decisions, preferences stables, missions, incidents, artefacts et resumes valides.
