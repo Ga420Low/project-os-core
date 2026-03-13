@@ -12,8 +12,11 @@ from urllib.parse import parse_qs, urlparse
 def build_dashboard_payload(services, *, limit: int = 8) -> dict[str, Any]:
     snapshot = services.api_runs.monitor_snapshot(limit=limit)
     current_run = snapshot.get("current_run")
+    current_contract = snapshot.get("current_contract")
     current_artifacts: list[dict[str, Any]] = []
     current_preview: dict[str, Any] | None = None
+    current_completion: dict[str, Any] | None = None
+    current_blockage: dict[str, Any] | None = None
     terminal_text = services.api_runs.render_terminal_dashboard(limit=limit)
 
     if current_run and current_run.get("run_id"):
@@ -21,6 +24,12 @@ def build_dashboard_payload(services, *, limit: int = 8) -> dict[str, Any]:
         structured_path = current_run.get("structured_output_path")
         if structured_path:
             current_preview = _load_structured_preview(Path(str(structured_path)))
+        completion_path = next((item.get("path") for item in current_artifacts if item.get("artifact_kind") == "rapport_final"), None)
+        blockage_path = next((item.get("path") for item in current_artifacts if item.get("artifact_kind") == "blocage"), None)
+        if completion_path:
+            current_completion = _load_optional_json(Path(str(completion_path)))
+        if blockage_path:
+            current_blockage = _load_optional_json(Path(str(blockage_path)))
 
     status_counts: dict[str, int] = {}
     review_counts: dict[str, int] = {}
@@ -36,6 +45,8 @@ def build_dashboard_payload(services, *, limit: int = 8) -> dict[str, Any]:
         "terminal_text": terminal_text,
         "current_artifacts": _attach_file_links(current_artifacts),
         "current_preview": current_preview,
+        "current_completion": current_completion,
+        "current_blockage": current_blockage,
         "status_counts": status_counts,
         "review_counts": review_counts,
         "lane_policy": {
@@ -52,9 +63,12 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
     snapshot = payload["snapshot"]
     budget = snapshot["budget"]
     current_run = snapshot.get("current_run")
+    current_contract = snapshot.get("current_contract")
     latest_runs = snapshot.get("latest_runs", [])
     current_artifacts = payload.get("current_artifacts", [])
     current_preview = payload.get("current_preview")
+    current_completion = payload.get("current_completion")
+    current_blockage = payload.get("current_blockage")
     terminal_text = str(payload.get("terminal_text") or "").strip()
 
     def badge(value: str | None, *, kind: str = "status") -> str:
@@ -74,13 +88,16 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
           {badge(current_run.get("review_verdict"), kind="review")}
           <span class="pill">mode {_html_escape(str(current_run.get("mode") or ""))}</span>
           <span class="pill">branche {_html_escape(str(current_run.get("branch_name") or ""))}</span>
+          <span class="pill">phase {_html_escape(str(current_run.get("phase") or "preparation"))}</span>
         </div>
         <div class="objective">{_html_escape(str(current_run.get("objective") or ""))}</div>
         <div class="meta-grid">
           <div><strong>ID du run</strong><span class="mono-small">{_html_escape(str(current_run.get("run_id") or ""))}</span></div>
           <div><strong>Cree le</strong><span class="mono-small">{_html_escape(str(current_run.get("created_at") or ""))}</span></div>
           <div><strong>Cout estime</strong><span>{float(current_run.get("estimated_cost_eur") or 0):.4f} EUR</span></div>
+          <div><strong>Contrat</strong><span class="mono-small">{_html_escape(str(current_run.get("contract_status") or "sans_contrat"))}</span></div>
         </div>
+        <div class="meta" style="margin-top:10px;">{_html_escape(str(current_run.get("machine_summary") or "Le dashboard attend un nouvel evenement machine."))}</div>
         """
 
     artifact_items = "".join(
@@ -102,6 +119,30 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
                 items = "<br>".join(f"- <span class=\"wrap\">{_html_escape(str(value))}</span>" for value in values)
                 preview_sections.append(f"<li><strong>{title}</strong><br>{items}</li>")
     preview_html = "".join(preview_sections) or '<li class="empty">Aucun apercu structure pour le moment.</li>'
+
+    completion_html = '<li class="empty">Aucun rapport final pour le moment.</li>'
+    if current_completion:
+        done_items = "<br>".join(f"- <span class=\"wrap\">{_html_escape(str(item))}</span>" for item in current_completion.get("done_items", []))
+        test_items = "<br>".join(f"- <span class=\"wrap\">{_html_escape(str(item))}</span>" for item in current_completion.get("test_summary", []))
+        risk_items = "<br>".join(f"- <span class=\"wrap\">{_html_escape(str(item))}</span>" for item in current_completion.get("risks", []))
+        completion_html = f"""
+        <li><strong>Verdict</strong><br>{_html_escape(str(current_completion.get('verdict') or ''))}</li>
+        <li><strong>Resume</strong><br><span class="wrap">{_html_escape(str(current_completion.get('summary') or ''))}</span></li>
+        <li><strong>Ce qui a ete fait</strong><br>{done_items or '<span class="empty">Aucun point.</span>'}</li>
+        <li><strong>Tests</strong><br>{test_items or '<span class="empty">Aucun test resume.</span>'}</li>
+        <li><strong>Risques</strong><br>{risk_items or '<span class="empty">Aucun risque resume.</span>'}</li>
+        <li><strong>Suite recommandee</strong><br><span class="wrap">{_html_escape(str(current_completion.get('next_action') or ''))}</span></li>
+        """
+
+    blockage_html = '<li class="empty">Aucun blocage final pour le moment.</li>'
+    if current_blockage:
+        choice_items = "<br>".join(f"- <span class=\"wrap\">{_html_escape(str(item))}</span>" for item in current_blockage.get("choices", []))
+        blockage_html = f"""
+        <li><strong>Cause</strong><br><span class="wrap">{_html_escape(str(current_blockage.get('cause') or ''))}</span></li>
+        <li><strong>Impact</strong><br><span class="wrap">{_html_escape(str(current_blockage.get('impact') or ''))}</span></li>
+        <li><strong>Choix</strong><br>{choice_items or '<span class="empty">Aucun choix propose.</span>'}</li>
+        <li><strong>Recommendation</strong><br><span class="wrap">{_html_escape(str(current_blockage.get('recommendation') or ''))}</span></li>
+        """
 
     history_items = "".join(
         f"""
@@ -284,7 +325,10 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
       <aside class="side-rail">
         <nav class="rail-nav">
           <a href="#budget">Budget</a>
+          <a href="#contract">Contrat</a>
           <a href="#preview">Apercu</a>
+          <a href="#completion">Rapport final</a>
+          <a href="#blockage">Blocage</a>
           <a href="#artifacts">Artefacts</a>
           <a href="#history">Historique</a>
           <a href="#policy">Regles</a>
@@ -311,9 +355,23 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
             </div>
           </div>
         </details>
+        <details class="compact" id="contract" open>
+          <summary>Contrat de run <span class="meta">but, go, limites</span></summary>
+          <div class="compact-body">
+            {('<div class="mini-card"><div class="label">Contrat courant</div><div class="wrap"><strong>' + _html_escape(str(current_contract.get("status") or "")) + '</strong><br>' + _html_escape(str(current_contract.get("summary") or "")) + '<br><span class="meta">decision fondateur: ' + _html_escape(str(current_contract.get("founder_decision") or "en_attente")) + '</span></div></div>') if current_contract else '<div class="empty">Aucun contrat recent.</div>'}
+          </div>
+        </details>
         <details class="compact" id="preview" open>
           <summary>Apercu structure <span class="meta">decision, tests, risques</span></summary>
           <div class="compact-body"><ul class="preview-list">{preview_html}</ul></div>
+        </details>
+        <details class="compact" id="completion">
+          <summary>Rapport final <span class="meta">francais simple</span></summary>
+          <div class="compact-body"><ul class="preview-list">{completion_html}</ul></div>
+        </details>
+        <details class="compact" id="blockage">
+          <summary>Blocage <span class="meta">si le run a casse</span></summary>
+          <div class="compact-body"><ul class="preview-list">{blockage_html}</ul></div>
         </details>
         <details class="compact" id="artifacts">
           <summary>Artefacts <span class="meta">sorties du run courant</span></summary>
@@ -429,6 +487,12 @@ def _attach_file_links(payload: Any) -> Any:
                 enriched["link"] = path_value
         return enriched
     return payload
+
+
+def _load_optional_json(path: Path) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _load_structured_preview(path: Path) -> dict[str, Any] | None:

@@ -12,6 +12,7 @@ from ..models import (
     LoopSignal,
     MemoryTier,
     MemoryType,
+    NoiseSignal,
     RefreshRecommendation,
     new_id,
 )
@@ -181,6 +182,42 @@ class LearningService:
             summary=f"Loop detected in {impacted_area}: {repeated_pattern}",
             source_ids=[signal.loop_signal_id, *signal.source_ids],
             metadata={"recommended_reset": recommended_reset},
+        )
+        return signal
+
+    def record_noise_signal(
+        self,
+        *,
+        run_id: str,
+        reason: str,
+        evidence: dict | None = None,
+    ) -> NoiseSignal:
+        signal = NoiseSignal(
+            noise_signal_id=new_id("noise_signal"),
+            run_id=run_id,
+            reason=reason,
+            evidence=evidence or {},
+        )
+        self.database.execute(
+            """
+            INSERT OR REPLACE INTO noise_signals(
+                noise_signal_id, run_id, reason, evidence_json, created_at
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                signal.noise_signal_id,
+                signal.run_id,
+                signal.reason,
+                dump_json(signal.evidence),
+                signal.created_at,
+            ),
+        )
+        self.record_signal(
+            kind=LearningSignalKind.NOISE_DETECTED,
+            severity="medium",
+            summary=f"Noise detected for run {run_id}: {reason}",
+            source_ids=[signal.noise_signal_id, run_id],
+            metadata=evidence or {},
         )
         return signal
 

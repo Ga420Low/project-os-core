@@ -3,6 +3,10 @@
 Ce fichier est la reference racine du projet.
 Il fixe le cap produit, les decisions structurantes et les regles a respecter par l'humain et par l'IA.
 
+Pour le comportement agent au quotidien, la porte d'entree prioritaire est maintenant:
+
+- [AGENTS.md](D:/ProjectOS/project-os-core/AGENTS.md)
+
 ## Identite
 
 Project OS est un systeme proprietaire de copilote PC autonome, supervise, multi-apps et multi-canaux.
@@ -43,11 +47,21 @@ Regles:
 - `Codex` prepare, inspecte, challenge et integre
 - le runtime local reste la verite finale
 - aucune branche n'entre dans le coeur sans inspection locale et verification reelle
+- les gros runs de code se font en silence operationnel
+- les sorties operateur doivent etre en francais clair, non developpeur
+- un gros run ne part pas sans contrat de run et validation humaine
 
 Reference detaillee:
 
 - `docs/architecture/HYBRID_LARGE_CONTEXT_WORKFLOW.md`
 - `docs/integrations/API_LEAD_AGENT_V1.md`
+- `docs/architecture/AGENT_IDENTITY_AND_CHANNEL_MODEL.md`
+- `docs/architecture/HANDOFF_MEMORY_POLICY.md`
+- `docs/integrations/DISCORD_OPERATING_MODEL.md`
+- `docs/architecture/RUN_COMMUNICATION_POLICY.md`
+- `docs/integrations/DISCORD_CHANNEL_TOPOLOGY.md`
+- `docs/integrations/API_RUN_CONTRACT.md`
+- `docs/architecture/FRENCH_OPERATOR_OUTPUT_POLICY.md`
 
 ## API Lead Agent v1
 
@@ -62,6 +76,7 @@ Il repose sur:
 - un systeme de `MegaPrompt`
 - un systeme de `ApiRunResult`
 - un systeme de `ApiRunReview`
+- un systeme de `RunContract`
 - un monitor texte local des runs
 - un dashboard web local des runs pour la supervision visuelle
 
@@ -76,6 +91,32 @@ Regle dure:
 
 - l'API peut produire un gros lot
 - mais `Codex` et l'humain gardent la revue locale avant integration dans `main`
+- pendant un run de code, le texte naturel est remplace par dashboard + terminal + cartes compactes
+
+## Mode operatoire vNext
+
+L'agent systeme reste unique, mais travaille selon plusieurs modes:
+
+- `discussion`
+- `architecte`
+- `builder`
+- `reviewer`
+- `gardien`
+- `incident`
+
+Discord devient le hub humain via une topologie `hub + salons`:
+
+- `#pilotage`
+- `#runs-live`
+- `#approvals`
+- `#incidents`
+- threads par mission
+
+Rappels:
+
+- `Discord` n'est pas la memoire canonique
+- `Discord` n'est pas la verite machine
+- `Discord` est l'interface operateur
 
 ## Vision produit
 
@@ -390,6 +431,48 @@ Le but assume est de construire `Jarvis`.
 On promeut les decisions, preferences stables, missions, incidents, artefacts et resumes valides.
 On ne promeut pas automatiquement le small talk ni le bruit.
 
+## Meme agent sur plusieurs surfaces
+
+Le systeme doit rester le meme agent a travers:
+
+- `Codex`
+- gros runs API
+- `Discord`
+- futures surfaces
+
+Cela impose:
+
+- une identite canonique unique
+- des overlays de canal sans changer la personnalite
+- une memoire partagee
+- un handoff explicite entre `Codex`, l'API et `Discord`
+
+References:
+
+- `docs/architecture/AGENT_IDENTITY_AND_CHANNEL_MODEL.md`
+- `docs/architecture/HANDOFF_MEMORY_POLICY.md`
+
+## Discord operating model
+
+`Discord` est la surface humaine prioritaire.
+
+Le systeme doit y rester:
+
+- compact
+- operateur
+- rigoureux
+- coherent avec `Codex`
+
+`Discord` n'est jamais:
+
+- la memoire canonique
+- la verite machine
+- un contournement du `Mission Router`
+
+Reference:
+
+- `docs/integrations/DISCORD_OPERATING_MODEL.md`
+
 ## Stockage cible
 
 Le stockage doit etre pense en trois niveaux:
@@ -442,6 +525,13 @@ La politique modele retenue est:
 - `gpt-5.4` en `high` par defaut
 - `gpt-5.4` en `xhigh` en escalade
 - `gpt-5.4-pro` tres rarement et jamais dans la boucle normale
+
+Pour le canal `Discord`, la policy adaptative est:
+
+- banal / check rapide / accusé de reception -> `gpt-5.4` avec `reasoning.effort=medium` si un LLM est necessaire
+- operateur standard -> `gpt-5.4 high`
+- complexe / critique / ambigu -> `gpt-5.4 xhigh`
+- exceptionnel -> `gpt-5.4-pro` seulement avec approval explicite
 
 Le systeme ne doit pas compenser une mauvaise architecture par une consommation abusive de modele premium.
 

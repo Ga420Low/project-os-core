@@ -161,9 +161,24 @@ def main(argv: list[str] | None = None) -> int:
     api_prompt = api_runs_sub.add_parser("render-prompt")
     api_prompt.add_argument("--context-pack-id", required=True)
 
+    api_contract = api_runs_sub.add_parser("prepare-contract")
+    api_contract.add_argument("--context-pack-id", required=True)
+    api_contract.add_argument("--prompt-template-id", required=True)
+    api_contract.add_argument("--target-profile")
+    api_contract.add_argument("--metadata")
+
+    api_contract_approve = api_runs_sub.add_parser("approve-contract")
+    api_contract_approve.add_argument("--contract-id", required=True)
+    api_contract_approve.add_argument("--decision", choices=["go", "go_avec_correction", "stop"], required=True)
+    api_contract_approve.add_argument("--notes")
+
+    api_contract_show = api_runs_sub.add_parser("show-contract")
+    api_contract_show.add_argument("--contract-id", required=True)
+
     api_execute = api_runs_sub.add_parser("execute")
-    _add_api_run_request_args(api_execute)
+    _add_api_run_request_args(api_execute, require_core=False)
     api_execute.add_argument("--expected-output", action="append", default=[])
+    api_execute.add_argument("--contract-id")
 
     api_review = api_runs_sub.add_parser("review-result")
     api_review.add_argument("--run-id", required=True)
@@ -410,9 +425,30 @@ def main(argv: list[str] | None = None) -> int:
                 prompt = services.api_runs.render_prompt(context_pack_id=args.context_pack_id)
                 print(json.dumps(to_jsonable(prompt), indent=2, ensure_ascii=True, sort_keys=True))
                 return 0
+            if args.api_runs_command == "prepare-contract":
+                contract = services.api_runs.create_run_contract(
+                    context_pack_id=args.context_pack_id,
+                    prompt_template_id=args.prompt_template_id,
+                    target_profile=args.target_profile,
+                    metadata=_json_arg(args.metadata),
+                )
+                print(json.dumps(to_jsonable(contract), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.api_runs_command == "approve-contract":
+                contract = services.api_runs.approve_run_contract(
+                    contract_id=args.contract_id,
+                    founder_decision=args.decision,
+                    notes=args.notes,
+                )
+                print(json.dumps(to_jsonable(contract), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.api_runs_command == "show-contract":
+                contract = services.api_runs.get_run_contract(args.contract_id)
+                print(json.dumps(to_jsonable(contract), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
             if args.api_runs_command == "execute":
                 payload = services.api_runs.execute_run(
-                    mode=ApiRunMode(args.mode),
+                    mode=ApiRunMode(args.mode) if args.mode else None,
                     objective=args.objective,
                     branch_name=args.branch_name,
                     skill_tags=args.skill_tag,
@@ -422,6 +458,7 @@ def main(argv: list[str] | None = None) -> int:
                     acceptance_criteria=args.acceptance,
                     expected_outputs=args.expected_output,
                     metadata=_json_arg(args.metadata),
+                    contract_id=args.contract_id,
                 )
                 print(json.dumps(to_jsonable(payload), indent=2, ensure_ascii=True, sort_keys=True))
                 return 0 if payload["result"].status is not ApiRunStatus.FAILED else 1
@@ -543,9 +580,9 @@ def _add_gateway_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--metadata")
 
 
-def _add_api_run_request_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--mode", choices=[item.value for item in ApiRunMode], required=True)
-    parser.add_argument("--objective", required=True)
+def _add_api_run_request_args(parser: argparse.ArgumentParser, *, require_core: bool = True) -> None:
+    parser.add_argument("--mode", choices=[item.value for item in ApiRunMode], required=require_core)
+    parser.add_argument("--objective", required=require_core)
     parser.add_argument("--branch-name")
     parser.add_argument("--skill-tag", action="append", default=[])
     parser.add_argument("--target-profile")

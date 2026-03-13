@@ -60,11 +60,20 @@ class ApiRunDashboardTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             services = _build_services(Path(tmp))
             try:
-                payload = services.api_runs.execute_run(
+                context_pack = services.api_runs.build_context_pack(
                     mode=ApiRunMode.PATCH_PLAN,
                     objective="Build the local dashboard for API runs.",
                     branch_name="codex/test-dashboard",
                     skill_tags=["patch_plan", "dashboard"],
+                )
+                prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
+                contract = services.api_runs.create_run_contract(
+                    context_pack_id=context_pack.context_pack_id,
+                    prompt_template_id=prompt.prompt_template_id,
+                )
+                services.api_runs.approve_run_contract(contract_id=contract.contract_id, founder_decision="go")
+                payload = services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
                     response_runner=lambda request, prompt, context: {
                         "model": "gpt-5.4",
                         "output_text": json.dumps(

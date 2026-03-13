@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-CURRENT_SCHEMA_VERSION = "4"
+CURRENT_SCHEMA_VERSION = "5"
 
 
 class CanonicalDatabase:
@@ -397,6 +397,38 @@ class CanonicalDatabase:
                     expected_outputs_json TEXT NOT NULL,
                     coding_lane TEXT NOT NULL,
                     desktop_lane TEXT NOT NULL,
+                    communication_mode TEXT,
+                    speech_policy TEXT,
+                    operator_language TEXT,
+                    audience TEXT,
+                    run_contract_required INTEGER,
+                    contract_id TEXT,
+                    status TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS api_run_contracts (
+                    contract_id TEXT PRIMARY KEY,
+                    context_pack_id TEXT NOT NULL,
+                    prompt_template_id TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    objective TEXT NOT NULL,
+                    branch_name TEXT NOT NULL,
+                    target_profile TEXT,
+                    model TEXT NOT NULL,
+                    reasoning_effort TEXT NOT NULL,
+                    communication_mode TEXT NOT NULL,
+                    speech_policy TEXT NOT NULL,
+                    operator_language TEXT NOT NULL,
+                    audience TEXT NOT NULL,
+                    expected_outputs_json TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    non_goals_json TEXT NOT NULL,
+                    success_criteria_json TEXT NOT NULL,
+                    estimated_cost_eur REAL NOT NULL,
+                    founder_decision TEXT,
                     status TEXT NOT NULL,
                     metadata_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -432,6 +464,41 @@ class CanonicalDatabase:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS api_run_events (
+                    event_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    machine_summary TEXT NOT NULL,
+                    human_summary TEXT,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS completion_reports (
+                    report_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    verdict TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    done_items_json TEXT NOT NULL,
+                    test_summary_json TEXT NOT NULL,
+                    risks_json TEXT NOT NULL,
+                    next_action TEXT,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS blockage_reports (
+                    report_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    cause TEXT NOT NULL,
+                    impact TEXT NOT NULL,
+                    choices_json TEXT NOT NULL,
+                    recommendation TEXT,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS learning_signals (
                     signal_id TEXT PRIMARY KEY,
                     kind TEXT NOT NULL,
@@ -460,6 +527,14 @@ class CanonicalDatabase:
                     recommended_reset TEXT NOT NULL,
                     source_ids_json TEXT NOT NULL,
                     metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS noise_signals (
+                    noise_signal_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    evidence_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
 
@@ -500,6 +575,12 @@ class CanonicalDatabase:
                 ("action_evidences", "failure_reason TEXT"),
                 ("action_evidences", "policy_verdict TEXT"),
                 ("action_evidences", "artifact_count INTEGER NOT NULL DEFAULT 0"),
+                ("api_run_requests", "communication_mode TEXT"),
+                ("api_run_requests", "speech_policy TEXT"),
+                ("api_run_requests", "operator_language TEXT"),
+                ("api_run_requests", "audience TEXT"),
+                ("api_run_requests", "run_contract_required INTEGER"),
+                ("api_run_requests", "contract_id TEXT"),
             ):
                 self._ensure_column(connection, table, column_sql)
 
@@ -552,16 +633,28 @@ class CanonicalDatabase:
                 ON context_packs(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_api_run_requests_branch_status
                 ON api_run_requests(branch_name, status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_api_run_requests_contract
+                ON api_run_requests(contract_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_api_run_results_request_created
                 ON api_run_results(run_request_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_api_run_contracts_status_created
+                ON api_run_contracts(status, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_api_run_reviews_run_created
                 ON api_run_reviews(run_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_api_run_events_run_created
+                ON api_run_events(run_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_completion_reports_run_created
+                ON completion_reports(run_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_blockage_reports_run_created
+                ON blockage_reports(run_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_learning_signals_kind_created
                 ON learning_signals(kind, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_decision_records_status_updated
                 ON decision_records(status, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_loop_signals_created
                 ON loop_signals(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_noise_signals_run_created
+                ON noise_signals(run_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_refresh_recommendations_created
                 ON refresh_recommendations(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_dataset_candidates_created

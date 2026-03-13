@@ -54,16 +54,36 @@ def _build_services(tmp_path: Path):
     return services
 
 
+def _prepare_approved_contract(services, *, mode: ApiRunMode, objective: str, branch_name: str, skill_tags: list[str]):
+    context_pack = services.api_runs.build_context_pack(
+        mode=mode,
+        objective=objective,
+        branch_name=branch_name,
+        skill_tags=skill_tags,
+    )
+    prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
+    contract = services.api_runs.create_run_contract(
+        context_pack_id=context_pack.context_pack_id,
+        prompt_template_id=prompt.prompt_template_id,
+    )
+    services.api_runs.approve_run_contract(contract_id=contract.contract_id, founder_decision="go")
+    return contract
+
+
 class ApiRunServiceTests(unittest.TestCase):
     def test_patch_plan_run_builds_context_and_persists_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = _build_services(Path(tmp))
             try:
-                payload = services.api_runs.execute_run(
+                contract = _prepare_approved_contract(
+                    services,
                     mode=ApiRunMode.PATCH_PLAN,
                     objective="Finish the OpenClaw live adapter plan.",
                     branch_name="codex/test-api-run",
                     skill_tags=["patch_plan", "openclaw"],
+                )
+                payload = services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
                     response_runner=lambda request, prompt, context: {
                         "model": "gpt-5.4",
                         "output_text": json.dumps(
@@ -99,11 +119,15 @@ class ApiRunServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             services = _build_services(Path(tmp))
             try:
-                payload = services.api_runs.execute_run(
+                contract = _prepare_approved_contract(
+                    services,
                     mode=ApiRunMode.DESIGN,
                     objective="Design the first LangGraph live bridge.",
                     branch_name="codex/test-review",
                     skill_tags=["design", "langgraph"],
+                )
+                payload = services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
                     response_runner=lambda request, prompt, context: {
                         "model": "gpt-5.4",
                         "output_text": json.dumps(
@@ -142,11 +166,15 @@ class ApiRunServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             services = _build_services(Path(tmp))
             try:
-                payload = services.api_runs.execute_run(
+                contract = _prepare_approved_contract(
+                    services,
                     mode=ApiRunMode.GENERATE_PATCH,
                     objective="Generate a patch for a risky refactor.",
                     branch_name="codex/test-reject",
                     skill_tags=["generate_patch", "security"],
+                )
+                payload = services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
                     response_runner=lambda request, prompt, context: {
                         "model": "gpt-5.4",
                         "output_text": json.dumps(

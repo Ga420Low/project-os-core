@@ -5,7 +5,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .models import ExecutionPolicy, ForbiddenZonePolicy, StorageRoots
+from .models import ExecutionPolicy, ForbiddenZonePolicy, OperatorAudience, RunSpeechPolicy, StorageRoots
 
 
 def repo_root() -> Path:
@@ -84,6 +84,11 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "deterministic_first": True,
             "allow_pro_default": False,
             "secret_mode": "infisical_first",
+            "discord_simple_reasoning_effort": "medium",
+            "operator_language": "fr",
+            "operator_audience": OperatorAudience.NON_DEVELOPER.value,
+            "run_contract_required": True,
+            "default_run_speech_policy": RunSpeechPolicy.SILENT_UNTIL_TERMINAL_STATE.value,
         },
     }
 
@@ -107,7 +112,10 @@ def _load_runtime_policy(root: Path, policy_path: str | Path | None = None) -> t
     secret_payload["local_fallback_path"] = _expand_path(str(secret_payload["local_fallback_path"]))
     secret_config = SecretConfig(**secret_payload)
     embedding_policy = EmbeddingPolicy(**payload["embedding_policy"])
-    execution_policy = ExecutionPolicy(**payload["execution_policy"])
+    execution_payload = dict(payload["execution_policy"])
+    execution_payload["operator_audience"] = OperatorAudience(str(execution_payload["operator_audience"]))
+    execution_payload["default_run_speech_policy"] = RunSpeechPolicy(str(execution_payload["default_run_speech_policy"]))
+    execution_policy = ExecutionPolicy(**execution_payload)
     return secret_config, embedding_policy, execution_policy
 
 

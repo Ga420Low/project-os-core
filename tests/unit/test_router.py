@@ -12,8 +12,12 @@ from project_os_core.config import load_runtime_config
 from project_os_core.database import CanonicalDatabase
 from project_os_core.models import (
     ActionRiskClass,
+    CommunicationMode,
     CostClass,
     MissionIntent,
+    OperatorAudience,
+    OperatorMessageKind,
+    RunSpeechPolicy,
     RuntimeState,
     RuntimeVerdict,
     new_id,
@@ -94,6 +98,47 @@ class MissionRouterTests(unittest.TestCase):
             self.assertEqual(decision.model_route.model, "gpt-5.4")
             self.assertEqual(decision.model_route.reasoning_effort, "high")
             self.assertEqual(decision.budget_state.mission_cost_class, CostClass.STANDARD)
+            database.close()
+
+    def test_discord_simple_chat_uses_medium_and_discussion_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config, paths, database, runtime, resolver = self._runtime_components(tmp_path)
+            resolver.write_local_fallback("OPENAI_API_KEY", "sk-test-secret")
+            session = runtime.open_session(profile_name="core", owner="founder")
+            runtime.record_runtime_state(
+                RuntimeState(
+                    runtime_state_id=new_id("runtime_state"),
+                    session_id=session.session_id,
+                    verdict=RuntimeVerdict.READY,
+                    active_profile="core",
+                )
+            )
+            router = MissionRouter(
+                database=database,
+                runtime=runtime,
+                path_policy=PathPolicy(paths),
+                secret_resolver=resolver,
+                execution_policy=config.execution_policy,
+            )
+            intent = MissionIntent(
+                intent_id=new_id("intent"),
+                source="test",
+                actor_id="founder",
+                channel="discord",
+                objective="Salut, tu peux me dire ou en est le run ?",
+                target_profile="core",
+                metadata={"message_kind": OperatorMessageKind.CHAT.value},
+            )
+
+            decision, _, _ = router.route_intent(intent, persist=False)
+
+            self.assertTrue(decision.allowed)
+            self.assertEqual(decision.model_route.model, "gpt-5.4")
+            self.assertEqual(decision.model_route.reasoning_effort, "medium")
+            self.assertEqual(decision.communication_mode, CommunicationMode.DISCUSSION)
+            self.assertEqual(decision.speech_policy, RunSpeechPolicy.DIALOGUE_RICH)
+            self.assertEqual(decision.audience, OperatorAudience.NON_DEVELOPER)
             database.close()
 
     def test_exceptional_route_requires_founder_approval(self):

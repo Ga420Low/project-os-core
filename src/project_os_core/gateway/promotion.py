@@ -23,12 +23,18 @@ class SelectiveSyncPromoter:
     _IDEA_HINTS = ("idea", "on pourrait", "maybe", "perhaps", "on devrait", "we could")
     _NOTE_HINTS = ("note", "remember", "rappel", "memo", "preference", "prefer", "always", "never", "by default")
     _TASK_HINTS = ("please", "fais", "implement", "build", "create", "write", "route", "run", "launch", "ouvre")
+    _STATUS_HINTS = ("status", "statut", "ou en est", "où en est", "progress", "ca en est ou", "ça en est où")
+    _APPROVAL_HINTS = ("approve", "approval", "validation", "valide", "approuve", "autorise")
     _NOISE_HINTS = ("salut", "hello", "hi", "yo", "ça va", "ca va", "merci", "thanks")
 
     def classify_message(self, event: ChannelEvent) -> OperatorMessageKind:
         text = event.message.text.strip().lower()
         if event.message.attachments and not text:
             return OperatorMessageKind.ARTIFACT_REF
+        if any(token in text for token in self._STATUS_HINTS):
+            return OperatorMessageKind.STATUS_REQUEST
+        if any(token in text for token in self._APPROVAL_HINTS):
+            return OperatorMessageKind.APPROVAL
         if any(token in text for token in self._DECISION_HINTS):
             return OperatorMessageKind.DECISION
         if any(token in text for token in self._IDEA_HINTS):
@@ -118,7 +124,12 @@ class SelectiveSyncPromoter:
 
     def _should_promote(self, classification: OperatorMessageKind, text: str) -> bool:
         lowered = text.strip().lower()
-        if classification in {OperatorMessageKind.DECISION, OperatorMessageKind.TASKING, OperatorMessageKind.ARTIFACT_REF}:
+        if classification in {
+            OperatorMessageKind.DECISION,
+            OperatorMessageKind.TASKING,
+            OperatorMessageKind.ARTIFACT_REF,
+            OperatorMessageKind.APPROVAL,
+        }:
             return True
         if classification is OperatorMessageKind.NOTE:
             return True
@@ -129,13 +140,11 @@ class SelectiveSyncPromoter:
         return False
 
     def _memory_type_for(self, classification: OperatorMessageKind) -> MemoryType:
-        if classification is OperatorMessageKind.DECISION:
+        if classification in {OperatorMessageKind.DECISION, OperatorMessageKind.APPROVAL}:
             return MemoryType.PROCEDURAL
         if classification is OperatorMessageKind.NOTE:
             return MemoryType.SEMANTIC
-        if classification is OperatorMessageKind.ARTIFACT_REF:
-            return MemoryType.EPISODIC
-        if classification is OperatorMessageKind.TASKING:
+        if classification in {OperatorMessageKind.ARTIFACT_REF, OperatorMessageKind.TASKING}:
             return MemoryType.EPISODIC
         return MemoryType.SEMANTIC
 
@@ -156,4 +165,4 @@ class SelectiveSyncPromoter:
     @staticmethod
     def _attachments_summary(attachments: list[OperatorAttachment]) -> str:
         names = ", ".join(attachment.name for attachment in attachments[:3])
-        return f"Attachments referenced: {names}" if names else "Attachment reference"
+        return f"Pieces jointes referencees: {names}" if names else "Reference de piece jointe"

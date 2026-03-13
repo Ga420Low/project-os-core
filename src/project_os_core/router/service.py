@@ -7,19 +7,25 @@ from typing import Any
 from ..database import CanonicalDatabase, dump_json
 from ..models import (
     ActionRiskClass,
+    AdaptiveModelRoute,
     ApprovalGate,
     BudgetState,
+    CommunicationMode,
     CostClass,
+    DiscordChannelClass,
     ExecutionPolicy,
     MissionExecutionClass,
     MissionIntent,
     MissionRun,
     MissionStatus,
     ModelRoute,
+    OperatorAudience,
     OperatorEnvelope,
+    OperatorMessageKind,
     ProfileCapability,
     RoutingDecision,
     RoutingDecisionTrace,
+    RunSpeechPolicy,
     RuntimeState,
     RuntimeVerdict,
     new_id,
@@ -59,6 +65,9 @@ class MissionRouter:
             target_profile=envelope.target_profile,
             requested_worker=envelope.requested_worker,
             requested_risk_class=envelope.requested_risk_class,
+            communication_mode=envelope.communication_mode,
+            operator_language=envelope.operator_language,
+            audience=envelope.audience,
             metadata=dict(envelope.metadata),
         )
 
@@ -101,6 +110,9 @@ class MissionRouter:
 
         approval_gate = self._approval_gate(intent, risk_class, budget_state, chosen_worker)
         model_route = self._model_route(intent, mission_cost_class, budget_state, approval_gate)
+        communication_mode = self._communication_mode(intent, chosen_worker)
+        speech_policy = self._speech_policy(communication_mode)
+        adaptive_model_route = self._adaptive_model_route(intent, communication_mode, model_route)
 
         if not budget_state.within_monthly_limit:
             blocked_reasons.append("monthly_budget_exceeded")
@@ -132,6 +144,11 @@ class MissionRouter:
             model_route=model_route,
             approval_gate=approval_gate,
             budget_state=budget_state,
+            communication_mode=communication_mode,
+            speech_policy=speech_policy,
+            operator_language=intent.operator_language or self.execution_policy.operator_language,
+            audience=intent.audience or self.execution_policy.operator_audience,
+            adaptive_model_route=adaptive_model_route,
             route_reason=model_route.reason if allowed else ";".join(blocked_reasons or [approval_gate.reason or "blocked"]),
             blocked_reasons=blocked_reasons,
         )
@@ -273,6 +290,21 @@ class MissionRouter:
         budget_state: BudgetState,
         approval_gate: ApprovalGate,
     ) -> ModelRoute:
+        message_kind = str(intent.metadata.get("message_kind") or "")
+        if (
+            intent.channel == "discord"
+            and mission_cost_class is CostClass.CHEAP
+            and message_kind in {OperatorMessageKind.CHAT.value, OperatorMessageKind.STATUS_REQUEST.value}
+        ):
+            return ModelRoute(
+                provider="openai",
+                model=self.execution_policy.default_model,
+                reasoning_effort=self.execution_policy.discord_simple_reasoning_effort,
+                route_class=mission_cost_class,
+                allowed=True,
+                reason="discord_simple_route",
+            )
+
         if mission_cost_class is CostClass.CHEAP:
             return ModelRoute(
                 provider="local",
@@ -328,6 +360,54 @@ class MissionRouter:
             route_class=mission_cost_class,
             allowed=True,
             reason="standard_route",
+        )
+
+    def _communication_mode(self, intent: MissionIntent, chosen_worker: str | None) -> CommunicationMode:
+        if intent.metadata.get("channel_class") == "incidents":
+            return CommunicationMode.INCIDENT
+        if intent.metadata.get("message_kind") == OperatorMessageKind.APPROVAL.value:
+            return CommunicationMode.GUARDIAN
+        if intent.metadata.get("message_kind") in {OperatorMessageKind.CHAT.value, OperatorMessageKind.STATUS_REQUEST.value}:
+            return CommunicationMode.DISCUSSION
+        if intent.metadata.get("message_kind") in {OperatorMessageKind.IDEA.value, OperatorMessageKind.DECISION.value, OperatorMessageKind.NOTE.value}:
+            return CommunicationMode.ARCHITECT
+        if chosen_worker or intent.metadata.get("message_kind") == OperatorMessageKind.TASKING.value:
+            return CommunicationMode.BUILDER
+        return intent.communication_mode or CommunicationMode.DISCUSSION
+
+    def _speech_policy(self, communication_mode: CommunicationMode) -> RunSpeechPolicy:
+        if communication_mode in {CommunicationMode.BUILDER, CommunicationMode.REVIEWER}:
+            return self.execution_policy.default_run_speech_policy
+        if communication_mode is CommunicationMode.INCIDENT:
+            return RunSpeechPolicy.PHASE_MARKERS_ONLY
+        return RunSpeechPolicy.DIALOGUE_RICH
+
+    def _adaptive_model_route(
+        self,
+        intent: MissionIntent,
+        communication_mode: CommunicationMode,
+        model_route: ModelRoute,
+    ) -> AdaptiveModelRoute:
+        channel_class_raw = str(intent.metadata.get("channel_class") or "unknown")
+        try:
+            channel_class = DiscordChannelClass(channel_class_raw)
+        except Exception:
+            channel_class = DiscordChannelClass.UNKNOWN
+        message_kind_raw = intent.metadata.get("message_kind")
+        try:
+            message_kind = OperatorMessageKind(str(message_kind_raw)) if message_kind_raw else None
+        except Exception:
+            message_kind = None
+        return AdaptiveModelRoute(
+            route_id=new_id("adaptive_route"),
+            channel_class=channel_class,
+            communication_mode=communication_mode,
+            message_kind=message_kind,
+            provider=model_route.provider,
+            model=model_route.model,
+            reasoning_effort=model_route.reasoning_effort,
+            deterministic_first=self.execution_policy.deterministic_first,
+            reason=model_route.reason,
         )
 
     def _execution_class(

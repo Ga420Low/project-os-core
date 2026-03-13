@@ -76,10 +76,12 @@ class CostClass(str, Enum):
 
 class OperatorMessageKind(str, Enum):
     CHAT = "chat"
+    STATUS_REQUEST = "status_request"
     TASKING = "tasking"
     IDEA = "idea"
     DECISION = "decision"
     NOTE = "note"
+    APPROVAL = "approval"
     ARTIFACT_REF = "artifact_ref"
 
 
@@ -106,6 +108,7 @@ class ApiRunMode(str, Enum):
 
 class ApiRunStatus(str, Enum):
     PREPARED = "prepared"
+    AWAITING_GO = "awaiting_go"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -132,6 +135,43 @@ class LearningSignalKind(str, Enum):
     CAPABILITY_DRIFT = "capability_drift"
     REFRESH_NEEDED = "refresh_needed"
     DECISION_PROMOTED = "decision_promoted"
+    NOISE_DETECTED = "noise_detected"
+
+
+class CommunicationMode(str, Enum):
+    DISCUSSION = "discussion"
+    ARCHITECT = "architect"
+    BUILDER = "builder"
+    REVIEWER = "reviewer"
+    GUARDIAN = "guardian"
+    INCIDENT = "incident"
+
+
+class RunSpeechPolicy(str, Enum):
+    SILENT_UNTIL_TERMINAL_STATE = "silent_until_terminal_state"
+    PHASE_MARKERS_ONLY = "phase_markers_only"
+    DIALOGUE_RICH = "dialogue_rich"
+
+
+class OperatorAudience(str, Enum):
+    NON_DEVELOPER = "non_developer"
+    TECHNICAL = "technical"
+
+
+class DiscordChannelClass(str, Enum):
+    PILOTAGE = "pilotage"
+    RUNS_LIVE = "runs_live"
+    APPROVALS = "approvals"
+    INCIDENTS = "incidents"
+    MISSION_THREAD = "mission_thread"
+    UNKNOWN = "unknown"
+
+
+class RunContractStatus(str, Enum):
+    PREPARED = "prepared"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXECUTED = "executed"
 
 
 def to_jsonable(value: Any) -> Any:
@@ -265,6 +305,9 @@ class OperatorEnvelope:
     target_profile: str | None = None
     requested_worker: str | None = None
     requested_risk_class: ActionRiskClass | None = None
+    communication_mode: CommunicationMode = CommunicationMode.DISCUSSION
+    operator_language: str = "fr"
+    audience: OperatorAudience = OperatorAudience.NON_DEVELOPER
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
 
@@ -279,6 +322,9 @@ class OperatorReply:
     mission_run_id: str | None = None
     decision_id: str | None = None
     reply_kind: str = "ack"
+    communication_mode: CommunicationMode = CommunicationMode.DISCUSSION
+    operator_language: str = "fr"
+    audience: OperatorAudience = OperatorAudience.NON_DEVELOPER
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
 
@@ -293,6 +339,9 @@ class MissionIntent:
     target_profile: str | None = None
     requested_worker: str | None = None
     requested_risk_class: ActionRiskClass | None = None
+    communication_mode: CommunicationMode = CommunicationMode.DISCUSSION
+    operator_language: str = "fr"
+    audience: OperatorAudience = OperatorAudience.NON_DEVELOPER
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
 
@@ -374,6 +423,7 @@ class GatewayDispatchResult:
     promoted_memory_ids: list[str] = field(default_factory=list)
     memory_candidate_id: str | None = None
     promotion_decision_id: str | None = None
+    discord_run_card: dict[str, Any] | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
 
@@ -508,6 +558,11 @@ class ExecutionPolicy:
     deterministic_first: bool = True
     allow_pro_default: bool = False
     secret_mode: str = "infisical_first"
+    discord_simple_reasoning_effort: str = "medium"
+    operator_language: str = "fr"
+    operator_audience: OperatorAudience = OperatorAudience.NON_DEVELOPER
+    run_contract_required: bool = True
+    default_run_speech_policy: RunSpeechPolicy = RunSpeechPolicy.SILENT_UNTIL_TERMINAL_STATE
 
 
 @dataclass(slots=True)
@@ -518,6 +573,20 @@ class ModelRoute:
     route_class: CostClass
     allowed: bool
     reason: str
+
+
+@dataclass(slots=True)
+class AdaptiveModelRoute:
+    route_id: str
+    channel_class: DiscordChannelClass
+    communication_mode: CommunicationMode
+    message_kind: OperatorMessageKind | None
+    provider: str
+    model: str | None
+    reasoning_effort: str | None
+    deterministic_first: bool
+    reason: str
+    created_at: str = field(default_factory=utc_now_iso)
 
 
 @dataclass(slots=True)
@@ -554,6 +623,11 @@ class RoutingDecision:
     approval_gate: ApprovalGate
     budget_state: BudgetState
     route_reason: str
+    communication_mode: CommunicationMode = CommunicationMode.DISCUSSION
+    speech_policy: RunSpeechPolicy = RunSpeechPolicy.SILENT_UNTIL_TERMINAL_STATE
+    operator_language: str = "fr"
+    audience: OperatorAudience = OperatorAudience.NON_DEVELOPER
+    adaptive_model_route: AdaptiveModelRoute | None = None
     blocked_reasons: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now_iso)
 
@@ -703,6 +777,12 @@ class ApiRunRequest:
     expected_outputs: list[str] = field(default_factory=list)
     coding_lane: str = "repo_cli"
     desktop_lane: str = "future_computer_use"
+    communication_mode: CommunicationMode = CommunicationMode.BUILDER
+    speech_policy: RunSpeechPolicy = RunSpeechPolicy.SILENT_UNTIL_TERMINAL_STATE
+    operator_language: str = "fr"
+    audience: OperatorAudience = OperatorAudience.NON_DEVELOPER
+    run_contract_required: bool = True
+    contract_id: str | None = None
     status: ApiRunStatus = ApiRunStatus.PREPARED
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
@@ -752,6 +832,59 @@ class ApiRunReview:
 
 
 @dataclass(slots=True)
+class RunContract:
+    contract_id: str
+    context_pack_id: str
+    prompt_template_id: str
+    mode: ApiRunMode
+    objective: str
+    branch_name: str
+    target_profile: str | None = None
+    model: str = "gpt-5.4"
+    reasoning_effort: str = "high"
+    communication_mode: CommunicationMode = CommunicationMode.BUILDER
+    speech_policy: RunSpeechPolicy = RunSpeechPolicy.SILENT_UNTIL_TERMINAL_STATE
+    operator_language: str = "fr"
+    audience: OperatorAudience = OperatorAudience.NON_DEVELOPER
+    expected_outputs: list[str] = field(default_factory=list)
+    summary: str = ""
+    non_goals: list[str] = field(default_factory=list)
+    success_criteria: list[str] = field(default_factory=list)
+    estimated_cost_eur: float = 0.0
+    founder_decision: str | None = None
+    status: RunContractStatus = RunContractStatus.PREPARED
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class CompletionReport:
+    report_id: str
+    run_id: str
+    verdict: str
+    summary: str
+    done_items: list[str] = field(default_factory=list)
+    test_summary: list[str] = field(default_factory=list)
+    risks: list[str] = field(default_factory=list)
+    next_action: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class BlockageReport:
+    report_id: str
+    run_id: str
+    cause: str
+    impact: str
+    choices: list[str] = field(default_factory=list)
+    recommendation: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
 class LearningSignal:
     signal_id: str
     kind: LearningSignalKind
@@ -759,6 +892,15 @@ class LearningSignal:
     summary: str
     source_ids: list[str] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class NoiseSignal:
+    noise_signal_id: str
+    run_id: str
+    reason: str
+    evidence: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
 
 
@@ -814,5 +956,21 @@ class EvalCandidate:
     target_system: str
     expected_behavior: str
     source_ids: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class DiscordRunCard:
+    card_id: str
+    run_id: str | None
+    channel_class: DiscordChannelClass
+    title: str
+    status: str
+    summary: str
+    branch_name: str | None = None
+    phase: str | None = None
+    estimated_cost_eur: float = 0.0
+    verdict: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)

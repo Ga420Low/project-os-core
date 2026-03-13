@@ -81,6 +81,9 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
 - [x] Workflow hybride `Codex + API 1M + runtime local` documente
 - [x] Discipline `DECISION CONFIRMED / DECISION CHANGED` documentee
 - [x] Skills de mega prompt documentes
+- [x] Identite agent unique documentee
+- [x] Handoff memoire Codex / API / Discord documente
+- [x] Policy Discord + routing adaptatif documentes
 
 ## Lots suivants
 
@@ -99,6 +102,13 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
   - [x] Dashboard web local des runs pose
   - [x] Dashboard compact en francais avec terminal integre
   - [x] Run API reel `gpt-5.4` valide sur le poste
+- [x] Operating Model vNext
+  - [x] `AGENTS.md` racine complet
+  - [x] Policy `silence + fin` documentee
+  - [x] Contrat de run documente
+  - [x] Topologie Discord `hub + salons` documentee
+  - [x] Policy outputs operateur en francais clair documentee
+  - [x] Workflow `discussion -> contrat -> run silencieux -> rapport -> review` documente
 - [ ] Lot 4 - Gateway + Mission Router adapter `OpenClaw` live
   - [x] Entree Python generique `gateway ingest-openclaw-event`
   - [x] Adaptateur package `OpenClaw` local cree

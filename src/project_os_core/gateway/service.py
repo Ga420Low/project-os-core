@@ -4,7 +4,11 @@ from ..database import CanonicalDatabase, dump_json
 from ..memory.store import MemoryStore
 from ..models import (
     ChannelEvent,
+    CommunicationMode,
+    DiscordChannelClass,
+    DiscordRunCard,
     GatewayDispatchResult,
+    OperatorAudience,
     OperatorEnvelope,
     OperatorReply,
     PromotionAction,
@@ -49,6 +53,8 @@ class GatewayService:
         promotion = self.selective_sync.decide_promotion(candidate)
         human_artifacts = self.selective_sync.build_human_artifacts(event)
         candidate.metadata["human_artifacts"] = [to_jsonable(item) for item in human_artifacts]
+        channel_class = self._channel_class_for(event.message.channel, event.message.thread_ref.parent_thread_id)
+        communication_mode = self._communication_mode_for(candidate.classification, channel_class)
         envelope = OperatorEnvelope(
             envelope_id=new_id("envelope"),
             actor_id=event.message.actor_id,
@@ -57,9 +63,13 @@ class GatewayService:
             target_profile=target_profile,
             requested_worker=requested_worker,
             requested_risk_class=risk_class,
+            communication_mode=communication_mode,
+            operator_language="fr",
+            audience=OperatorAudience.NON_DEVELOPER,
             metadata={
                 "channel_event_id": event.event_id,
                 "message_kind": candidate.classification.value,
+                "channel_class": channel_class.value,
                 "thread_ref": to_jsonable(event.message.thread_ref),
                 "attachments": [to_jsonable(item) for item in event.message.attachments],
                 "human_artifact_ids": [item.artifact_id for item in human_artifacts],
@@ -70,6 +80,12 @@ class GatewayService:
         decision, trace, mission_run = self.router.route_intent(intent, persist=True)
         promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
         reply = self._build_reply(event, envelope.envelope_id, decision, mission_run.mission_run_id if mission_run else None)
+        run_card = self._build_run_card(
+            decision=decision,
+            channel_class=channel_class,
+            objective=envelope.objective,
+            mission_run_id=mission_run.mission_run_id if mission_run else None,
+        )
 
         self._persist_channel_event(event, candidate)
         self._persist_promotion(candidate, promotion)
@@ -84,10 +100,13 @@ class GatewayService:
             promoted_memory_ids=promoted_memory_ids,
             memory_candidate_id=candidate.candidate_id,
             promotion_decision_id=promotion.promotion_decision_id,
+            discord_run_card=to_jsonable(run_card),
             metadata={
                 "routing_trace_id": trace.trace_id,
                 "classification": candidate.classification.value,
                 "reply_kind": reply.reply_kind,
+                "channel_class": channel_class.value,
+                "communication_mode": communication_mode.value,
                 "human_artifact_ids": [item.artifact_id for item in human_artifacts],
             },
         )
@@ -133,13 +152,12 @@ class GatewayService:
         mission_run_id: str | None,
     ) -> OperatorReply:
         if decision.allowed:
-            summary = (
-                f"Mission queued on {decision.chosen_worker or 'unknown'} "
-                f"with {decision.execution_class.value} route."
-            )
+            worker = self._worker_label(decision.chosen_worker)
+            summary = f"Mission lancee sur {worker}. Mode: {decision.execution_class.value}."
             reply_kind = "ack"
         else:
-            summary = f"Mission blocked: {', '.join(decision.blocked_reasons or [decision.route_reason])}"
+            reason = self._translate_block_reason(decision.blocked_reasons or [decision.route_reason])
+            summary = f"Mission bloquee: {reason}"
             reply_kind = "blocked"
         return OperatorReply(
             reply_id=new_id("reply"),
@@ -150,8 +168,96 @@ class GatewayService:
             mission_run_id=mission_run_id,
             decision_id=decision.decision_id,
             reply_kind=reply_kind,
-            metadata={"surface": event.surface},
+            communication_mode=decision.communication_mode,
+            operator_language=decision.operator_language,
+            audience=decision.audience,
+            metadata={"surface": event.surface, "speech_policy": decision.speech_policy.value},
         )
+
+    def _build_run_card(
+        self,
+        *,
+        decision: RoutingDecision,
+        channel_class: DiscordChannelClass,
+        objective: str,
+        mission_run_id: str | None,
+    ) -> DiscordRunCard:
+        status = "en_attente" if decision.allowed else "bloque"
+        verdict = None if decision.allowed else "blocked"
+        summary = objective[:140]
+        return DiscordRunCard(
+            card_id=new_id("discord_card"),
+            run_id=mission_run_id,
+            channel_class=channel_class,
+            title="Run en cours" if decision.allowed else "Run bloque",
+            status=status,
+            summary=summary,
+            branch_name=None,
+            phase="route",
+            estimated_cost_eur=decision.budget_state.mission_estimate_eur,
+            verdict=verdict,
+            metadata={
+                "worker": decision.chosen_worker,
+                "route_reason": decision.route_reason,
+                "decision_id": decision.decision_id,
+                "model": decision.model_route.model,
+            },
+        )
+
+    def _channel_class_for(self, channel: str, parent_thread_id: str | None) -> DiscordChannelClass:
+        lowered = (channel or "").strip().lower().lstrip("#")
+        if parent_thread_id:
+            return DiscordChannelClass.MISSION_THREAD
+        if lowered == "pilotage":
+            return DiscordChannelClass.PILOTAGE
+        if lowered == "runs-live":
+            return DiscordChannelClass.RUNS_LIVE
+        if lowered == "approvals":
+            return DiscordChannelClass.APPROVALS
+        if lowered == "incidents":
+            return DiscordChannelClass.INCIDENTS
+        return DiscordChannelClass.UNKNOWN
+
+    def _communication_mode_for(self, message_kind, channel_class: DiscordChannelClass) -> CommunicationMode:
+        if channel_class is DiscordChannelClass.INCIDENTS:
+            return CommunicationMode.INCIDENT
+        if channel_class is DiscordChannelClass.APPROVALS:
+            return CommunicationMode.GUARDIAN
+        if message_kind in {None, }:
+            return CommunicationMode.DISCUSSION
+        if str(message_kind.value) in {"decision", "note", "idea"}:
+            return CommunicationMode.ARCHITECT
+        if str(message_kind.value) == "approval":
+            return CommunicationMode.GUARDIAN
+        if str(message_kind.value) == "tasking":
+            return CommunicationMode.BUILDER
+        return CommunicationMode.DISCUSSION
+
+    @staticmethod
+    def _worker_label(worker: str | None) -> str:
+        mapping = {
+            "browser": "le worker navigateur",
+            "windows": "le worker Windows",
+            "deterministic": "la lane deterministe",
+            None: "le worker cible",
+        }
+        return mapping.get(worker, worker or "le worker cible")
+
+    @staticmethod
+    def _translate_block_reason(reasons: list[str]) -> str:
+        mapping = {
+            "runtime_not_ready": "le runtime n'est pas pret",
+            "profile_missing": "le profil cible est introuvable",
+            "worker_unresolved": "aucun worker n'a ete resolu",
+            "worker_not_allowed": "le worker demande n'est pas autorise",
+            "forbidden_zone_target": "la cible touche une zone interdite",
+            "path_outside_managed_roots": "la cible est hors des racines gerees",
+            "required_secret_missing": "un secret requis manque",
+            "monthly_budget_exceeded": "le budget mensuel est depasse",
+            "exceptional_requires_founder_approval": "une validation fondateur est obligatoire",
+            "daily_budget_soft_exceeded": "le budget journalier souple est depasse",
+        }
+        return ", ".join(mapping.get(item, item) for item in reasons)
 
     def _persist_channel_event(self, event: ChannelEvent, candidate) -> None:
         self.database.execute(

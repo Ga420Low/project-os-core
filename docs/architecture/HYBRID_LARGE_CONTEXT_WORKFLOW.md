@@ -82,6 +82,26 @@ Regle dure:
 
 ne remplacent le runtime reel.
 
+## Meme agent, plusieurs surfaces
+
+Le workflow hybride doit garder une identite agent unique.
+
+Cela veut dire:
+
+- meme charte mentale
+- meme memoire canonique
+- memes decisions de reference
+- adaptation par canal seulement sur le format et le cout cognitif
+
+References:
+
+- `docs/architecture/AGENT_IDENTITY_AND_CHANNEL_MODEL.md`
+- `docs/architecture/HANDOFF_MEMORY_POLICY.md`
+- `docs/integrations/DISCORD_OPERATING_MODEL.md`
+- `docs/architecture/RUN_COMMUNICATION_POLICY.md`
+- `docs/architecture/FRENCH_OPERATOR_OUTPUT_POLICY.md`
+- `docs/integrations/API_RUN_CONTRACT.md`
+
 ## Workflow officiel
 
 ### Phase A - Direction
@@ -131,7 +151,19 @@ Le mega prompt doit contenir:
 - format de sortie obligatoire
 - skill tags du run
 
-### Phase D - Run API
+### Phase D - Contrat de run
+
+Avant un run reel:
+
+- produire un contrat de run lisible
+- le rendre en francais simple
+- attendre `go`, `go avec correction` ou `stop`
+
+Sans contrat approuve:
+
+- pas de run reel
+
+### Phase E - Run API
 
 L'API travaille sur:
 
@@ -142,7 +174,13 @@ L'API travaille sur:
 
 Le run API doit produire une sortie structuree.
 
-### Phase E - Inspection
+Pendant les gros runs de code:
+
+- silence operationnel
+- pas de narration intermediaire
+- la visibilite passe par le dashboard, le terminal et les cartes compactes
+
+### Phase F - Inspection
 
 On revient dans `Codex`.
 
@@ -157,7 +195,7 @@ On revient dans `Codex`.
 - detecter les signes de boucle, d'appauvrissement ou de baisse de capacite
 - forcer un `refresh` de contexte si la sortie perd en qualite ou recycle les memes idees
 
-### Phase F - Integration
+### Phase G - Integration
 
 Seulement apres inspection:
 
@@ -229,6 +267,18 @@ Sortie attendue:
 Regle:
 
 - un `generate-patch` ne saute jamais la phase d'inspection locale
+
+## Regle de communication
+
+Les gros runs de code ne doivent pas parler pour exister.
+
+Le texte naturel est reserve:
+
+- au contrat de run
+- au blocage reel
+- au rapport final
+
+Tout le reste doit passer par des signaux compacts et visibles.
 
 ## Skills de mega prompt
 
@@ -359,3 +409,20 @@ Reference mentale:
 
 - on construit `Jarvis`
 - pas un assemblage de scripts opportunistes
+
+## Routing adaptatif
+
+Le workflow futurproof doit aussi router intelligemment le niveau de raisonnement.
+
+Policy cible:
+
+- banal / Discord simple -> `gpt-5.4` avec `reasoning.effort=medium` si le deterministic first ne suffit pas
+- standard -> `gpt-5.4 high`
+- critique / ambigu -> `gpt-5.4 xhigh`
+- exceptionnel -> `gpt-5.4-pro` avec approval
+
+Le but est de garder:
+
+- qualite
+- continuité d'identite
+- maitrise du budget
