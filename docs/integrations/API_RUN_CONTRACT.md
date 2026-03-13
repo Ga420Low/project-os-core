@@ -39,6 +39,32 @@ Sans validation:
 
 - pas de run reel
 
+Si le fondateur dit explicitement dans la conversation courante de lancer l'API:
+
+- `Codex` peut preparer le contrat
+- `Codex` peut enregistrer le `go` correspondant
+- `Codex` peut lancer le run sans demander une deuxieme action manuelle
+
+Ce `go` doit rester trace dans les notes d'approbation du contrat.
+
+## Contradiction guard
+
+Un run API a le droit de contredire le brief si celui-ci est:
+
+- contradictoire
+- dangereux
+- sous-specifie
+- hors scope
+- en conflit avec la verite repo/runtime
+
+Dans ce cas:
+
+- il ne doit pas deviner et continuer
+- il doit passer en `clarification_required`
+- il doit produire une question bloquante minimale
+- il doit recommander l'amendement du contrat
+- il ne doit pas presenter un patch final comme si le lot etait valide
+
 ## Vie du contrat
 
 Statuts:
@@ -56,7 +82,18 @@ Une fois le contrat approuve:
 - l'UI et les cartes prennent le relais
 - le texte naturel revient seulement:
   - en cas de blocage reel
+  - en cas de clarification requise
   - a la fin avec le rapport final
+
+## Reprise apres clarification
+
+Le modele retenu est:
+
+- contrat amende
+- nouveau `go` ou `go avec correction`
+- nouvelle execution
+
+La reprise libre sans nouvelle validation n'est pas autorisee.
 
 ## Visibilite obligatoire
 

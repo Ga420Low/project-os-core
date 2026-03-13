@@ -10,6 +10,7 @@ from .embedding import EmbeddingStrategy, choose_embedding_strategy
 from .gateway.service import GatewayService
 from .learning.service import LearningService
 from .memory.store import MemoryStore
+from .memory.tiering import TierManagerService
 from .observability import StructuredLogger
 from .orchestration.graph import CanonicalMissionGraph
 from .paths import PathPolicy, ProjectPaths, build_project_paths, ensure_project_roots
@@ -29,6 +30,7 @@ class AppServices:
     database: CanonicalDatabase
     journal: LocalJournal
     memory: MemoryStore
+    tier_manager: TierManagerService
     learning: LearningService
     runtime: RuntimeStore
     router: MissionRouter
@@ -55,6 +57,15 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
     journal = LocalJournal(database, paths.journal_file_path)
     logger = StructuredLogger(paths, path_policy)
     memory = MemoryStore(database, paths, path_policy, embedding_strategy, secret_resolver)
+    tier_manager = TierManagerService(
+        config=config.tier_manager_config,
+        database=database,
+        memory=memory,
+        paths=paths,
+        path_policy=path_policy,
+        journal=journal,
+    )
+    memory.attach_tier_manager(tier_manager)
     learning = LearningService(
         database=database,
         journal=journal,
@@ -106,6 +117,7 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         database=database,
         journal=journal,
         memory=memory,
+        tier_manager=tier_manager,
         learning=learning,
         runtime=runtime,
         router=router,

@@ -4,13 +4,14 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from project_os_core.api_runs.dashboard import build_dashboard_payload, render_dashboard_html
-from project_os_core.models import ApiRunMode, ApiRunReviewVerdict
+from project_os_core.models import ApiRunMode, ApiRunReviewVerdict, ApiRunStatus, OperatorDeliveryStatus, RunContractStatus
 from project_os_core.services import build_app_services
 
 
@@ -72,11 +73,25 @@ def _prepare_approved_contract(services, *, mode: ApiRunMode, objective: str, br
         context_pack_id=context_pack.context_pack_id,
         prompt_template_id=prompt.prompt_template_id,
     )
+    contract.metadata["allow_branch_mismatch"] = True
+    contract.metadata["allow_dirty_worktree"] = True
+    services.api_runs._persist_run_contract(contract)
     services.api_runs.approve_run_contract(contract_id=contract.contract_id, founder_decision="go")
-    return contract
+    return services.api_runs.get_run_contract(contract.contract_id)
 
 
 class ApiRunServiceTests(unittest.TestCase):
+    def test_templates_require_contradiction_guard_for_all_modes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                for mode in ApiRunMode:
+                    template = services.api_runs._template_for_mode(mode)
+                    self.assertIn("clarification_needed", template["output_contract"])
+                    self.assertTrue(any("Challenge the brief if needed" in item for item in template["instructions"]))
+            finally:
+                services.close()
+
     def test_dashboard_html_emits_operator_beacon_script(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = _build_services(Path(tmp))
@@ -95,6 +110,7 @@ class ApiRunServiceTests(unittest.TestCase):
                 services.config.api_dashboard_config.auto_start = True
                 services.config.api_dashboard_config.auto_open_browser = True
                 services.config.api_dashboard_config.require_visible_ui = True
+                services.config.api_dashboard_config.founder_approval_grace_seconds = 0
                 services.api_runs.dashboard_config = services.config.api_dashboard_config
                 contract = _prepare_approved_contract(
                     services,
@@ -109,6 +125,434 @@ class ApiRunServiceTests(unittest.TestCase):
                 ):
                     with self.assertRaisesRegex(RuntimeError, "control room locale"):
                         services.api_runs.execute_run(contract_id=contract.contract_id)
+            finally:
+                services.close()
+
+    def test_execute_run_uses_recent_founder_approval_fallback_when_browser_beacon_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                services.config.api_dashboard_config.auto_start = True
+                services.config.api_dashboard_config.auto_open_browser = True
+                services.config.api_dashboard_config.require_visible_ui = True
+                services.api_runs.dashboard_config = services.config.api_dashboard_config
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier le fallback d'approbation fondateur.",
+                    branch_name="codex/test-founder-fallback",
+                    skill_tags=["audit", "dashboard"],
+                )
+                with patch(
+                    "project_os_core.api_runs.dashboard.ensure_dashboard_running",
+                    return_value={"ready": False, "ui_visible": False, "reason": "browser_beacon_missing", "url": "http://127.0.0.1:8765/"},
+                ):
+                    payload = services.api_runs.execute_run(
+                        contract_id=contract.contract_id,
+                        response_runner=lambda request, prompt, context: {
+                            "model": "gpt-5.4",
+                            "output_text": json.dumps(
+                                {
+                                    "decision": "Fallback approuve.",
+                                    "why": "Le go fondateur frais reste une preuve locale plus robuste qu'un simple launch navigateur.",
+                                    "alternatives": ["Refuser tout run sans beacon navigateur."],
+                                    "files_to_change": ["src/project_os_core/api_runs/service.py"],
+                                    "interfaces": ["RunContract"],
+                                    "patch_outline": ["Relier le contrat au guard."],
+                                    "tests": ["Fallback d'approbation fraiche."],
+                                    "risks": ["Fallback trop large si non borne dans le temps."],
+                                    "acceptance_criteria": ["Le run approuve localement continue meme si le navigateur ne repond pas."],
+                                    "open_questions": [],
+                                }
+                            ),
+                            "usage": {"input_tokens": 10, "output_tokens": 10},
+                        },
+                )
+                self.assertEqual(payload["result"].status.value, "completed")
+                self.assertEqual(payload["request"].metadata["operator_dashboard_reason"], "founder_approval_fallback")
+                self.assertTrue(payload["request"].metadata["operator_dashboard_ready"])
+                snapshot = services.api_runs.monitor_snapshot(limit=1)
+                self.assertEqual(snapshot["current_run"]["operator_guard_reason"], "founder_fallback")
+                terminal = services.api_runs.render_terminal_dashboard(limit=1)
+                self.assertIn("Garde operateur: founder_fallback", terminal)
+            finally:
+                services.close()
+
+    def test_execute_run_keeps_fail_closed_when_founder_approval_is_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                services.config.api_dashboard_config.auto_start = True
+                services.config.api_dashboard_config.auto_open_browser = True
+                services.config.api_dashboard_config.require_visible_ui = True
+                services.config.api_dashboard_config.founder_approval_grace_seconds = 60
+                services.api_runs.dashboard_config = services.config.api_dashboard_config
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier que le fallback ne dure pas trop longtemps.",
+                    branch_name="codex/test-stale-founder-fallback",
+                    skill_tags=["audit", "dashboard"],
+                )
+                stale_timestamp = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+                contract.founder_decision_at = stale_timestamp
+                contract.metadata["founder_decision_at"] = datetime.now(timezone.utc).isoformat()
+                contract.updated_at = stale_timestamp
+                contract.status = RunContractStatus.APPROVED
+                services.api_runs._persist_run_contract(contract)
+                with patch(
+                    "project_os_core.api_runs.dashboard.ensure_dashboard_running",
+                    return_value={"ready": False, "ui_visible": False, "reason": "browser_beacon_missing", "url": "http://127.0.0.1:8765/"},
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "browser_beacon_missing"):
+                        services.api_runs.execute_run(contract_id=contract.contract_id)
+            finally:
+                services.close()
+
+    def test_execute_run_ignores_fresh_metadata_timestamp_when_founder_approval_column_is_stale(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                services.config.api_dashboard_config.auto_start = True
+                services.config.api_dashboard_config.auto_open_browser = True
+                services.config.api_dashboard_config.require_visible_ui = True
+                services.config.api_dashboard_config.founder_approval_grace_seconds = 60
+                services.api_runs.dashboard_config = services.config.api_dashboard_config
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier que le fallback lit la colonne canonique.",
+                    branch_name="codex/test-founder-approval-column",
+                    skill_tags=["audit", "dashboard"],
+                )
+                stale_timestamp = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
+                contract.status = RunContractStatus.APPROVED
+                contract.founder_decision = "go"
+                contract.founder_decision_at = stale_timestamp
+                contract.metadata["founder_decision_at"] = datetime.now(timezone.utc).isoformat()
+                contract.updated_at = stale_timestamp
+                services.api_runs._persist_run_contract(contract)
+                with patch(
+                    "project_os_core.api_runs.dashboard.ensure_dashboard_running",
+                    return_value={"ready": False, "ui_visible": False, "reason": "browser_beacon_missing", "url": "http://127.0.0.1:8765/"},
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "browser_beacon_missing"):
+                        services.api_runs.execute_run(contract_id=contract.contract_id)
+            finally:
+                services.close()
+
+    def test_execute_run_moves_to_clarification_required_and_persists_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.GENERATE_PATCH,
+                    objective="Generer un patch sur un brief contradictoire.",
+                    branch_name="codex/test-clarification-required",
+                    skill_tags=["generate_patch", "guard"],
+                )
+                payload = services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
+                    response_runner=lambda request, prompt, context: {
+                        "model": "gpt-5.4",
+                        "output_text": json.dumps(
+                            {
+                                "decision": "Je m'arrete avant de proposer un patch final.",
+                                "why": "Le brief demande une implementation incompatible avec le repo actuel.",
+                                "alternatives": ["Clarifier le lot exact avant de produire le patch."],
+                                "files_to_change": [],
+                                "interfaces": [],
+                                "patch_outline": [],
+                                "tests": [],
+                                "risks": ["Continuer maintenant ferait produire un patch hors cadre."],
+                                "acceptance_criteria": ["Le contrat doit etre amende avant toute reprise."],
+                                "open_questions": [],
+                                "clarification_needed": True,
+                                "blocking_reason": "Le lot vise contredit la verite repo/runtime.",
+                                "recommended_contract_change": "Amender l'objectif pour cibler seulement la TUI live sans toucher au moteur d'execution.",
+                                "question_for_founder": "Veux-tu limiter ce lot a la supervision terminal/web sans modifier la logique d'execution ?",
+                            }
+                        ),
+                        "usage": {"input_tokens": 900, "output_tokens": 300},
+                    },
+                )
+                self.assertEqual(payload["result"].status, ApiRunStatus.CLARIFICATION_REQUIRED)
+                request = services.api_runs.get_run_request(payload["request"].run_request_id)
+                self.assertEqual(request.status, ApiRunStatus.CLARIFICATION_REQUIRED)
+                current_contract = services.api_runs.get_run_contract(contract.contract_id)
+                self.assertEqual(current_contract.status, RunContractStatus.PREPARED)
+                self.assertIsNone(current_contract.founder_decision)
+                self.assertTrue(current_contract.metadata["clarification_pending"])
+                snapshot = services.api_runs.monitor_snapshot(limit=1)
+                self.assertEqual(snapshot["current_run"]["status"], "clarification_required")
+                self.assertEqual(snapshot["current_run"]["clarification_reason"], "Le lot vise contredit la verite repo/runtime.")
+                self.assertTrue(snapshot["current_run"]["clarification_requires_reapproval"])
+                artifacts = services.api_runs.show_artifacts(run_id=payload["result"].run_id)
+                artifact_kinds = {item["artifact_kind"] for item in artifacts["artifacts"]}
+                self.assertIn("clarification", artifact_kinds)
+                self.assertNotIn("rapport_final", artifact_kinds)
+            finally:
+                services.close()
+
+    def test_repo_preflight_blocks_before_model_call_and_creates_operator_delivery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                context_pack = services.api_runs.build_context_pack(
+                    mode=ApiRunMode.GENERATE_PATCH,
+                    objective="Verifier le preflight dur avant depense API.",
+                    branch_name="codex/preflight-mismatch",
+                    skill_tags=["generate_patch", "guard"],
+                )
+                prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
+                contract = services.api_runs.create_run_contract(
+                    context_pack_id=context_pack.context_pack_id,
+                    prompt_template_id=prompt.prompt_template_id,
+                )
+                services.api_runs.approve_run_contract(contract_id=contract.contract_id, founder_decision="go")
+
+                def _runner(*_args, **_kwargs):
+                    raise AssertionError("response_runner should not be called when repo preflight blocks the run")
+
+                payload = services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
+                    response_runner=_runner,
+                )
+
+                self.assertEqual(payload["result"].status, ApiRunStatus.CLARIFICATION_REQUIRED)
+                deliveries = services.api_runs.list_operator_deliveries(limit=10)["deliveries"]
+                self.assertEqual(len(deliveries), 1)
+                self.assertEqual(deliveries[0]["event"]["kind"], "clarification_required")
+                self.assertEqual(deliveries[0]["channel_hint"], "approvals")
+                self.assertEqual(deliveries[0]["status"], "pending")
+            finally:
+                services.close()
+
+    def test_completed_run_enqueues_operator_deliveries_and_ack_updates_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier l'outbox operateur.",
+                    branch_name="codex/test-operator-outbox",
+                    skill_tags=["audit", "observability"],
+                )
+                payload = services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
+                    response_runner=lambda request, prompt, context: {
+                        "model": "gpt-5.4",
+                        "output_text": json.dumps(
+                            {
+                                "decision": "Le run est pret pour revue.",
+                                "why": "Le lot a produit un resultat exploitable.",
+                                "alternatives": ["Retarder la publication operateur."],
+                                "files_to_change": ["src/project_os_core/api_runs/service.py"],
+                                "interfaces": ["RunLifecycleEvent"],
+                                "patch_outline": ["Persister l'event.", "Publier ensuite via OpenClaw."],
+                                "tests": ["Outbox operateur."],
+                                "risks": ["Livraison canal en erreur."],
+                                "acceptance_criteria": ["Le run genere un event started puis completed."],
+                                "open_questions": [],
+                            }
+                        ),
+                        "usage": {"input_tokens": 50, "output_tokens": 40},
+                    },
+                )
+                deliveries = services.api_runs.list_operator_deliveries(limit=10)["deliveries"]
+                self.assertGreaterEqual(len(deliveries), 2)
+                latest = deliveries[-1]
+                self.assertEqual(latest["event"]["run_id"], payload["result"].run_id)
+                self.assertEqual(latest["status"], "pending")
+                ack = services.api_runs.mark_operator_delivery(
+                    delivery_id=latest["delivery_id"],
+                    status=OperatorDeliveryStatus.DELIVERED,
+                    metadata={"target": "channel:test"},
+                )
+                self.assertEqual(ack["status"], "delivered")
+                snapshot = services.api_runs.monitor_snapshot(limit=3)
+                self.assertIn("delivered", snapshot["operator_delivery_counts"])
+            finally:
+                services.close()
+
+    def test_operator_delivery_pending_ack_uses_exponential_backoff_and_due_filter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                services.config.execution_policy.operator_delivery_retry_base_seconds = 1
+                services.config.execution_policy.operator_delivery_retry_max_seconds = 8
+                services.config.execution_policy.operator_delivery_max_attempts = 3
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier le retry backoff operateur.",
+                    branch_name="codex/test-operator-backoff",
+                    skill_tags=["audit", "observability"],
+                )
+                services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
+                    response_runner=lambda request, prompt, context: {
+                        "model": "gpt-5.4",
+                        "output_text": json.dumps(
+                            {
+                                "decision": "Le run est pret pour revue.",
+                                "why": "Le lot a produit un resultat exploitable.",
+                                "alternatives": [],
+                                "files_to_change": [],
+                                "interfaces": [],
+                                "patch_outline": [],
+                                "tests": [],
+                                "risks": [],
+                                "acceptance_criteria": [],
+                                "open_questions": [],
+                            }
+                        ),
+                        "usage": {"input_tokens": 30, "output_tokens": 20},
+                    },
+                )
+                deliveries = services.api_runs.list_operator_deliveries(limit=10)["deliveries"]
+                delivery = next(item for item in deliveries if item["event"]["kind"] == "run_completed")
+                ack = services.api_runs.mark_operator_delivery(
+                    delivery_id=delivery["delivery_id"],
+                    status=OperatorDeliveryStatus.PENDING,
+                    error="discord_down",
+                )
+                self.assertEqual(ack["status"], "pending")
+                self.assertIsNotNone(ack["next_attempt_at"])
+                due_ids = {
+                    item["delivery_id"] for item in services.api_runs.list_operator_deliveries(limit=10)["deliveries"]
+                }
+                self.assertNotIn(delivery["delivery_id"], due_ids)
+                for _ in range(2):
+                    services.database.execute(
+                        "UPDATE api_run_operator_deliveries SET next_attempt_at = ? WHERE delivery_id = ?",
+                        ("2000-01-01T00:00:00+00:00", delivery["delivery_id"]),
+                    )
+                    ack = services.api_runs.mark_operator_delivery(
+                        delivery_id=delivery["delivery_id"],
+                        status=OperatorDeliveryStatus.PENDING,
+                        error="discord_still_down",
+                    )
+                self.assertEqual(ack["status"], "failed")
+            finally:
+                services.close()
+
+    def test_operator_delivery_backlog_prunes_oldest_runs_live_when_limit_is_hit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                services.config.execution_policy.operator_delivery_max_pending = 1
+                for index in range(2):
+                    contract = _prepare_approved_contract(
+                        services,
+                        mode=ApiRunMode.AUDIT,
+                        objective=f"Verifier backlog operateur {index}.",
+                        branch_name=f"codex/test-operator-backlog-{index}",
+                        skill_tags=["audit", "observability"],
+                    )
+                    services.api_runs.execute_run(
+                        contract_id=contract.contract_id,
+                        response_runner=lambda request, prompt, context, i=index: {
+                            "model": "gpt-5.4",
+                            "output_text": json.dumps(
+                                {
+                                    "decision": f"Run {i} termine.",
+                                    "why": "Le lot termine normalement.",
+                                    "alternatives": [],
+                                    "files_to_change": [],
+                                    "interfaces": [],
+                                    "patch_outline": [],
+                                    "tests": [],
+                                    "risks": [],
+                                    "acceptance_criteria": [],
+                                    "open_questions": [],
+                                }
+                            ),
+                            "usage": {"input_tokens": 20, "output_tokens": 20},
+                        },
+                    )
+                snapshot = services.api_runs.monitor_snapshot(limit=5)
+                self.assertLessEqual(snapshot["operator_delivery_counts"].get("pending", 0), 1)
+                self.assertGreaterEqual(snapshot["operator_delivery_counts"].get("skipped", 0), 1)
+            finally:
+                services.close()
+
+    def test_amended_contract_requires_new_go_before_resume(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.DESIGN,
+                    objective="Design un lot ambigu.",
+                    branch_name="codex/test-clarification-resume",
+                    skill_tags=["design", "guard"],
+                )
+                payload = services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
+                    response_runner=lambda request, prompt, context: {
+                        "model": "gpt-5.4",
+                        "output_text": json.dumps(
+                            {
+                                "decision": "Clarification requise.",
+                                "why": "Le lot melange design systeme et patch final.",
+                                "alternatives": ["Se limiter au design."],
+                                "files_to_change": [],
+                                "interfaces": [],
+                                "patch_outline": [],
+                                "tests": [],
+                                "risks": ["Continuer sans clarifier melangerait deux lots."],
+                                "acceptance_criteria": ["Un seul lot doit etre vise."],
+                                "open_questions": [],
+                                "clarification_needed": True,
+                                "blocking_reason": "Le brief combine deux intentions incompatibles.",
+                                "recommended_contract_change": "Amender l'objectif pour ne garder que le design du lot.",
+                                "question_for_founder": "Confirme que tu veux seulement un design et pas un patch dans ce run.",
+                            }
+                        ),
+                        "usage": {"input_tokens": 700, "output_tokens": 200},
+                    },
+                )
+                amended = services.api_runs.amend_run_contract(
+                    contract_id=contract.contract_id,
+                    objective="Design seulement le lot de contradiction guard.",
+                    acceptance_criteria=["Le run produit uniquement un design implementable."],
+                    metadata={"clarification_answer": "Design seulement."},
+                )
+                self.assertEqual(amended.status, RunContractStatus.PREPARED)
+                with self.assertRaisesRegex(RuntimeError, "doit etre approuve"):
+                    services.api_runs.execute_run(contract_id=contract.contract_id)
+                services.api_runs.approve_run_contract(contract_id=contract.contract_id, founder_decision="go")
+                resumed = services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
+                    response_runner=lambda request, prompt, context: {
+                        "model": "gpt-5.4",
+                        "output_text": json.dumps(
+                            {
+                                "decision": "Le lot reste limite au design.",
+                                "why": "Le contrat amende retire le patch final et cible seulement le design.",
+                                "alternatives": ["Ajouter un patch dans un second run."],
+                                "files_to_change": ["docs/integrations/API_RUN_CONTRACT.md"],
+                                "interfaces": ["ClarificationReport"],
+                                "patch_outline": ["Documenter la regle.", "Implementer ensuite."],
+                                "tests": ["Verifier le workflow de clarification."],
+                                "risks": ["Le lot suivant devra encore implementer le patch."],
+                                "acceptance_criteria": ["Le run reste borne au design du guard."],
+                                "open_questions": [],
+                                "clarification_needed": False,
+                                "blocking_reason": "",
+                                "recommended_contract_change": "",
+                                "question_for_founder": "",
+                            }
+                        ),
+                        "usage": {"input_tokens": 500, "output_tokens": 180},
+                    },
+                )
+                self.assertEqual(resumed["result"].status, ApiRunStatus.COMPLETED)
+                final_contract = services.api_runs.get_run_contract(contract.contract_id)
+                self.assertEqual(final_contract.metadata["approval_round"], 2)
             finally:
                 services.close()
 

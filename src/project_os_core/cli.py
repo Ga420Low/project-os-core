@@ -23,6 +23,7 @@ from .models import (
     MemoryType,
     MissionIntent,
     OperatorAttachment,
+    OperatorDeliveryStatus,
     OperatorEnvelope,
     OperatorMessage,
     RetrievalContext,
@@ -82,6 +83,10 @@ def main(argv: list[str] | None = None) -> int:
     memory_search.add_argument("--limit", type=int, default=5)
 
     memory_sub.add_parser("reindex")
+    memory_sub.add_parser("tier-report")
+    memory_compact = memory_sub.add_parser("compact-tiers")
+    memory_compact.add_argument("--dry-run", action="store_true")
+    memory_compact.add_argument("--trigger", default="manual")
 
     runtime_parser = subparsers.add_parser("runtime")
     runtime_sub = runtime_parser.add_subparsers(dest="runtime_command", required=True)
@@ -185,6 +190,15 @@ def main(argv: list[str] | None = None) -> int:
     api_contract_approve.add_argument("--decision", choices=["go", "go_avec_correction", "stop"], required=True)
     api_contract_approve.add_argument("--notes")
 
+    api_contract_amend = api_runs_sub.add_parser("amend-contract")
+    api_contract_amend.add_argument("--contract-id", required=True)
+    api_contract_amend.add_argument("--objective")
+    api_contract_amend.add_argument("--branch-name")
+    api_contract_amend.add_argument("--target-profile")
+    api_contract_amend.add_argument("--constraint", action="append", default=[])
+    api_contract_amend.add_argument("--acceptance", action="append", default=[])
+    api_contract_amend.add_argument("--metadata")
+
     api_contract_show = api_runs_sub.add_parser("show-contract")
     api_contract_show.add_argument("--contract-id", required=True)
 
@@ -208,6 +222,16 @@ def main(argv: list[str] | None = None) -> int:
 
     api_show = api_runs_sub.add_parser("show-artifacts")
     api_show.add_argument("--run-id", required=True)
+
+    api_pull_deliveries = api_runs_sub.add_parser("pull-operator-deliveries")
+    api_pull_deliveries.add_argument("--status", choices=[item.value for item in OperatorDeliveryStatus], default=OperatorDeliveryStatus.PENDING.value)
+    api_pull_deliveries.add_argument("--limit", type=int, default=10)
+
+    api_ack_delivery = api_runs_sub.add_parser("ack-operator-delivery")
+    api_ack_delivery.add_argument("--delivery-id", required=True)
+    api_ack_delivery.add_argument("--status", choices=[item.value for item in OperatorDeliveryStatus], required=True)
+    api_ack_delivery.add_argument("--error")
+    api_ack_delivery.add_argument("--metadata")
 
     api_monitor = api_runs_sub.add_parser("monitor")
     api_monitor.add_argument("--limit", type=int, default=5)
@@ -303,6 +327,22 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
             if args.memory_command == "reindex":
                 print(json.dumps(services.memory.reindex(), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.memory_command == "tier-report":
+                print(json.dumps(services.tier_manager.analyze(trigger="cli_report"), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.memory_command == "compact-tiers":
+                print(
+                    json.dumps(
+                        services.tier_manager.compact(
+                            dry_run=bool(args.dry_run),
+                            trigger=str(args.trigger),
+                        ),
+                        indent=2,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    )
+                )
                 return 0
 
         if args.command == "runtime":
@@ -473,6 +513,18 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(json.dumps(to_jsonable(contract), indent=2, ensure_ascii=True, sort_keys=True))
                 return 0
+            if args.api_runs_command == "amend-contract":
+                contract = services.api_runs.amend_run_contract(
+                    contract_id=args.contract_id,
+                    objective=args.objective,
+                    branch_name=args.branch_name,
+                    target_profile=args.target_profile,
+                    constraints=args.constraint,
+                    acceptance_criteria=args.acceptance,
+                    metadata=_json_arg(args.metadata),
+                )
+                print(json.dumps(to_jsonable(contract), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
             if args.api_runs_command == "show-contract":
                 contract = services.api_runs.get_run_contract(args.contract_id)
                 print(json.dumps(to_jsonable(contract), indent=2, ensure_ascii=True, sort_keys=True))
@@ -513,6 +565,22 @@ def main(argv: list[str] | None = None) -> int:
                 payload = services.api_runs.show_artifacts(run_id=args.run_id)
                 print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
                 return 0
+            if args.api_runs_command == "pull-operator-deliveries":
+                payload = services.api_runs.list_operator_deliveries(
+                    status=OperatorDeliveryStatus(args.status) if args.status else None,
+                    limit=args.limit,
+                )
+                print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.api_runs_command == "ack-operator-delivery":
+                payload = services.api_runs.mark_operator_delivery(
+                    delivery_id=args.delivery_id,
+                    status=OperatorDeliveryStatus(args.status),
+                    error=args.error,
+                    metadata=_json_arg(args.metadata),
+                )
+                print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
             if args.api_runs_command == "monitor":
                 if args.watch:
                     return _watch_api_runs_monitor(services, interval=args.interval, iterations=args.iterations, limit=args.limit)
@@ -526,6 +594,7 @@ def main(argv: list[str] | None = None) -> int:
                     limit=args.limit,
                     refresh_seconds=args.refresh_seconds,
                     open_browser=bool(args.open_browser),
+                    visibility_state_path=services.paths.api_runs_root / "operator_visibility.json",
                 )
 
         if args.command == "learning":
@@ -735,7 +804,7 @@ def _watch_api_runs_monitor(services, *, interval: float, iterations: int, limit
     count = 0
     try:
         while True:
-            os.system("cls")
+            os.system("cls" if os.name == "nt" else "clear")
             print(services.api_runs.render_terminal_dashboard(limit=limit))
             count += 1
             if iterations and count >= iterations:

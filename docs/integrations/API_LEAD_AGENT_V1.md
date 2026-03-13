@@ -81,12 +81,51 @@ Validation reelle deja faite :
 - mini run API reel `audit`
 - mise a jour du budget et des artefacts en temps reel
 
+## Contrat de surface humaine
+
+Le runtime stocke des preuves sous `runtime/api_runs/`.
+
+Mais:
+
+- ces fichiers ne sont pas une interface humaine
+- un humain ne doit pas devoir lire `raw_results` ou `structured_results` pour suivre un run
+
+Le minimum produit attendu pour un gros run est:
+
+1. une surface de supervision locale
+2. une surface de conversation humaine
+3. une remontee claire des blocages et des verdicts
+
+En cible:
+
+- dashboard local = preuve visuelle que le run vit vraiment
+- terminal live = supervision robuste
+- `Discord` = canal humain principal pour discuter, arbitrer et recevoir les clarifications ou rapports finaux
+
+Si `Discord` n'est pas encore completement branche pour cette boucle:
+
+- c'est un manque de workflow
+- pas un comportement normal a accepter
+
 ## Politique de revue
 
 - aucun run n'ecrit directement dans `main`
 - aucun run ne contourne le `Mission Router`
 - `Codex` garde le role d'inspection locale
 - les runs acceptes, rejetes ou a revoir alimentent `learning`
+
+## Contradiction guard
+
+Les quatre modes `audit`, `design`, `patch_plan` et `generate_patch` peuvent stopper pour clarification.
+
+Workflow cible:
+
+1. le run detecte une ambiguite ou contradiction majeure
+2. il passe en `clarification_required`
+3. il produit un rapport de clarification structure
+4. le contrat courant est amende
+5. un nouveau `go` est enregistre
+6. le run repart sur le contrat amende
 
 ## Politique d'apprentissage
 

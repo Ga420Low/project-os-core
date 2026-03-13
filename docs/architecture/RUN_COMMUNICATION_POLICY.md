@@ -7,6 +7,12 @@ Le principe central est simple:
 - le texte naturel doit creer de la valeur
 - sinon il doit disparaitre
 
+Regle produit complementaire:
+
+- les artefacts runtime sont des preuves
+- ils ne sont pas une interface humaine suffisante
+- un humain ne doit pas avoir besoin d'ouvrir un JSON pour comprendre la vie d'un run
+
 ## Objectif
 
 Eviter:
@@ -77,7 +83,24 @@ Ordre obligatoire:
 1. contrat de run
 2. validation humaine
 3. silence operationnel
-4. rapport final
+4. visibilite humaine pendant le run via une vraie surface
+5. rapport final
+
+Visibilite humaine minimale obligatoire:
+
+- message de demarrage compact dans la surface humaine retenue
+- message de blocage ou `clarification_required` avec question claire
+- message final avec verdict et prochaine action
+
+Si `Discord` est configure:
+
+- c'est la surface de conversation prioritaire
+- un gros run ne doit pas exister uniquement dans le dashboard ou dans les fichiers runtime
+
+Si `Discord` n'est pas encore configure:
+
+- dashboard local + terminal live sont acceptables comme fallback technique
+- mais le workflow reste considere incomplet cote experience operateur
 
 ### Blocage reel
 
@@ -93,6 +116,18 @@ Style:
 - court
 - non technique si inutile
 - sans roman
+
+### Clarification requise
+
+Si le run detecte un brief incoherent ou dangereux:
+
+- il peut contredire le brief
+- il doit s'arreter en `clarification_required`
+- il doit poser une seule question bloquante si possible
+- il doit demander un amendement du contrat puis un nouveau `go`
+
+Ce cas n'est pas un crash.
+Ce n'est pas non plus une autorisation a improvise.
 
 ### Rapport final
 
@@ -111,11 +146,19 @@ Le dashboard et les cartes Discord remplacent la narration.
 
 Regle dure supplementaire:
 
+- les fichiers sous `runtime/api_runs/` ne comptent pas comme communication humaine
+- ils servent de preuves, pas de canal operateur
+- une clarification ou un verdict final doit etre remonte dans une surface que l'humain lit vraiment
+
+Regle dure supplementaire:
+
 - un gros run API ne doit pas partir sans control room locale sur le PC
 - le dashboard local doit etre lance automatiquement avant l'execution
 - l'interface doit s'ouvrir localement pour que l'operateur puisse verifier visuellement que le run vit vraiment
 - l'ouverture doit etre prouvee par un signal live du navigateur vers le dashboard, pas seulement par le lancement silencieux d'un serveur
-- si le dashboard ne peut pas etre lance, le run doit echouer ferme
+- si le navigateur local refuse le beacon mais que le contrat a ete approuve localement par le fondateur il y a peu, le run peut continuer en `founder_approval_fallback`
+- ce fallback doit rester borne dans le temps, journalise, et ne remplace pas la tentative d'ouverture locale du dashboard
+- sans beacon live recent ni approbation fondatrice fraiche, le run doit echouer ferme
 
 Ils doivent montrer:
 

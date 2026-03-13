@@ -33,6 +33,43 @@ py D:/ProjectOS/project-os-core/scripts/project_os_entry.py --config-path <...> 
 - python command: `py` on Windows
 - enabled channels: `discord`, `webchat`, `internal`
 - ack replies: disabled by default
+- operator delivery polling: enabled only if `discordAccountId` and `operatorTargets` are configured
+
+## Operator delivery loop
+
+The adapter can also relay `Project OS` operator lifecycle events to Discord.
+
+This keeps the architecture split clean:
+
+- `Project OS` emits canonical lifecycle events and keeps the outbox
+- `OpenClaw` reads pending deliveries and sends them to Discord
+
+Required plugin config to enable this loop:
+
+- `discordAccountId`: Discord account configured in OpenClaw
+- `operatorTargets`: map of logical channel hints to Discord targets
+
+Example:
+
+```json
+{
+  "discordAccountId": "discord-main",
+  "operatorPollingIntervalMs": 8000,
+  "operatorTargets": {
+    "runs_live": "channel:1234567890",
+    "approvals": "channel:2345678901",
+    "incidents": "channel:3456789012",
+    "default": "channel:1234567890"
+  }
+}
+```
+
+Delivery policy:
+
+- `run_started` -> `runs_live`
+- `clarification_required` -> `approvals`
+- `run_completed` -> `runs_live`
+- `run_failed` -> `incidents`
 
 ## Suggested install path
 

@@ -29,7 +29,11 @@ class MemoryStore:
         self.secret_resolver = secret_resolver
         self.embedding_service = EmbeddingService(embedding_strategy, secret_resolver)
         self.openmemory = OpenMemoryAdapter(paths, embedding_strategy, secret_resolver)
+        self._tier_manager: Any | None = None
         self._ensure_embedding_index_current()
+
+    def attach_tier_manager(self, tier_manager: Any) -> None:
+        self._tier_manager = tier_manager
 
     def remember(
         self,
@@ -119,6 +123,8 @@ class MemoryStore:
             self._update_archive_path(record)
         if tier is MemoryTier.COLD:
             record = self.move_to_cold(record.memory_id)
+        elif self._tier_manager is not None:
+            self._tier_manager.maybe_auto_archive(trigger=f"memory_remember:{tier.value}")
 
         return record
 

@@ -75,6 +75,9 @@ class ApiRunContractTests(unittest.TestCase):
                     context_pack_id=context_pack.context_pack_id,
                     prompt_template_id=prompt.prompt_template_id,
                 )
+                contract.metadata["allow_branch_mismatch"] = True
+                contract.metadata["allow_dirty_worktree"] = True
+                services.api_runs._persist_run_contract(contract)
                 self.assertEqual(contract.status.value, "prepared")
                 approved = services.api_runs.approve_run_contract(contract_id=contract.contract_id, founder_decision="go")
                 self.assertEqual(approved.status.value, "approved")
@@ -130,6 +133,34 @@ class ApiRunContractTests(unittest.TestCase):
                         skill_tags=["audit"],
                         response_runner=lambda *_args: {},
                     )
+            finally:
+                services.close()
+
+    def test_contract_persist_detects_stale_concurrent_update(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                context_pack = services.api_runs.build_context_pack(
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier le guard de concurrence du contrat.",
+                    branch_name="codex/test-contract-concurrency",
+                    skill_tags=["audit"],
+                )
+                prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
+                contract = services.api_runs.create_run_contract(
+                    context_pack_id=context_pack.context_pack_id,
+                    prompt_template_id=prompt.prompt_template_id,
+                )
+                stale_updated_at = contract.updated_at
+                contract.summary = "Premier update"
+                contract.updated_at = "2026-03-13T12:00:01+00:00"
+                services.api_runs._persist_run_contract(contract, expected_updated_at=stale_updated_at)
+
+                stale_copy = services.api_runs.get_run_contract(contract.contract_id)
+                stale_copy.summary = "Update concurrent"
+                stale_copy.updated_at = "2026-03-13T12:00:02+00:00"
+                with self.assertRaisesRegex(RuntimeError, "modified concurrently"):
+                    services.api_runs._persist_run_contract(stale_copy, expected_updated_at=stale_updated_at)
             finally:
                 services.close()
 

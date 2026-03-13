@@ -25,6 +25,7 @@ def build_dashboard_payload(services, *, limit: int = 8) -> dict[str, Any]:
     current_preview: dict[str, Any] | None = None
     current_completion: dict[str, Any] | None = None
     current_blockage: dict[str, Any] | None = None
+    current_clarification: dict[str, Any] | None = None
     terminal_text = services.api_runs.render_terminal_dashboard(limit=limit)
 
     if current_run and current_run.get("run_id"):
@@ -34,18 +35,23 @@ def build_dashboard_payload(services, *, limit: int = 8) -> dict[str, Any]:
             current_preview = _load_structured_preview(Path(str(structured_path)))
         completion_path = next((item.get("path") for item in current_artifacts if item.get("artifact_kind") == "rapport_final"), None)
         blockage_path = next((item.get("path") for item in current_artifacts if item.get("artifact_kind") == "blocage"), None)
+        clarification_path = next((item.get("path") for item in current_artifacts if item.get("artifact_kind") == "clarification"), None)
         if completion_path:
             current_completion = _load_optional_json(Path(str(completion_path)))
         if blockage_path:
             current_blockage = _load_optional_json(Path(str(blockage_path)))
+        if clarification_path:
+            current_clarification = _load_optional_json(Path(str(clarification_path)))
 
-    status_counts: dict[str, int] = {}
-    review_counts: dict[str, int] = {}
-    for item in snapshot.get("latest_runs", []):
-        status = str(item.get("status") or "unknown")
-        review = str(item.get("review_verdict") or "pending")
-        status_counts[status] = status_counts.get(status, 0) + 1
-        review_counts[review] = review_counts.get(review, 0) + 1
+    status_counts = dict(snapshot.get("status_counts") or {})
+    review_counts = dict(snapshot.get("review_counts") or {})
+    operator_delivery_counts = dict(snapshot.get("operator_delivery_counts") or {})
+    if not status_counts or not review_counts:
+        for item in snapshot.get("latest_runs", []):
+            status = str(item.get("status") or "unknown")
+            review = str(item.get("review_verdict") or "pending")
+            status_counts[status] = status_counts.get(status, 0) + 1
+            review_counts[review] = review_counts.get(review, 0) + 1
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -55,8 +61,10 @@ def build_dashboard_payload(services, *, limit: int = 8) -> dict[str, Any]:
         "current_preview": current_preview,
         "current_completion": current_completion,
         "current_blockage": current_blockage,
+        "current_clarification": current_clarification,
         "status_counts": status_counts,
         "review_counts": review_counts,
+        "operator_delivery_counts": operator_delivery_counts,
         "lane_policy": {
             "coding_lane": "repo_cli",
             "desktop_lane": "future_computer_use",
@@ -77,8 +85,24 @@ def ensure_dashboard_running(
     open_browser: bool = True,
     require_visible_ui: bool = True,
     wait_seconds: float = 6.0,
+    recent_beacon_grace_seconds: int = 1800,
+    visibility_state_path: Path | None = None,
 ) -> dict[str, Any]:
     url = f"http://{host}:{port}/"
+    visibility_status = _recent_operator_visibility(
+        visibility_state_path,
+        max_age_seconds=recent_beacon_grace_seconds,
+    )
+    if _dashboard_reachable(host, port) and (not require_visible_ui or visibility_status["fresh"]):
+        return {
+            "url": url,
+            "ready": True,
+            "ui_visible": True,
+            "beacon_token": None,
+            "reason": "recent_operator_beacon" if visibility_status["fresh"] else "dashboard_reachable",
+            "visibility": visibility_status,
+        }
+
     if not _dashboard_reachable(host, port):
         entry = repo_root / "scripts" / "project_os_entry.py"
         command = [
@@ -111,18 +135,50 @@ def ensure_dashboard_running(
             if _dashboard_reachable(host, port):
                 break
             time.sleep(0.25)
+    visibility_status = _recent_operator_visibility(
+        visibility_state_path,
+        max_age_seconds=recent_beacon_grace_seconds,
+    )
+    if _dashboard_reachable(host, port) and (not require_visible_ui or visibility_status["fresh"]):
+        return {
+            "url": url,
+            "ready": True,
+            "ui_visible": True,
+            "beacon_token": None,
+            "reason": "recent_operator_beacon" if visibility_status["fresh"] else "dashboard_reachable",
+            "visibility": visibility_status,
+        }
     beacon_token = f"focus_{time.time_ns()}"
     focus_url = f"{url}?focus={beacon_token}"
-    if open_browser:
-        _launch_operator_dashboard(focus_url if require_visible_ui else url)
     ui_visible = True
     if require_visible_ui:
-        ui_visible = _wait_for_operator_beacon(beacon_token, timeout_seconds=wait_seconds)
+        browser_attempts = 2 if open_browser else 1
+        attempt_timeout = max(1.0, wait_seconds / max(1, browser_attempts))
+        ui_visible = False
+        for attempt_index in range(browser_attempts):
+            if open_browser:
+                _launch_operator_dashboard(focus_url)
+            ui_visible = _wait_for_operator_beacon(
+                beacon_token,
+                timeout_seconds=attempt_timeout,
+                state_path=visibility_state_path,
+            )
+            if ui_visible:
+                break
+    elif open_browser:
+        _launch_operator_dashboard(url)
+    visibility_status = _recent_operator_visibility(
+        visibility_state_path,
+        max_age_seconds=recent_beacon_grace_seconds,
+    )
+    reachable = _dashboard_reachable(host, port)
     return {
         "url": url,
-        "ready": _dashboard_reachable(host, port) and ui_visible,
+        "ready": reachable and ui_visible,
         "ui_visible": ui_visible,
         "beacon_token": beacon_token if require_visible_ui else None,
+        "reason": "beacon_verified" if reachable and ui_visible else ("browser_beacon_missing" if reachable else "dashboard_unreachable"),
+        "visibility": visibility_status,
     }
 
 
@@ -137,13 +193,28 @@ def _dashboard_reachable(host: str, port: int) -> bool:
 def _launch_operator_dashboard(url: str) -> None:
     try:
         if sys.platform.startswith("win"):
-            subprocess.Popen(
+            launch_attempts = [
                 ["cmd", "/c", "start", "", url],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                stdin=subprocess.DEVNULL,
-            )
-            return
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-Command",
+                    f"Start-Process '{url}'",
+                ],
+            ]
+            for command in launch_attempts:
+                try:
+                    subprocess.Popen(
+                        command,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL,
+                    )
+                    return
+                except Exception:
+                    continue
         webbrowser.open(url, new=1)
     except Exception:
         try:
@@ -152,20 +223,64 @@ def _launch_operator_dashboard(url: str) -> None:
             pass
 
 
-def _mark_operator_beacon(token: str) -> None:
+def _mark_operator_beacon(token: str, *, state_path: Path | None = None) -> None:
     with _OPERATOR_BEACON_LOCK:
         _OPERATOR_BEACONS[token] = time.time()
+    _write_visibility_state(state_path, token)
 
 
-def _wait_for_operator_beacon(token: str, *, timeout_seconds: float) -> bool:
+def _wait_for_operator_beacon(token: str, *, timeout_seconds: float, state_path: Path | None = None) -> bool:
     deadline = time.time() + timeout_seconds
+    state_max_age_seconds = max(2, int(timeout_seconds) + 2)
     while time.time() < deadline:
         with _OPERATOR_BEACON_LOCK:
             if token in _OPERATOR_BEACONS:
                 _OPERATOR_BEACONS.pop(token, None)
+                _write_visibility_state(state_path, token)
                 return True
+        visibility_status = _recent_operator_visibility(
+            state_path,
+            max_age_seconds=state_max_age_seconds,
+        )
+        if visibility_status.get("fresh") and visibility_status.get("token") == token:
+            return True
         time.sleep(0.1)
     return False
+
+
+def _recent_operator_visibility(state_path: Path | None, *, max_age_seconds: int) -> dict[str, Any]:
+    if state_path is None or not state_path.exists():
+        return {"fresh": False, "last_seen_at": None, "token": None, "age_seconds": None}
+    try:
+        payload = json.loads(state_path.read_text(encoding="utf-8"))
+        last_seen_at = str(payload.get("last_seen_at") or "")
+        token = str(payload.get("token") or "")
+        if not last_seen_at:
+            return {"fresh": False, "last_seen_at": None, "token": token or None, "age_seconds": None}
+        seen = datetime.fromisoformat(last_seen_at.replace("Z", "+00:00"))
+        age_seconds = max(0.0, (datetime.now(timezone.utc) - seen).total_seconds())
+        return {
+            "fresh": age_seconds <= max(0, max_age_seconds),
+            "last_seen_at": last_seen_at,
+            "token": token or None,
+            "age_seconds": round(age_seconds, 3),
+        }
+    except Exception:
+        return {"fresh": False, "last_seen_at": None, "token": None, "age_seconds": None}
+
+
+def _write_visibility_state(state_path: Path | None, token: str) -> None:
+    if state_path is None:
+        return
+    try:
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "last_seen_at": datetime.now(timezone.utc).isoformat(),
+            "token": token,
+        }
+        state_path.write_text(json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
+    except Exception:
+        return
 
 
 def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) -> str:
@@ -178,6 +293,7 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
     current_preview = payload.get("current_preview")
     current_completion = payload.get("current_completion")
     current_blockage = payload.get("current_blockage")
+    current_clarification = payload.get("current_clarification")
     terminal_text = str(payload.get("terminal_text") or "").strip()
 
     def badge(value: str | None, *, kind: str = "status") -> str:
@@ -198,6 +314,9 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
           <span class="pill">mode {_html_escape(str(current_run.get("mode") or ""))}</span>
           <span class="pill">branche {_html_escape(str(current_run.get("branch_name") or ""))}</span>
           <span class="pill">phase {_html_escape(str(current_run.get("phase") or "preparation"))}</span>
+          <span class="pill">garde {_html_escape(str(current_run.get("operator_guard_reason") or "unknown"))}</span>
+          <span class="pill">signal {_html_escape(str(current_run.get("lifecycle_event_kind") or "n/a"))}</span>
+          <span class="pill">livraison {_html_escape(str(current_run.get("operator_delivery_status") or "none"))}</span>
         </div>
         <div class="objective">{_html_escape(str(current_run.get("objective") or ""))}</div>
         <div class="meta-grid">
@@ -205,8 +324,12 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
           <div><strong>Cree le</strong><span class="mono-small">{_html_escape(str(current_run.get("created_at") or ""))}</span></div>
           <div><strong>Cout estime</strong><span>{float(current_run.get("estimated_cost_eur") or 0):.4f} EUR</span></div>
           <div><strong>Contrat</strong><span class="mono-small">{_html_escape(str(current_run.get("contract_status") or "sans_contrat"))}</span></div>
+          <div><strong>Garde</strong><span class="mono-small">{_html_escape(str(current_run.get("operator_guard_reason") or "unknown"))}</span></div>
+          <div><strong>Canal humain</strong><span class="mono-small">{_html_escape(str(current_run.get("operator_channel_hint") or "n/a"))}</span></div>
+          <div><strong>Livraison</strong><span class="mono-small">{_html_escape(str(current_run.get("operator_delivery_status") or "none"))}</span></div>
         </div>
         <div class="meta" style="margin-top:10px;">{_html_escape(str(current_run.get("machine_summary") or "Le dashboard attend un nouvel evenement machine."))}</div>
+        {('<div class="meta" style="margin-top:10px;"><strong>Question bloquante:</strong> ' + _html_escape(str(current_run.get("clarification_question") or "")) + '</div>') if current_run.get("status") == "clarification_required" else ''}
         """
 
     artifact_items = "".join(
@@ -253,6 +376,16 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
         <li><strong>Recommendation</strong><br><span class="wrap">{_html_escape(str(current_blockage.get('recommendation') or ''))}</span></li>
         """
 
+    clarification_html = '<li class="empty">Aucune clarification active pour le moment.</li>'
+    if current_clarification:
+        clarification_html = f"""
+        <li><strong>Cause</strong><br><span class="wrap">{_html_escape(str(current_clarification.get('cause') or ''))}</span></li>
+        <li><strong>Impact</strong><br><span class="wrap">{_html_escape(str(current_clarification.get('impact') or ''))}</span></li>
+        <li><strong>Question</strong><br><span class="wrap">{_html_escape(str(current_clarification.get('question_for_founder') or ''))}</span></li>
+        <li><strong>Contrat recommande</strong><br><span class="wrap">{_html_escape(str(current_clarification.get('recommended_contract_change') or ''))}</span></li>
+        <li><strong>Re-go requis</strong><br>{'oui' if current_clarification.get('requires_reapproval') else 'non'}</li>
+        """
+
     history_items = "".join(
         f"""
         <li class="history-card">
@@ -262,6 +395,7 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
             {badge(str(item.get('review_verdict') or 'pending'), kind='review')}
           </div>
           <div class="meta">{_html_escape(str(item.get('created_at') or ''))}</div>
+          <div class="meta">garde {_html_escape(str(item.get('operator_guard_reason') or 'unknown'))}</div>
           <div class="meta">branche <span class="mono-small">{_html_escape(str(item.get('branch_name') or ''))}</span> · {float(item.get('estimated_cost_eur') or 0):.4f} EUR</div>
           <div class="history-objective">{_html_escape(str(item.get('objective') or ''))}</div>
         </li>
@@ -275,6 +409,9 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
     review_counts = "<br>".join(
         f"{_html_escape(key)}: {value}" for key, value in sorted(payload.get("review_counts", {}).items())
     ) or "aucune revue"
+    operator_delivery_counts = "<br>".join(
+        f"{_html_escape(key)}: {value}" for key, value in sorted(payload.get("operator_delivery_counts", {}).items())
+    ) or "aucune livraison"
     lane_policy = payload["lane_policy"]
 
     return f"""<!doctype html>
@@ -437,6 +574,7 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
           <a href="#contract">Contrat</a>
           <a href="#preview">Apercu</a>
           <a href="#completion">Rapport final</a>
+          <a href="#clarification">Clarification</a>
           <a href="#blockage">Blocage</a>
           <a href="#artifacts">Artefacts</a>
           <a href="#history">Historique</a>
@@ -461,6 +599,7 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
               </div>
               <div class="mini-card"><div class="label">Statuts</div><div class="meta">{status_counts}</div></div>
               <div class="mini-card"><div class="label">Verdicts</div><div class="meta">{review_counts}</div></div>
+              <div class="mini-card"><div class="label">Livraisons</div><div class="meta">{operator_delivery_counts}</div></div>
             </div>
           </div>
         </details>
@@ -477,6 +616,10 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
         <details class="compact" id="completion">
           <summary>Rapport final <span class="meta">francais simple</span></summary>
           <div class="compact-body"><ul class="preview-list">{completion_html}</ul></div>
+        </details>
+        <details class="compact" id="clarification">
+          <summary>Clarification <span class="meta">question et re-go</span></summary>
+          <div class="compact-body"><ul class="preview-list">{clarification_html}</ul></div>
         </details>
         <details class="compact" id="blockage">
           <summary>Blocage <span class="meta">si le run a casse</span></summary>
@@ -534,8 +677,14 @@ def serve_dashboard(
     limit: int = 8,
     refresh_seconds: int = 4,
     open_browser: bool = False,
+    visibility_state_path: Path | None = None,
 ) -> int:
-    handler = _make_handler(services=services, limit=limit, refresh_seconds=refresh_seconds)
+    handler = _make_handler(
+        services=services,
+        limit=limit,
+        refresh_seconds=refresh_seconds,
+        visibility_state_path=visibility_state_path,
+    )
     server = ThreadingHTTPServer((host, port), handler)
     url = f"http://{host}:{port}/"
     print(f"Project OS API dashboard running at {url}")
@@ -550,7 +699,7 @@ def serve_dashboard(
     return 0
 
 
-def _make_handler(*, services, limit: int, refresh_seconds: int):
+def _make_handler(*, services, limit: int, refresh_seconds: int, visibility_state_path: Path | None):
     class DashboardHandler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)
@@ -576,12 +725,18 @@ def _make_handler(*, services, limit: int, refresh_seconds: int):
                     if not token:
                         self._send_json({"error": "token is required"}, status=400)
                         return
-                    _mark_operator_beacon(token)
+                    _mark_operator_beacon(token, state_path=visibility_state_path)
                     self._send_json({"ok": True, "token": token})
                     return
                 self._send_json({"error": "not_found"}, status=404)
             except Exception as exc:  # pragma: no cover
-                self._send_json({"error": "dashboard_error", "detail": str(exc)}, status=500)
+                services.logger.log(
+                    "ERROR",
+                    "api_run_dashboard_http_error",
+                    path=parsed.path,
+                    error=str(exc),
+                )
+                self._send_json({"error": "dashboard_error", "message": "internal server error"}, status=500)
 
         def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
             return

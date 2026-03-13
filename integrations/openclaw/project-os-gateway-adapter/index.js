@@ -1,6 +1,7 @@
 const DEFAULT_PROJECT_OS_REPO_ROOT = "D:/ProjectOS/project-os-core";
 const DEFAULT_PYTHON_COMMAND = process.platform === "win32" ? "py" : "python3";
 const DEFAULT_CHANNELS = new Set(["discord", "webchat"]);
+const DEFAULT_OPERATOR_POLLING_INTERVAL_MS = 8000;
 
 function resolveConfig(api) {
   const raw = api.pluginConfig && typeof api.pluginConfig === "object" ? api.pluginConfig : {};
@@ -40,6 +41,24 @@ function resolveConfig(api) {
     typeof raw.timeoutMs === "number" && Number.isFinite(raw.timeoutMs) && raw.timeoutMs > 0
       ? Math.floor(raw.timeoutMs)
       : 45000;
+  const discordAccountId =
+    typeof raw.discordAccountId === "string" && raw.discordAccountId.trim()
+      ? raw.discordAccountId.trim()
+      : undefined;
+  const operatorTargets =
+    raw.operatorTargets && typeof raw.operatorTargets === "object"
+      ? Object.fromEntries(
+          Object.entries(raw.operatorTargets)
+            .map(([key, value]) => [String(key).trim(), typeof value === "string" ? value.trim() : ""])
+            .filter(([key, value]) => key && value)
+        )
+      : {};
+  const operatorPollingIntervalMs =
+    typeof raw.operatorPollingIntervalMs === "number" &&
+    Number.isFinite(raw.operatorPollingIntervalMs) &&
+    raw.operatorPollingIntervalMs > 0
+      ? Math.floor(raw.operatorPollingIntervalMs)
+      : DEFAULT_OPERATOR_POLLING_INTERVAL_MS;
   return {
     projectOsRepoRoot,
     configPath,
@@ -51,6 +70,9 @@ function resolveConfig(api) {
     enabledChannels,
     sendAckReplies,
     timeoutMs,
+    discordAccountId,
+    operatorTargets,
+    operatorPollingIntervalMs,
   };
 }
 
@@ -85,7 +107,7 @@ function buildPayload(event, ctx, config) {
   };
 }
 
-function buildCommandArgs(config) {
+function buildCommandArgs(config, extraArgs) {
   return [
     config.pythonCommand,
     `${config.projectOsRepoRoot}/scripts/project_os_entry.py`,
@@ -93,17 +115,37 @@ function buildCommandArgs(config) {
     config.configPath,
     "--policy-path",
     config.policyPath,
-    "gateway",
-    "ingest-openclaw-event",
-    "--stdin",
+    ...(Array.isArray(extraArgs) ? extraArgs : []),
   ];
 }
 
 async function dispatchToProjectOs(api, payload, config) {
-  const result = await api.runtime.system.runCommandWithTimeout(buildCommandArgs(config), {
+  const result = await api.runtime.system.runCommandWithTimeout(
+    buildCommandArgs(config, ["gateway", "ingest-openclaw-event", "--stdin"]),
+    {
+      timeoutMs: config.timeoutMs,
+      cwd: config.projectOsRepoRoot,
+      input: JSON.stringify(payload),
+      env: process.env,
+    }
+  );
+  const stdout = (result.stdout || "").trim();
+  let parsed = null;
+  if (stdout) {
+    try {
+      parsed = JSON.parse(stdout);
+    } catch (error) {
+      api.logger.warn(`[project-os-gateway-adapter] Failed to parse Project OS stdout as JSON: ${String(error)}`);
+    }
+  }
+  return { result, parsed };
+}
+
+async function runProjectOsJsonCommand(api, config, extraArgs, input) {
+  const result = await api.runtime.system.runCommandWithTimeout(buildCommandArgs(config, extraArgs), {
     timeoutMs: config.timeoutMs,
     cwd: config.projectOsRepoRoot,
-    input: JSON.stringify(payload),
+    input,
     env: process.env,
   });
   const stdout = (result.stdout || "").trim();
@@ -144,11 +186,116 @@ async function maybeSendDiscordAck(api, event, ctx, parsed) {
   });
 }
 
+async function pullOperatorDeliveries(api, config) {
+  const { result, parsed } = await runProjectOsJsonCommand(
+    api,
+    config,
+    ["api-runs", "pull-operator-deliveries", "--status", "pending", "--limit", "10"],
+    undefined
+  );
+  if (result.code !== 0) {
+    throw new Error(result.stderr || "Project OS operator delivery poll failed");
+  }
+  return Array.isArray(parsed?.deliveries) ? parsed.deliveries : [];
+}
+
+async function ackOperatorDelivery(api, config, deliveryId, status, error, metadata) {
+  const args = ["api-runs", "ack-operator-delivery", "--delivery-id", deliveryId, "--status", status];
+  if (typeof error === "string" && error) {
+    args.push("--error", error);
+  }
+  if (metadata && typeof metadata === "object") {
+    args.push("--metadata", JSON.stringify(metadata));
+  }
+  const { result } = await runProjectOsJsonCommand(api, config, args, undefined);
+  if (result.code !== 0) {
+    throw new Error(result.stderr || `Failed to ack operator delivery ${deliveryId}`);
+  }
+}
+
+function resolveOperatorTarget(config, channelHint) {
+  if (!channelHint) {
+    return config.operatorTargets.default;
+  }
+  return config.operatorTargets[channelHint] || config.operatorTargets.default;
+}
+
+async function flushOperatorDeliveries(api, config) {
+  if (!config.discordAccountId) {
+    return;
+  }
+  if (!config.operatorTargets || Object.keys(config.operatorTargets).length === 0) {
+    return;
+  }
+  const deliveries = await pullOperatorDeliveries(api, config);
+  for (const delivery of deliveries) {
+    const deliveryId = typeof delivery.delivery_id === "string" ? delivery.delivery_id : "";
+    if (!deliveryId) {
+      continue;
+    }
+    const payload = delivery.payload && typeof delivery.payload === "object" ? delivery.payload : {};
+    const channelHint = typeof delivery.channel_hint === "string" ? delivery.channel_hint : "runs_live";
+    const target = resolveOperatorTarget(config, channelHint);
+    if (!target) {
+      await ackOperatorDelivery(api, config, deliveryId, "skipped", "discord_target_not_configured", {
+        channel_hint: channelHint,
+      });
+      continue;
+    }
+    const text = typeof payload.text === "string" && payload.text.trim() ? payload.text.trim() : `[Project OS] ${channelHint}`;
+    try {
+      await api.runtime.channel.discord.sendMessageDiscord(target, text, {
+        cfg: api.config,
+        accountId: config.discordAccountId,
+      });
+      await ackOperatorDelivery(api, config, deliveryId, "delivered", undefined, {
+        channel_hint: channelHint,
+        target,
+      });
+    } catch (error) {
+      await ackOperatorDelivery(api, config, deliveryId, "pending", String(error), {
+        channel_hint: channelHint,
+        target,
+      });
+    }
+  }
+}
+
+function startOperatorDeliveryPolling(api) {
+  let busy = false;
+  const tick = async () => {
+    if (busy) {
+      return;
+    }
+    busy = true;
+    try {
+      const config = resolveConfig(api);
+      await flushOperatorDeliveries(api, config);
+    } catch (error) {
+      api.logger.warn(`[project-os-gateway-adapter] operator delivery polling failed: ${String(error)}`);
+    } finally {
+      busy = false;
+    }
+  };
+  const config = resolveConfig(api);
+  if (!config.discordAccountId || !config.operatorTargets || Object.keys(config.operatorTargets).length === 0) {
+    api.logger.info("[project-os-gateway-adapter] operator delivery polling disabled (missing discordAccountId/operatorTargets)");
+    return;
+  }
+  setTimeout(() => {
+    void tick();
+  }, 1500);
+  setInterval(() => {
+    void tick();
+  }, config.operatorPollingIntervalMs);
+}
+
 const plugin = {
   id: "project-os-gateway-adapter",
   name: "Project OS Gateway Adapter",
   description: "Forward operator channel events from OpenClaw into Project OS",
   register(api) {
+    startOperatorDeliveryPolling(api);
     api.registerHook("message_received", async (event, ctx) => {
       const config = resolveConfig(api);
       if (!config.enabledChannels.has(String(ctx.channelId || "").toLowerCase())) {

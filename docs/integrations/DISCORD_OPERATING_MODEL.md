@@ -5,6 +5,11 @@
 Le but n'est pas de faire un simple bot de chat.
 Le but est de faire une interface operateur haut niveau.
 
+Corollaire produit:
+
+- si un humain doit lire un fichier JSON pour comprendre l'etat d'un run, le workflow est mauvais
+- `Discord` doit porter la partie conversation, arbitrage et retour humain des gros runs
+
 ## Roles de Discord
 
 `Discord` sert a:
@@ -17,6 +22,9 @@ Le but est de faire une interface operateur haut niveau.
 - poser un doute
 - arbitrer un risque
 - envoyer des vocaux transcrits plus tard
+- recevoir les points de passage d'un gros run API
+- recevoir les clarifications bloquantes
+- recevoir le verdict final sans ouvrir le runtime
 
 Topologie cible:
 
@@ -155,6 +163,16 @@ Pendant un gros run de code:
 - pas de conversation naturelle sur Discord
 - le suivi se fait via `#runs-live`
 - seules les cartes compactes, blocages reels et rapports finaux sont autorises
+
+Evenements minimums attendus dans `Discord` pour un gros run API:
+
+- `run_started`
+- `clarification_required`
+- `run_completed`
+- `run_failed`
+
+Chaque carte doit rester courte et comprehensible par un humain non developpeur.
+Les artefacts runtime peuvent etre lies comme preuves, mais ne doivent pas etre la seule explication.
 
 Dans `#pilotage`:
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-CURRENT_SCHEMA_VERSION = "5"
+CURRENT_SCHEMA_VERSION = "8"
 
 
 class CanonicalDatabase:
@@ -429,6 +429,7 @@ class CanonicalDatabase:
                     success_criteria_json TEXT NOT NULL,
                     estimated_cost_eur REAL NOT NULL,
                     founder_decision TEXT,
+                    founder_decision_at TEXT,
                     status TEXT NOT NULL,
                     metadata_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -497,6 +498,55 @@ class CanonicalDatabase:
                     recommendation TEXT,
                     metadata_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS clarification_reports (
+                    report_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    cause TEXT NOT NULL,
+                    impact TEXT NOT NULL,
+                    question_for_founder TEXT NOT NULL,
+                    recommended_contract_change TEXT NOT NULL,
+                    requires_reapproval INTEGER NOT NULL DEFAULT 1,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS api_run_lifecycle_events (
+                    lifecycle_event_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    run_request_id TEXT NOT NULL,
+                    contract_id TEXT,
+                    kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    branch_name TEXT,
+                    mode TEXT,
+                    channel_hint TEXT NOT NULL,
+                    status TEXT,
+                    phase TEXT,
+                    blocking_question TEXT,
+                    recommended_action TEXT,
+                    requires_reapproval INTEGER NOT NULL DEFAULT 0,
+                    artifact_path TEXT,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS api_run_operator_deliveries (
+                    delivery_id TEXT PRIMARY KEY,
+                    lifecycle_event_id TEXT NOT NULL,
+                    adapter TEXT NOT NULL,
+                    surface TEXT NOT NULL,
+                    channel_hint TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempts INTEGER NOT NULL DEFAULT 0,
+                    payload_json TEXT NOT NULL,
+                    last_error TEXT,
+                    next_attempt_at TEXT,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS learning_signals (
@@ -581,6 +631,8 @@ class CanonicalDatabase:
                 ("api_run_requests", "audience TEXT"),
                 ("api_run_requests", "run_contract_required INTEGER"),
                 ("api_run_requests", "contract_id TEXT"),
+                ("api_run_contracts", "founder_decision_at TEXT"),
+                ("api_run_operator_deliveries", "next_attempt_at TEXT"),
             ):
                 self._ensure_column(connection, table, column_sql)
 
@@ -647,6 +699,18 @@ class CanonicalDatabase:
                 ON completion_reports(run_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_blockage_reports_run_created
                 ON blockage_reports(run_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_clarification_reports_run_created
+                ON clarification_reports(run_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_api_run_lifecycle_events_run_created
+                ON api_run_lifecycle_events(run_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_api_run_lifecycle_events_kind_created
+                ON api_run_lifecycle_events(kind, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_api_run_operator_deliveries_status_updated
+                ON api_run_operator_deliveries(status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_api_run_operator_deliveries_event_created
+                ON api_run_operator_deliveries(lifecycle_event_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_api_run_operator_deliveries_status_next_attempt
+                ON api_run_operator_deliveries(status, next_attempt_at ASC, created_at ASC);
             CREATE INDEX IF NOT EXISTS idx_learning_signals_kind_created
                 ON learning_signals(kind, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_decision_records_status_updated
@@ -705,11 +769,23 @@ class CanonicalDatabase:
             self.connection.commit()
         return cursor
 
-    def fetchone(self, sql: str, params: tuple[Any, ...] = ()) -> sqlite3.Row | None:
-        return self.connection.execute(sql, params).fetchone()
+    def fetchone(
+        self,
+        sql: str,
+        params: tuple[Any, ...] = (),
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> sqlite3.Row | None:
+        return (connection or self.connection).execute(sql, params).fetchone()
 
-    def fetchall(self, sql: str, params: tuple[Any, ...] = ()) -> list[sqlite3.Row]:
-        return self.connection.execute(sql, params).fetchall()
+    def fetchall(
+        self,
+        sql: str,
+        params: tuple[Any, ...] = (),
+        *,
+        connection: sqlite3.Connection | None = None,
+    ) -> list[sqlite3.Row]:
+        return (connection or self.connection).execute(sql, params).fetchall()
 
     def next_vector_rowid(self, connection: sqlite3.Connection | None = None) -> int:
         row = (connection or self.connection).execute(

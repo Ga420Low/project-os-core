@@ -110,6 +110,7 @@ class ApiRunStatus(str, Enum):
     PREPARED = "prepared"
     AWAITING_GO = "awaiting_go"
     RUNNING = "running"
+    CLARIFICATION_REQUIRED = "clarification_required"
     COMPLETED = "completed"
     FAILED = "failed"
     PAUSED = "paused"
@@ -172,6 +173,28 @@ class RunContractStatus(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     EXECUTED = "executed"
+
+
+class RunLifecycleEventKind(str, Enum):
+    RUN_STARTED = "run_started"
+    CLARIFICATION_REQUIRED = "clarification_required"
+    RUN_COMPLETED = "run_completed"
+    RUN_FAILED = "run_failed"
+    RUN_REVIEWED = "run_reviewed"
+    RUN_RELAUNCHED = "run_relaunched"
+
+
+class OperatorChannelHint(str, Enum):
+    RUNS_LIVE = "runs_live"
+    APPROVALS = "approvals"
+    INCIDENTS = "incidents"
+
+
+class OperatorDeliveryStatus(str, Enum):
+    PENDING = "pending"
+    DELIVERED = "delivered"
+    FAILED = "failed"
+    SKIPPED = "skipped"
 
 
 def to_jsonable(value: Any) -> Any:
@@ -563,6 +586,10 @@ class ExecutionPolicy:
     operator_audience: OperatorAudience = OperatorAudience.NON_DEVELOPER
     run_contract_required: bool = True
     default_run_speech_policy: RunSpeechPolicy = RunSpeechPolicy.SILENT_UNTIL_TERMINAL_STATE
+    operator_delivery_max_attempts: int = 4
+    operator_delivery_retry_base_seconds: int = 30
+    operator_delivery_retry_max_seconds: int = 900
+    operator_delivery_max_pending: int = 64
 
 
 @dataclass(slots=True)
@@ -926,6 +953,7 @@ class RunContract:
     success_criteria: list[str] = field(default_factory=list)
     estimated_cost_eur: float = 0.0
     founder_decision: str | None = None
+    founder_decision_at: str | None = None
     status: RunContractStatus = RunContractStatus.PREPARED
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
@@ -956,6 +984,58 @@ class BlockageReport:
     recommendation: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ClarificationReport:
+    report_id: str
+    run_id: str
+    cause: str
+    impact: str
+    question_for_founder: str
+    recommended_contract_change: str
+    requires_reapproval: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class RunLifecycleEvent:
+    lifecycle_event_id: str
+    run_id: str
+    run_request_id: str
+    kind: RunLifecycleEventKind
+    title: str
+    summary: str
+    contract_id: str | None = None
+    branch_name: str | None = None
+    mode: ApiRunMode | None = None
+    channel_hint: OperatorChannelHint = OperatorChannelHint.RUNS_LIVE
+    status: ApiRunStatus | None = None
+    phase: str | None = None
+    blocking_question: str | None = None
+    recommended_action: str | None = None
+    requires_reapproval: bool = False
+    artifact_path: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class OperatorDelivery:
+    delivery_id: str
+    lifecycle_event_id: str
+    adapter: str
+    surface: str
+    channel_hint: OperatorChannelHint
+    status: OperatorDeliveryStatus = OperatorDeliveryStatus.PENDING
+    attempts: int = 0
+    payload: dict[str, Any] = field(default_factory=dict)
+    last_error: str | None = None
+    next_attempt_at: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
 
 
 @dataclass(slots=True)

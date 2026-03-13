@@ -29,6 +29,33 @@
     "monthly_limit_eur": 50.0,
     "deterministic_first": true,
     "allow_pro_default": false,
-    "secret_mode": "infisical_first"
+    "secret_mode": "infisical_first",
+    "operator_language": "fr",
+    "operator_audience": "non_developer",
+    "run_contract_required": true,
+    "default_run_speech_policy": "silent_until_terminal_state",
+    "operator_delivery_max_attempts": 4,
+    "operator_delivery_retry_base_seconds": 30,
+    "operator_delivery_retry_max_seconds": 900,
+    "operator_delivery_max_pending": 64
+  },
+  "tier_manager_config": {
+    "enabled": true,
+    "auto_archive_on_write": true,
+    "warm_min_age_hours": 6,
+    "keep_latest_warm_records": 8,
+    "max_archive_batch_size": 32
+  },
+  "api_dashboard_config": {
+    "host": "127.0.0.1",
+    "port": 8765,
+    "limit": 8,
+    "refresh_seconds": 4,
+    "auto_start": true,
+    "auto_open_browser": true,
+    "require_visible_ui": true,
+    "beacon_wait_seconds": 12.0,
+    "recent_beacon_grace_seconds": 1800,
+    "founder_approval_grace_seconds": 1800
   }
 }

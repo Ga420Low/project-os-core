@@ -3,12 +3,26 @@ from __future__ import annotations
 import json
 import sys
 import tempfile
+import threading
+import time
 import unittest
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
+from urllib.error import HTTPError
+from urllib.request import urlopen
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from project_os_core.api_runs.dashboard import build_dashboard_payload, render_dashboard_html
+from project_os_core.api_runs.dashboard import (
+    _make_handler,
+    _recent_operator_visibility,
+    _wait_for_operator_beacon,
+    _write_visibility_state,
+    build_dashboard_payload,
+    ensure_dashboard_running,
+    render_dashboard_html,
+)
 from project_os_core.models import ApiRunMode
 from project_os_core.services import build_app_services
 
@@ -61,6 +75,83 @@ def _build_services(tmp_path: Path):
 
 
 class ApiRunDashboardTests(unittest.TestCase):
+    def test_recent_operator_visibility_allows_reuse_without_new_browser_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "operator_visibility.json"
+            _write_visibility_state(state_path, "focus_test")
+            with patch("project_os_core.api_runs.dashboard._dashboard_reachable", return_value=True):
+                with patch("project_os_core.api_runs.dashboard._launch_operator_dashboard") as launch:
+                    status = ensure_dashboard_running(
+                        repo_root=Path(tmp),
+                        require_visible_ui=True,
+                        open_browser=True,
+                        visibility_state_path=state_path,
+                        recent_beacon_grace_seconds=1800,
+                    )
+            self.assertTrue(status["ready"])
+            self.assertEqual(status["reason"], "recent_operator_beacon")
+            launch.assert_not_called()
+
+    def test_recent_operator_visibility_expires_cleanly(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "operator_visibility.json"
+            state_path.write_text(
+                json.dumps({"last_seen_at": "2020-01-01T00:00:00+00:00", "token": "focus_old"}, ensure_ascii=True),
+                encoding="utf-8",
+            )
+            status = _recent_operator_visibility(state_path, max_age_seconds=60)
+            self.assertFalse(status["fresh"])
+            self.assertEqual(status["token"], "focus_old")
+
+    def test_wait_for_operator_beacon_accepts_persisted_cross_process_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "operator_visibility.json"
+            token = "focus_cross_process"
+
+            def _writer():
+                time.sleep(0.15)
+                _write_visibility_state(state_path, token)
+
+            writer = threading.Thread(target=_writer)
+            writer.start()
+            try:
+                self.assertTrue(
+                    _wait_for_operator_beacon(
+                        token,
+                        timeout_seconds=1.0,
+                        state_path=state_path,
+                    )
+                )
+            finally:
+                writer.join()
+
+    def test_dashboard_visibility_retries_browser_open_once_before_failing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            state_path = Path(tmp) / "operator_visibility.json"
+            wait_calls: list[str] = []
+
+            def _fake_wait(token: str, *, timeout_seconds: float, state_path: Path | None = None) -> bool:
+                wait_calls.append(token)
+                if len(wait_calls) == 2:
+                    _write_visibility_state(state_path, token)
+                    return True
+                return False
+
+            with patch("project_os_core.api_runs.dashboard._dashboard_reachable", return_value=True):
+                with patch("project_os_core.api_runs.dashboard._launch_operator_dashboard") as launch:
+                    with patch("project_os_core.api_runs.dashboard._wait_for_operator_beacon", side_effect=_fake_wait):
+                        status = ensure_dashboard_running(
+                            repo_root=Path(tmp),
+                            require_visible_ui=True,
+                            open_browser=True,
+                            visibility_state_path=state_path,
+                            wait_seconds=1.0,
+                        )
+            self.assertTrue(status["ready"])
+            self.assertEqual(status["reason"], "beacon_verified")
+            self.assertEqual(launch.call_count, 2)
+            self.assertEqual(len(wait_calls), 2)
+
     def test_dashboard_payload_contains_preview_and_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = _build_services(Path(tmp))
@@ -76,6 +167,9 @@ class ApiRunDashboardTests(unittest.TestCase):
                     context_pack_id=context_pack.context_pack_id,
                     prompt_template_id=prompt.prompt_template_id,
                 )
+                contract.metadata["allow_branch_mismatch"] = True
+                contract.metadata["allow_dirty_worktree"] = True
+                services.api_runs._persist_run_contract(contract)
                 services.api_runs.approve_run_contract(contract_id=contract.contract_id, founder_decision="go")
                 payload = services.api_runs.execute_run(
                     contract_id=contract.contract_id,
@@ -116,11 +210,48 @@ class ApiRunDashboardTests(unittest.TestCase):
                         "daily_soft_limit_eur": 1.5,
                         "monthly_limit_eur": 50.0,
                     },
-                    "current_run": None,
-                    "latest_runs": [],
+                    "current_run": {
+                        "run_id": "api_run_test",
+                        "mode": "audit",
+                        "branch_name": "codex/test-dashboard-html",
+                        "status": "running",
+                        "contract_status": "approved",
+                        "phase": "generation",
+                        "review_verdict": "pending",
+                        "objective": "Verifier l'affichage de garde.",
+                        "created_at": "2026-03-13T12:00:00+00:00",
+                        "estimated_cost_eur": 0.2,
+                        "machine_summary": "Generation en cours.",
+                        "operator_guard_reason": "recent_beacon",
+                        "lifecycle_event_kind": "run_started",
+                        "operator_delivery_status": "pending",
+                        "operator_channel_hint": "runs_live",
+                    },
+                    "latest_runs": [
+                        {
+                            "mode": "audit",
+                            "branch_name": "codex/test-dashboard-html",
+                            "status": "running",
+                            "review_verdict": "pending",
+                            "created_at": "2026-03-13T12:00:00+00:00",
+                            "estimated_cost_eur": 0.2,
+                            "objective": "Verifier l'affichage de garde.",
+                            "operator_guard_reason": "recent_beacon",
+                            "lifecycle_event_kind": "run_started",
+                            "operator_delivery_status": "pending",
+                        }
+                    ],
+                    "operator_delivery_counts": {"pending": 1},
                 },
                 "current_artifacts": [],
                 "current_preview": None,
+                "current_clarification": {
+                    "cause": "Le lot doit etre clarifie.",
+                    "impact": "Le run s'arrete proprement.",
+                    "question_for_founder": "Confirme le perimetre du lot.",
+                    "recommended_contract_change": "Amender l'objectif.",
+                    "requires_reapproval": True,
+                },
                 "status_counts": {},
                 "review_counts": {},
                 "lane_policy": {
@@ -137,3 +268,35 @@ class ApiRunDashboardTests(unittest.TestCase):
         self.assertIn("Execution en cours", html)
         self.assertIn("Runs recents", html)
         self.assertIn("Apercu structure", html)
+        self.assertIn("garde recent_beacon", html)
+        self.assertIn("Clarification", html)
+        self.assertIn("signal run_started", html)
+        self.assertIn("livraison pending", html)
+
+    def test_dashboard_http_500_hides_internal_exception_detail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                handler = _make_handler(services=services, limit=4, refresh_seconds=4, visibility_state_path=None)
+                server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    port = server.server_address[1]
+                    with patch("project_os_core.api_runs.dashboard.build_dashboard_payload", side_effect=RuntimeError("sqlite path leaked")):
+                        with self.assertRaises(HTTPError) as ctx:
+                            urlopen(f"http://127.0.0.1:{port}/api/snapshot")
+                    error_response = ctx.exception
+                    self.assertEqual(error_response.code, 500)
+                    payload = json.loads(error_response.read().decode("utf-8"))
+                    error_response.close()
+                    self.assertEqual(payload["error"], "dashboard_error")
+                    self.assertEqual(payload["message"], "internal server error")
+                    self.assertNotIn("detail", payload)
+                    self.assertNotIn("sqlite path leaked", json.dumps(payload))
+                finally:
+                    server.shutdown()
+                    server.server_close()
+                    thread.join(timeout=2)
+            finally:
+                services.close()

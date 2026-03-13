@@ -28,6 +28,7 @@ class RuntimeConfig:
     execution_policy: ExecutionPolicy
     openclaw_config: OpenClawConfig
     api_dashboard_config: ApiDashboardConfig
+    tier_manager_config: TierManagerConfig
 
 
 @dataclass(slots=True)
@@ -75,6 +76,18 @@ class ApiDashboardConfig:
     auto_start: bool = True
     auto_open_browser: bool = True
     require_visible_ui: bool = True
+    beacon_wait_seconds: float = 12.0
+    recent_beacon_grace_seconds: int = 1800
+    founder_approval_grace_seconds: int = 1800
+
+
+@dataclass(slots=True)
+class TierManagerConfig:
+    enabled: bool = True
+    auto_archive_on_write: bool = True
+    warm_min_age_hours: int = 6
+    keep_latest_warm_records: int = 8
+    max_archive_batch_size: int = 32
 
 
 def _storage_from_dict(payload: dict[str, str]) -> StorageRoots:
@@ -117,6 +130,10 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "operator_audience": OperatorAudience.NON_DEVELOPER.value,
             "run_contract_required": True,
             "default_run_speech_policy": RunSpeechPolicy.SILENT_UNTIL_TERMINAL_STATE.value,
+            "operator_delivery_max_attempts": 4,
+            "operator_delivery_retry_base_seconds": 30,
+            "operator_delivery_retry_max_seconds": 900,
+            "operator_delivery_max_pending": 64,
         },
         "openclaw_config": {
             "binary_command": "openclaw",
@@ -137,6 +154,16 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "auto_start": True,
             "auto_open_browser": True,
             "require_visible_ui": True,
+            "beacon_wait_seconds": 12.0,
+            "recent_beacon_grace_seconds": 1800,
+            "founder_approval_grace_seconds": 1800,
+        },
+        "tier_manager_config": {
+            "enabled": True,
+            "auto_archive_on_write": True,
+            "warm_min_age_hours": 6,
+            "keep_latest_warm_records": 8,
+            "max_archive_batch_size": 32,
         },
     }
 
@@ -144,7 +171,7 @@ def _runtime_policy_defaults() -> dict[str, object]:
 def _load_runtime_policy(
     root: Path,
     policy_path: str | Path | None = None,
-) -> tuple[SecretConfig, EmbeddingPolicy, ExecutionPolicy, OpenClawConfig, ApiDashboardConfig]:
+) -> tuple[SecretConfig, EmbeddingPolicy, ExecutionPolicy, OpenClawConfig, ApiDashboardConfig, TierManagerConfig]:
     env_override = os.getenv("PROJECT_OS_RUNTIME_POLICY")
     chosen = Path(policy_path) if policy_path else (Path(env_override) if env_override else None)
     if chosen is None:
@@ -155,7 +182,14 @@ def _load_runtime_policy(
     payload = _runtime_policy_defaults()
     if chosen.exists():
         loaded = json.loads(chosen.read_text(encoding="utf-8"))
-        for key in ("secret_config", "embedding_policy", "execution_policy", "openclaw_config", "api_dashboard_config"):
+        for key in (
+            "secret_config",
+            "embedding_policy",
+            "execution_policy",
+            "openclaw_config",
+            "api_dashboard_config",
+            "tier_manager_config",
+        ):
             if key in loaded and isinstance(loaded[key], dict):
                 payload[key].update(loaded[key])
 
@@ -175,7 +209,8 @@ def _load_runtime_policy(
         openclaw_payload["plugin_source_path"] = _expand_path(str(plugin_source_path))
     openclaw_config = OpenClawConfig(**openclaw_payload)
     api_dashboard_config = ApiDashboardConfig(**payload["api_dashboard_config"])
-    return secret_config, embedding_policy, execution_policy, openclaw_config, api_dashboard_config
+    tier_manager_config = TierManagerConfig(**payload["tier_manager_config"])
+    return secret_config, embedding_policy, execution_policy, openclaw_config, api_dashboard_config, tier_manager_config
 
 
 def load_runtime_config(config_path: str | Path | None = None, policy_path: str | Path | None = None) -> RuntimeConfig:
@@ -195,7 +230,7 @@ def load_runtime_config(config_path: str | Path | None = None, policy_path: str 
     ).resolve(strict=False)
     storage_roots = _storage_from_dict(payload)
     policy = ForbiddenZonePolicy(roots=[storage_roots.archive_do_not_touch_root])
-    secret_config, embedding_policy, execution_policy, openclaw_config, api_dashboard_config = _load_runtime_policy(root, policy_path)
+    secret_config, embedding_policy, execution_policy, openclaw_config, api_dashboard_config, tier_manager_config = _load_runtime_policy(root, policy_path)
     return RuntimeConfig(
         repo_root=root,
         storage_config_path=chosen_storage_path,
@@ -207,4 +242,5 @@ def load_runtime_config(config_path: str | Path | None = None, policy_path: str 
         execution_policy=execution_policy,
         openclaw_config=openclaw_config,
         api_dashboard_config=api_dashboard_config,
+        tier_manager_config=tier_manager_config,
     )

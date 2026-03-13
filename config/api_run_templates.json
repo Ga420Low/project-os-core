@@ -12,13 +12,20 @@
       "tests",
       "risks",
       "acceptance_criteria",
-      "open_questions"
+      "open_questions",
+      "clarification_needed",
+      "blocking_reason",
+      "recommended_contract_change",
+      "question_for_founder"
     ],
     "instructions": [
       "Treat Project OS runtime, memory, evidence, and mission router as the source of truth.",
       "Prefer repo and CLI workflows over Windows computer use for coding lane v1.",
       "Do not propose hidden side effects or undocumented architecture changes.",
-      "Preserve the OpenClaw facade and the Project OS truth boundary."
+      "Preserve the OpenClaw facade and the Project OS truth boundary.",
+      "Challenge the brief if needed instead of guessing through a major ambiguity or contradiction.",
+      "If the brief is contradictory, dangerous, under-specified, out of scope, or conflicts with repo/runtime truth, stop and ask the minimum blocking question.",
+      "Do not continue to a final implementation outline until the blocking clarification is resolved."
     ]
   },
   "modes": {

@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import sqlite3
+import shutil
 import subprocess
-from datetime import datetime, timezone
+import textwrap
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
@@ -19,6 +22,7 @@ from ..models import (
     ApiRunReviewVerdict,
     ApiRunStatus,
     BlockageReport,
+    ClarificationReport,
     CommunicationMode,
     CompletionReport,
     ContextPack,
@@ -27,9 +31,14 @@ from ..models import (
     DecisionStatus,
     LearningSignalKind,
     MegaPromptTemplate,
+    OperatorChannelHint,
+    OperatorDelivery,
+    OperatorDeliveryStatus,
     OperatorAudience,
     RunContract,
     RunContractStatus,
+    RunLifecycleEvent,
+    RunLifecycleEventKind,
     RunSpeechPolicy,
     new_id,
     to_jsonable,
@@ -196,6 +205,7 @@ class ApiRunService:
             success_criteria=list(context_pack.acceptance_criteria),
             estimated_cost_eur=estimated_cost,
             founder_decision=None,
+            founder_decision_at=None,
             status=RunContractStatus.PREPARED,
             metadata=dict(metadata or {}),
         )
@@ -223,12 +233,33 @@ class ApiRunService:
         normalized = founder_decision.strip().lower()
         if normalized not in {"go", "go_avec_correction", "stop"}:
             raise ValueError("founder_decision must be go, go_avec_correction, or stop")
+        expected_updated_at = contract.updated_at
+        decision_timestamp = datetime.now(timezone.utc).isoformat()
         contract.status = RunContractStatus.APPROVED if normalized != "stop" else RunContractStatus.REJECTED
         contract.founder_decision = normalized
-        contract.updated_at = datetime.now(timezone.utc).isoformat()
+        contract.founder_decision_at = decision_timestamp if normalized != "stop" else None
+        contract.updated_at = decision_timestamp
+        if contract.founder_decision_at:
+            contract.metadata["founder_decision_at"] = contract.founder_decision_at
+        else:
+            contract.metadata.pop("founder_decision_at", None)
+        contract.metadata["requires_reapproval"] = False
+        contract.metadata["clarification_pending"] = False
+        contract.metadata.pop("pending_clarification_report_id", None)
+        contract.metadata["approval_round"] = int(contract.metadata.get("approval_round") or 0) + 1
+        history = list(contract.metadata.get("approval_history") or [])
+        history.append(
+            {
+                "decision": normalized,
+                "notes": notes or "",
+                "timestamp": decision_timestamp,
+                "round": contract.metadata["approval_round"],
+            }
+        )
+        contract.metadata["approval_history"] = history
         if notes:
             contract.metadata["founder_notes"] = notes
-        self._persist_run_contract(contract)
+        self._persist_run_contract(contract, expected_updated_at=expected_updated_at)
         self.journal.append(
             "api_run_contract_updated",
             "api_runs",
@@ -236,6 +267,76 @@ class ApiRunService:
                 "contract_id": contract.contract_id,
                 "status": contract.status.value,
                 "founder_decision": normalized,
+            },
+        )
+        return contract
+
+    def amend_run_contract(
+        self,
+        *,
+        contract_id: str,
+        objective: str | None = None,
+        branch_name: str | None = None,
+        target_profile: str | None = None,
+        constraints: list[str] | None = None,
+        acceptance_criteria: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> RunContract:
+        contract = self.get_run_contract(contract_id)
+        context_pack = self.get_context_pack(contract.context_pack_id)
+        updated_objective = (objective or contract.objective).strip()
+        updated_branch_name = self._normalize_branch_name(branch_name or contract.branch_name)
+        updated_target_profile = target_profile if target_profile is not None else contract.target_profile
+        updated_constraints = list(constraints) if constraints else list(context_pack.constraints)
+        updated_acceptance = list(acceptance_criteria) if acceptance_criteria else list(context_pack.acceptance_criteria)
+        updated_metadata = {**context_pack.metadata, **(metadata or {})}
+        source_paths = [item.path for item in context_pack.source_refs]
+        rebuilt_context = self.build_context_pack(
+            mode=contract.mode,
+            objective=updated_objective,
+            branch_name=updated_branch_name,
+            skill_tags=context_pack.skill_tags,
+            target_profile=updated_target_profile,
+            source_paths=source_paths,
+            constraints=updated_constraints,
+            acceptance_criteria=updated_acceptance,
+            metadata=updated_metadata,
+        )
+        rebuilt_prompt = self.render_prompt(context_pack_id=rebuilt_context.context_pack_id)
+        estimated_cost = self._estimate_cost_hint(rebuilt_prompt.model, rebuilt_prompt.reasoning_effort, contract.mode)
+        expected_updated_at = contract.updated_at
+        amendment_timestamp = datetime.now(timezone.utc).isoformat()
+        contract.context_pack_id = rebuilt_context.context_pack_id
+        contract.prompt_template_id = rebuilt_prompt.prompt_template_id
+        contract.objective = rebuilt_context.objective
+        contract.branch_name = rebuilt_context.branch_name
+        contract.target_profile = rebuilt_context.target_profile
+        contract.model = rebuilt_prompt.model
+        contract.reasoning_effort = rebuilt_prompt.reasoning_effort
+        contract.expected_outputs = list(rebuilt_prompt.output_contract)
+        contract.estimated_cost_eur = estimated_cost
+        contract.summary = self._build_contract_summary(rebuilt_context, rebuilt_prompt, estimated_cost)
+        contract.success_criteria = list(rebuilt_context.acceptance_criteria)
+        contract.status = RunContractStatus.PREPARED
+        contract.founder_decision = None
+        contract.founder_decision_at = None
+        contract.updated_at = amendment_timestamp
+        contract.metadata.update(metadata or {})
+        contract.metadata["amendment_count"] = int(contract.metadata.get("amendment_count") or 0) + 1
+        contract.metadata["amended_at"] = amendment_timestamp
+        contract.metadata["requires_reapproval"] = True
+        contract.metadata["clarification_pending"] = False
+        contract.metadata.pop("pending_clarification_report_id", None)
+        contract.metadata.pop("founder_decision_at", None)
+        self._persist_run_contract(contract, expected_updated_at=expected_updated_at)
+        self.journal.append(
+            "api_run_contract_amended",
+            "api_runs",
+            {
+                "contract_id": contract.contract_id,
+                "mode": contract.mode.value,
+                "branch_name": contract.branch_name,
+                "amendment_count": contract.metadata["amendment_count"],
             },
         )
         return contract
@@ -256,7 +357,6 @@ class ApiRunService:
         response_runner: Callable[[ApiRunRequest, MegaPromptTemplate, ContextPack], Any] | None = None,
         contract_id: str | None = None,
     ) -> dict[str, Any]:
-        self._ensure_operator_dashboard()
         contract = self.get_run_contract(contract_id) if contract_id else None
         if contract is not None:
             if contract.status is not RunContractStatus.APPROVED:
@@ -288,6 +388,22 @@ class ApiRunService:
             resolved_target_profile = context_pack.target_profile
             resolved_expected_outputs = list(expected_outputs or prompt_template.output_contract)
             request_metadata = dict(metadata or {})
+        repo_preflight = self._run_repo_preflight(target_branch=context_pack.branch_name, contract=contract)
+        request_metadata["repo_preflight"] = repo_preflight
+        if not repo_preflight["ok"]:
+            return self._create_preflight_clarification_exit(
+                contract=contract,
+                context_pack=context_pack,
+                prompt_template=prompt_template,
+                resolved_mode=resolved_mode,
+                resolved_target_profile=resolved_target_profile,
+                resolved_expected_outputs=resolved_expected_outputs,
+                request_metadata=request_metadata,
+                preflight=repo_preflight,
+            )
+        dashboard_status = self._ensure_operator_dashboard(contract=contract)
+        request_metadata["operator_dashboard_reason"] = str(dashboard_status.get("reason") or "unknown")
+        request_metadata["operator_dashboard_ready"] = bool(dashboard_status.get("ready"))
         request = ApiRunRequest(
             run_request_id=new_id("run_request"),
             context_pack_id=context_pack.context_pack_id,
@@ -306,8 +422,6 @@ class ApiRunService:
             contract_id=contract.contract_id if contract else None,
             metadata=request_metadata,
         )
-        self._persist_run_request(request)
-        self._update_request_status(request.run_request_id, ApiRunStatus.RUNNING)
         run_id = new_id("api_run")
         placeholder_result = ApiRunResult(
             run_id=run_id,
@@ -323,31 +437,62 @@ class ApiRunService:
             usage={},
             metadata={"live_state": "running"},
         )
-        self._persist_run_result(placeholder_result)
-        if contract is not None:
-            contract.status = RunContractStatus.EXECUTED
-            contract.updated_at = datetime.now(timezone.utc).isoformat()
-            contract.metadata["last_run_request_id"] = request.run_request_id
-            self._persist_run_contract(contract)
+        contract_expected_updated_at = contract.updated_at if contract is not None else None
+        run_started_at = datetime.now(timezone.utc).isoformat()
+        request.status = ApiRunStatus.RUNNING
+        request.updated_at = run_started_at
+        placeholder_result.updated_at = run_started_at
+        with self.database.transaction() as connection:
+            self._persist_run_request(request, connection=connection)
+            self._persist_run_result(placeholder_result, connection=connection)
+            if contract is not None:
+                contract.status = RunContractStatus.EXECUTED
+                contract.updated_at = run_started_at
+                contract.metadata["last_run_request_id"] = request.run_request_id
+                self._persist_run_contract(
+                    contract,
+                    connection=connection,
+                    expected_updated_at=contract_expected_updated_at,
+                )
+            self._emit_run_lifecycle_event(
+                run_id=run_id,
+                run_request_id=request.run_request_id,
+                contract_id=request.contract_id,
+                kind=RunLifecycleEventKind.RUN_STARTED,
+                mode=request.mode,
+                branch_name=request.branch_name,
+                status=ApiRunStatus.RUNNING,
+                phase="demarrage",
+                title=f"Run {request.mode.value} demarre",
+                summary=f"Le lot {request.mode.value} travaille maintenant sur {request.branch_name}.",
+                metadata={
+                    "objective": request.objective,
+                    "operator_guard_reason": request.metadata.get("operator_dashboard_reason"),
+                },
+                connection=connection,
+                refresh_snapshot=False,
+            )
+            self._record_run_event(
+                run_id=run_id,
+                phase="demarrage",
+                severity="info",
+                machine_summary="Le run de code a demarre en mode silencieux.",
+                human_summary=None,
+                payload={
+                    "mode": resolved_mode.value,
+                    "branch_name": request.branch_name,
+                    "speech_policy": request.speech_policy.value,
+                    "contract_id": request.contract_id,
+                },
+                connection=connection,
+                refresh_snapshot=False,
+            )
         self.logger.log(
             "INFO",
             "api_run_started",
             run_request_id=request.run_request_id,
             mode=resolved_mode.value,
             branch_name=request.branch_name,
-        )
-        self._record_run_event(
-            run_id=run_id,
-            phase="demarrage",
-            severity="info",
-            machine_summary="Le run de code a demarre en mode silencieux.",
-            human_summary=None,
-            payload={
-                "mode": resolved_mode.value,
-                "branch_name": request.branch_name,
-                "speech_policy": request.speech_policy.value,
-                "contract_id": request.contract_id,
-            },
         )
         self.journal.append(
             "api_run_started",
@@ -361,6 +506,7 @@ class ApiRunService:
                 "branch_name": request.branch_name,
             },
         )
+        self._refresh_live_snapshot()
         try:
             self._record_run_event(
                 run_id=run_id,
@@ -382,65 +528,191 @@ class ApiRunService:
             structured_output, raw_payload, usage = self._normalize_response_payload(response_payload)
             raw_output_path = self._write_runtime_json(self.paths.api_runs_root / "raw_results", run_id, raw_payload)
             structured_output_path = self._write_runtime_json(self.paths.api_runs_root / "structured_results", run_id, structured_output)
-            review_package_path = self._write_runtime_json(
-                self.paths.api_runs_root / "review_packages",
-                run_id,
-                {
-                    "run_id": run_id,
-                    "objective": request.objective,
-                    "mode": request.mode.value,
-                    "branch_name": request.branch_name,
-                    "structured_output": structured_output,
-                    "expected_outputs": request.expected_outputs,
-                },
-            )
-            result = ApiRunResult(
-                run_id=run_id,
-                run_request_id=request.run_request_id,
-                model=str(raw_payload.get("model") or prompt_template.model),
-                mode=request.mode,
-                status=ApiRunStatus.COMPLETED,
-                structured_output=structured_output,
-                raw_output_path=str(raw_output_path),
-                prompt_artifact_path=prompt_template.artifact_path,
-                result_artifact_path=str(structured_output_path),
-                estimated_cost_eur=self._estimate_cost_eur(model=str(raw_payload.get("model") or prompt_template.model), usage=usage),
-                usage=usage,
-                metadata={"review_package_path": str(review_package_path)},
-            )
-            self._persist_run_result(result)
-            self._detect_noise_signal(run_id=result.run_id, structured_output=structured_output, request=request)
-            self._update_request_status(request.run_request_id, ApiRunStatus.COMPLETED)
-            self._record_run_event(
-                run_id=run_id,
-                phase="termine",
-                severity="info",
-                machine_summary="Le run est termine et pret pour revue.",
-                human_summary=None,
-                payload={
-                    "estimated_cost_eur": result.estimated_cost_eur,
-                    "result_artifact_path": result.result_artifact_path,
-                    "review_package_path": str(review_package_path),
-                },
-            )
-            self.logger.log(
-                "INFO",
-                "api_run_completed",
-                run_id=result.run_id,
-                mode=result.mode.value,
-                estimated_cost_eur=result.estimated_cost_eur,
-            )
-            self.journal.append(
-                "api_run_completed",
-                "api_runs",
-                {
-                    "run_id": result.run_id,
-                    "run_request_id": request.run_request_id,
-                    "mode": result.mode.value,
-                    "branch_name": request.branch_name,
-                    "estimated_cost_eur": result.estimated_cost_eur,
-                },
-            )
+            estimated_cost = self._estimate_cost_eur(model=str(raw_payload.get("model") or prompt_template.model), usage=usage)
+            if self._structured_output_requires_clarification(structured_output):
+                clarification = self._build_clarification_report(
+                    run_id=run_id,
+                    request=request,
+                    structured_output=structured_output,
+                )
+                result = ApiRunResult(
+                    run_id=run_id,
+                    run_request_id=request.run_request_id,
+                    model=str(raw_payload.get("model") or prompt_template.model),
+                    mode=request.mode,
+                    status=ApiRunStatus.CLARIFICATION_REQUIRED,
+                    structured_output=structured_output,
+                    raw_output_path=str(raw_output_path),
+                    prompt_artifact_path=prompt_template.artifact_path,
+                    result_artifact_path=str(structured_output_path),
+                    estimated_cost_eur=estimated_cost,
+                    usage=usage,
+                    metadata={},
+                )
+                request_finalized_at = datetime.now(timezone.utc).isoformat()
+                contract_expected_updated_at = contract.updated_at if contract is not None else None
+                with self.database.transaction() as connection:
+                    self._persist_clarification_report(clarification, connection=connection)
+                    result.metadata["clarification_report_path"] = str(clarification.metadata["artifact_path"])
+                    result.updated_at = request_finalized_at
+                    self._persist_run_result(result, connection=connection)
+                    self._update_request_status(
+                        request.run_request_id,
+                        ApiRunStatus.CLARIFICATION_REQUIRED,
+                        updated_at=request_finalized_at,
+                        connection=connection,
+                    )
+                    if contract is not None:
+                        self._mark_contract_clarification_pending(
+                            contract=contract,
+                            clarification=clarification,
+                            connection=connection,
+                            expected_updated_at=contract_expected_updated_at,
+                        )
+                    self._record_run_event(
+                        run_id=run_id,
+                        phase="clarification",
+                        severity="warning",
+                        machine_summary=f"Clarification requise: {clarification.cause}",
+                        human_summary=f"Question fondatrice requise: {clarification.question_for_founder}",
+                        payload={
+                            "clarification_report_id": clarification.report_id,
+                            "requires_reapproval": clarification.requires_reapproval,
+                        },
+                        connection=connection,
+                        refresh_snapshot=False,
+                    )
+                    self._emit_run_lifecycle_event(
+                        run_id=run_id,
+                        run_request_id=request.run_request_id,
+                        contract_id=request.contract_id,
+                        kind=RunLifecycleEventKind.CLARIFICATION_REQUIRED,
+                        mode=request.mode,
+                        branch_name=request.branch_name,
+                        status=ApiRunStatus.CLARIFICATION_REQUIRED,
+                        phase="clarification",
+                        title="Clarification requise",
+                        summary=clarification.cause,
+                        blocking_question=clarification.question_for_founder,
+                        recommended_action=clarification.recommended_contract_change,
+                        requires_reapproval=clarification.requires_reapproval,
+                        metadata={
+                            "objective": request.objective,
+                            "clarification_report_id": clarification.report_id,
+                        },
+                        connection=connection,
+                        refresh_snapshot=False,
+                    )
+                self.logger.log(
+                    "WARNING",
+                    "api_run_clarification_required",
+                    run_id=result.run_id,
+                    run_request_id=request.run_request_id,
+                    mode=result.mode.value,
+                    clarification_report_id=clarification.report_id,
+                )
+                self.journal.append(
+                    "api_run_clarification_required",
+                    "api_runs",
+                    {
+                        "run_id": result.run_id,
+                        "run_request_id": request.run_request_id,
+                        "mode": result.mode.value,
+                        "branch_name": request.branch_name,
+                        "clarification_report_id": clarification.report_id,
+                    },
+                )
+                self._refresh_live_snapshot()
+            else:
+                review_package_path = self._write_runtime_json(
+                    self.paths.api_runs_root / "review_packages",
+                    run_id,
+                    {
+                        "run_id": run_id,
+                        "objective": request.objective,
+                        "mode": request.mode.value,
+                        "branch_name": request.branch_name,
+                        "structured_output": structured_output,
+                        "expected_outputs": request.expected_outputs,
+                    },
+                )
+                result = ApiRunResult(
+                    run_id=run_id,
+                    run_request_id=request.run_request_id,
+                    model=str(raw_payload.get("model") or prompt_template.model),
+                    mode=request.mode,
+                    status=ApiRunStatus.COMPLETED,
+                    structured_output=structured_output,
+                    raw_output_path=str(raw_output_path),
+                    prompt_artifact_path=prompt_template.artifact_path,
+                    result_artifact_path=str(structured_output_path),
+                    estimated_cost_eur=estimated_cost,
+                    usage=usage,
+                    metadata={"review_package_path": str(review_package_path)},
+                )
+                request_finalized_at = datetime.now(timezone.utc).isoformat()
+                result.updated_at = request_finalized_at
+                with self.database.transaction() as connection:
+                    self._persist_run_result(result, connection=connection)
+                    self._update_request_status(
+                        request.run_request_id,
+                        ApiRunStatus.COMPLETED,
+                        updated_at=request_finalized_at,
+                        connection=connection,
+                    )
+                    self._record_run_event(
+                        run_id=run_id,
+                        phase="termine",
+                        severity="info",
+                        machine_summary="Le run est termine et pret pour revue.",
+                        human_summary=None,
+                        payload={
+                            "estimated_cost_eur": result.estimated_cost_eur,
+                            "result_artifact_path": result.result_artifact_path,
+                            "review_package_path": str(review_package_path),
+                        },
+                        connection=connection,
+                        refresh_snapshot=False,
+                    )
+                    self._emit_run_lifecycle_event(
+                        run_id=run_id,
+                        run_request_id=request.run_request_id,
+                        contract_id=request.contract_id,
+                        kind=RunLifecycleEventKind.RUN_COMPLETED,
+                        mode=request.mode,
+                        branch_name=request.branch_name,
+                        status=ApiRunStatus.COMPLETED,
+                        phase="termine",
+                        title="Run termine",
+                        summary="Le run est termine et attend maintenant la revue locale.",
+                        metadata={
+                            "objective": request.objective,
+                            "review_package_path": str(review_package_path),
+                            "estimated_cost_eur": result.estimated_cost_eur,
+                        },
+                        connection=connection,
+                        refresh_snapshot=False,
+                    )
+                self._detect_noise_signal(run_id=result.run_id, structured_output=structured_output, request=request)
+                self.logger.log(
+                    "INFO",
+                    "api_run_completed",
+                    run_id=result.run_id,
+                    mode=result.mode.value,
+                    estimated_cost_eur=result.estimated_cost_eur,
+                )
+                self.journal.append(
+                    "api_run_completed",
+                    "api_runs",
+                    {
+                        "run_id": result.run_id,
+                        "run_request_id": request.run_request_id,
+                        "mode": result.mode.value,
+                        "branch_name": request.branch_name,
+                        "estimated_cost_eur": result.estimated_cost_eur,
+                    },
+                )
+                self._refresh_live_snapshot()
         except Exception as exc:
             error_payload = {"error": str(exc), "mode": request.mode.value, "branch_name": request.branch_name}
             raw_output_path = self._write_runtime_json(self.paths.api_runs_root / "failed_results", run_id, error_payload)
@@ -458,18 +730,48 @@ class ApiRunService:
                 usage={},
                 metadata={"error": str(exc)},
             )
-            self._persist_run_result(result)
-            self._update_request_status(request.run_request_id, ApiRunStatus.FAILED)
             blockage = self._build_blockage_report(result=result, request=request, error=str(exc))
-            self._persist_blockage_report(blockage)
-            self._record_run_event(
-                run_id=run_id,
-                phase="bloque",
-                severity="error",
-                machine_summary=f"Le run a echoue: {str(exc)}",
-                human_summary=f"Blocage reel detecte: {blockage.cause}",
-                payload={"blockage_report_id": blockage.report_id, "error": str(exc)},
-            )
+            request_failed_at = datetime.now(timezone.utc).isoformat()
+            result.updated_at = request_failed_at
+            with self.database.transaction() as connection:
+                self._persist_run_result(result, connection=connection)
+                self._update_request_status(
+                    request.run_request_id,
+                    ApiRunStatus.FAILED,
+                    updated_at=request_failed_at,
+                    connection=connection,
+                )
+                self._persist_blockage_report(blockage, connection=connection)
+                self._record_run_event(
+                    run_id=run_id,
+                    phase="bloque",
+                    severity="error",
+                    machine_summary=f"Le run a echoue: {str(exc)}",
+                    human_summary=f"Blocage reel detecte: {blockage.cause}",
+                    payload={"blockage_report_id": blockage.report_id, "error": str(exc)},
+                    connection=connection,
+                    refresh_snapshot=False,
+                )
+                self._emit_run_lifecycle_event(
+                    run_id=run_id,
+                    run_request_id=request.run_request_id,
+                    contract_id=request.contract_id,
+                    kind=RunLifecycleEventKind.RUN_FAILED,
+                    mode=request.mode,
+                    branch_name=request.branch_name,
+                    status=ApiRunStatus.FAILED,
+                    phase="bloque",
+                    title="Run bloque",
+                    summary=blockage.cause,
+                    recommended_action=blockage.recommendation,
+                    metadata={
+                        "objective": request.objective,
+                        "blockage_report_id": blockage.report_id,
+                        "error": str(exc),
+                    },
+                    connection=connection,
+                    refresh_snapshot=False,
+                )
             self.logger.log(
                 "ERROR",
                 "api_run_failed",
@@ -489,6 +791,7 @@ class ApiRunService:
                     "error": str(exc),
                 },
             )
+            self._refresh_live_snapshot()
 
         snapshot = self.monitor_snapshot()
         return {
@@ -500,9 +803,9 @@ class ApiRunService:
             "monitor_snapshot": snapshot,
         }
 
-    def _ensure_operator_dashboard(self) -> None:
+    def _ensure_operator_dashboard(self, *, contract: RunContract | None = None) -> dict[str, Any]:
         if not getattr(self.dashboard_config, "auto_start", False):
-            return
+            return {"ready": True, "reason": "dashboard_disabled"}
         from .dashboard import ensure_dashboard_running
 
         status = ensure_dashboard_running(
@@ -513,9 +816,269 @@ class ApiRunService:
             refresh_seconds=self.dashboard_config.refresh_seconds,
             open_browser=self.dashboard_config.auto_open_browser,
             require_visible_ui=getattr(self.dashboard_config, "require_visible_ui", True),
+            wait_seconds=float(getattr(self.dashboard_config, "beacon_wait_seconds", 12.0)),
+            recent_beacon_grace_seconds=int(getattr(self.dashboard_config, "recent_beacon_grace_seconds", 1800)),
+            visibility_state_path=self.paths.api_runs_root / "operator_visibility.json",
         )
-        if not status.get("ready"):
-            raise RuntimeError("La control room locale n'a pas pu etre ouverte et verifiee sur le PC.")
+        if status.get("ready"):
+            return status
+        if self._has_recent_founder_approval(contract):
+            fallback_status = {
+                **status,
+                "ready": True,
+                "reason": "founder_approval_fallback",
+            }
+            self.journal.append(
+                "api_run_dashboard_fallback_used",
+                "api_runs",
+                {
+                    "contract_id": contract.contract_id if contract else None,
+                    "dashboard_reason": str(status.get("reason") or "control_room_unverified"),
+                },
+            )
+            return fallback_status
+        detail = str(status.get("reason") or "control_room_unverified")
+        raise RuntimeError(f"La control room locale n'a pas pu etre ouverte et verifiee sur le PC. Cause: {detail}")
+
+    def _has_recent_founder_approval(self, contract: RunContract | None) -> bool:
+        if contract is None or contract.founder_decision not in {"go", "go_avec_correction"}:
+            return False
+        grace_seconds = int(getattr(self.dashboard_config, "founder_approval_grace_seconds", 1800))
+        if grace_seconds <= 0:
+            return False
+        approved_at = str(contract.founder_decision_at or "")
+        if not approved_at:
+            return False
+        try:
+            approved_at_dt = datetime.fromisoformat(approved_at.replace("Z", "+00:00"))
+        except ValueError:
+            return False
+        age_seconds = (datetime.now(timezone.utc) - approved_at_dt).total_seconds()
+        return 0 <= age_seconds <= grace_seconds
+
+    def _run_repo_preflight(self, *, target_branch: str, contract: RunContract | None) -> dict[str, Any]:
+        repo_state = self._repo_state(target_branch=target_branch)
+        metadata = contract.metadata if contract is not None else {}
+        current_branch = str(repo_state.get("current_branch") or "")
+        dirty = bool(repo_state.get("dirty"))
+        allow_branch_mismatch = bool(metadata.get("allow_branch_mismatch"))
+        allow_dirty_worktree = bool(metadata.get("allow_dirty_worktree"))
+        require_clean_worktree = bool(metadata.get("require_clean_worktree"))
+        issues: list[str] = []
+        if current_branch != target_branch and not allow_branch_mismatch:
+            issues.append("branch_mismatch")
+        if dirty and current_branch != target_branch and not allow_dirty_worktree:
+            issues.append("dirty_worktree_on_mismatched_branch")
+        elif dirty and require_clean_worktree and not allow_dirty_worktree:
+            issues.append("dirty_worktree_requires_clean_checkout")
+        return {
+            **repo_state,
+            "ok": not issues,
+            "issues": issues,
+            "allow_branch_mismatch": allow_branch_mismatch,
+            "allow_dirty_worktree": allow_dirty_worktree,
+            "require_clean_worktree": require_clean_worktree,
+        }
+
+    def _build_repo_preflight_clarification(
+        self,
+        *,
+        run_id: str,
+        request: ApiRunRequest,
+        preflight: dict[str, Any],
+    ) -> ClarificationReport:
+        current_branch = str(preflight.get("current_branch") or "unknown")
+        target_branch = str(preflight.get("target_branch") or request.branch_name)
+        dirty = bool(preflight.get("dirty"))
+        status_short = [str(item) for item in preflight.get("status_short") or []]
+        if current_branch != target_branch and dirty:
+            cause = (
+                f"Conflit repo/runtime reel: le contrat vise `{target_branch}`, alors que le checkout local est "
+                f"`{current_branch}` et que l'arbre Git est deja sale."
+            )
+        elif current_branch != target_branch:
+            cause = (
+                f"Conflit de branche: le contrat vise `{target_branch}`, mais le checkout local est `{current_branch}`."
+            )
+        else:
+            cause = "Le contrat exige un checkout propre avant ecriture, mais l'arbre Git local est deja sale."
+        if dirty:
+            impact = (
+                "Un patch ecrit maintenant risque de melanger ou d'ecraser des changements locaux non arbitres. "
+                f"Etat Git courant: {' | '.join(status_short[:8]) or 'worktree sale'}."
+            )
+        else:
+            impact = (
+                "Un patch ecrit maintenant partirait sur une base repo differente de celle approuvee dans le contrat."
+            )
+        question = (
+            f"Confirmez-vous que ce lot doit s'integrer sur `{current_branch}` tel quel, "
+            f"ou faut-il d'abord realigner le checkout sur `{target_branch}` avant patch et tests ?"
+        )
+        recommended = (
+            f"Ajouter une precondition repo explicite au contrat: checkout de `{target_branch}` avant generation de patch. "
+            f"A defaut, noter noir sur blanc que l'integration sur `{current_branch}`"
+            f"{' avec worktree sale' if dirty else ''} est acceptee puis redonner un go."
+        )
+        return ClarificationReport(
+            report_id=new_id("clarification_report"),
+            run_id=run_id,
+            cause=cause,
+            impact=impact,
+            question_for_founder=question,
+            recommended_contract_change=recommended,
+            requires_reapproval=True,
+            metadata={
+                "mode": request.mode.value,
+                "branch_name": request.branch_name,
+                "preflight": preflight,
+                "source": "repo_preflight",
+            },
+        )
+
+    def _create_preflight_clarification_exit(
+        self,
+        *,
+        contract: RunContract | None,
+        context_pack: ContextPack,
+        prompt_template: MegaPromptTemplate,
+        resolved_mode: ApiRunMode,
+        resolved_target_profile: str | None,
+        resolved_expected_outputs: list[str],
+        request_metadata: dict[str, Any],
+        preflight: dict[str, Any],
+    ) -> dict[str, Any]:
+        contract_expected_updated_at = contract.updated_at if contract is not None else None
+        request = ApiRunRequest(
+            run_request_id=new_id("run_request"),
+            context_pack_id=context_pack.context_pack_id,
+            prompt_template_id=prompt_template.prompt_template_id,
+            mode=resolved_mode,
+            objective=context_pack.objective,
+            branch_name=context_pack.branch_name,
+            target_profile=resolved_target_profile,
+            skill_tags=context_pack.skill_tags,
+            expected_outputs=resolved_expected_outputs,
+            communication_mode=CommunicationMode.BUILDER,
+            speech_policy=self.execution_policy.default_run_speech_policy,
+            operator_language=self.execution_policy.operator_language,
+            audience=self.execution_policy.operator_audience,
+            run_contract_required=bool(contract is not None or self.execution_policy.run_contract_required),
+            contract_id=contract.contract_id if contract else None,
+            status=ApiRunStatus.CLARIFICATION_REQUIRED,
+            metadata={**request_metadata, "preflight_blocked": True},
+        )
+        run_id = new_id("api_run")
+        clarification = self._build_repo_preflight_clarification(
+            run_id=run_id,
+            request=request,
+            preflight=preflight,
+        )
+        structured_output = {
+            "decision": "clarification_required",
+            "why": clarification.impact,
+            "alternatives": [
+                f"Realigner le checkout sur `{request.branch_name}` puis relancer.",
+                "Assumer explicitement l'integration sur l'arbre local actuel et redonner un go.",
+            ],
+            "files_to_change": [],
+            "interfaces": ["repo_preflight", "run_contract"],
+            "patch_outline": ["Aucun patch produit avant arbitrage repo."],
+            "tests": ["Aucun test lance avant arbitrage repo."],
+            "risks": [clarification.cause],
+            "acceptance_criteria": ["Le patch ne doit partir que sur la base repo explicitement confirmee."],
+            "open_questions": [clarification.question_for_founder],
+            "clarification_needed": True,
+            "blocking_reason": clarification.cause,
+            "recommended_contract_change": clarification.recommended_contract_change,
+            "question_for_founder": clarification.question_for_founder,
+        }
+        raw_output_path = self._write_runtime_json(
+            self.paths.api_runs_root / "raw_results",
+            run_id,
+            {"source": "repo_preflight", "preflight": preflight, "clarification_report_id": clarification.report_id},
+        )
+        structured_output_path = self._write_runtime_json(
+            self.paths.api_runs_root / "structured_results",
+            run_id,
+            structured_output,
+        )
+        result = ApiRunResult(
+            run_id=run_id,
+            run_request_id=request.run_request_id,
+            model=prompt_template.model,
+            mode=request.mode,
+            status=ApiRunStatus.CLARIFICATION_REQUIRED,
+            structured_output=structured_output,
+            raw_output_path=str(raw_output_path),
+            prompt_artifact_path=prompt_template.artifact_path,
+            result_artifact_path=str(structured_output_path),
+            estimated_cost_eur=0.0,
+            usage={},
+            metadata={"source": "repo_preflight"},
+        )
+        with self.database.transaction() as connection:
+            self._persist_run_request(request, connection=connection)
+            self._persist_clarification_report(clarification, connection=connection)
+            result.metadata["clarification_report_path"] = str(clarification.metadata["artifact_path"])
+            self._persist_run_result(result, connection=connection)
+            if contract is not None:
+                self._mark_contract_clarification_pending(
+                    contract=contract,
+                    clarification=clarification,
+                    connection=connection,
+                    expected_updated_at=contract_expected_updated_at,
+                )
+            self._record_run_event(
+                run_id=run_id,
+                phase="clarification",
+                severity="warning",
+                machine_summary=f"Clarification requise avant depense API: {clarification.cause}",
+                human_summary=f"Question fondatrice requise: {clarification.question_for_founder}",
+                payload={"clarification_report_id": clarification.report_id, "preflight": preflight},
+                connection=connection,
+                refresh_snapshot=False,
+            )
+            self._emit_run_lifecycle_event(
+                run_id=run_id,
+                run_request_id=request.run_request_id,
+                contract_id=request.contract_id,
+                kind=RunLifecycleEventKind.CLARIFICATION_REQUIRED,
+                mode=request.mode,
+                branch_name=request.branch_name,
+                status=ApiRunStatus.CLARIFICATION_REQUIRED,
+                phase="clarification",
+                title="Clarification requise avant run",
+                summary=clarification.cause,
+                blocking_question=clarification.question_for_founder,
+                recommended_action=clarification.recommended_contract_change,
+                requires_reapproval=clarification.requires_reapproval,
+                metadata={"objective": request.objective, "source": "repo_preflight"},
+                connection=connection,
+                refresh_snapshot=False,
+            )
+        self.journal.append(
+            "api_run_preflight_blocked",
+            "api_runs",
+            {
+                "run_id": run_id,
+                "run_request_id": request.run_request_id,
+                "contract_id": request.contract_id,
+                "issues": preflight.get("issues", []),
+                "target_branch": request.branch_name,
+                "current_branch": preflight.get("current_branch"),
+            },
+        )
+        self._refresh_live_snapshot()
+        snapshot = self.monitor_snapshot()
+        return {
+            "contract": contract,
+            "context_pack": context_pack,
+            "prompt_template": prompt_template,
+            "request": request,
+            "result": result,
+            "monitor_snapshot": snapshot,
+        }
 
     def review_result(
         self,
@@ -529,6 +1092,8 @@ class ApiRunService:
         metadata: dict[str, Any] | None = None,
     ) -> ApiRunReview:
         run_result = self.get_run_result(run_id)
+        if run_result.status is ApiRunStatus.CLARIFICATION_REQUIRED:
+            raise RuntimeError("Les runs en clarification_required doivent etre amendes puis re-executes avant review.")
         request = self.get_run_request(run_result.run_request_id)
         review = ApiRunReview(
             review_id=new_id("run_review"),
@@ -559,6 +1124,24 @@ class ApiRunService:
             machine_summary=f"Revue terminee avec verdict {review.verdict.value}.",
             human_summary=completion_report.summary,
             payload={"review_id": review.review_id, "completion_report_id": completion_report.report_id},
+        )
+        self._emit_run_lifecycle_event(
+            run_id=run_id,
+            run_request_id=request.run_request_id,
+            contract_id=request.contract_id,
+            kind=RunLifecycleEventKind.RUN_REVIEWED,
+            mode=request.mode,
+            branch_name=request.branch_name,
+            status=ApiRunStatus.REVIEWED,
+            phase="revue_terminee",
+            title="Run relu",
+            summary=f"Verdict local: {review.verdict.value}.",
+            recommended_action=completion_report.next_action,
+            metadata={
+                "review_id": review.review_id,
+                "review_verdict": review.verdict.value,
+                "completion_report_id": completion_report.report_id,
+            },
         )
         self.journal.append(
             "api_run_reviewed",
@@ -620,7 +1203,161 @@ class ApiRunService:
             blockage_payload = json.loads(blockage_row["metadata_json"])
             if blockage_payload.get("artifact_path"):
                 artifacts.append(ApiRunArtifact(new_id("api_artifact"), run_id, "blocage", str(blockage_payload["artifact_path"])))
+        clarification_row = self.database.fetchone(
+            "SELECT * FROM clarification_reports WHERE run_id = ? ORDER BY created_at DESC LIMIT 1",
+            (run_id,),
+        )
+        if clarification_row:
+            clarification_payload = json.loads(clarification_row["metadata_json"])
+            if clarification_payload.get("artifact_path"):
+                artifacts.append(
+                    ApiRunArtifact(new_id("api_artifact"), run_id, "clarification", str(clarification_payload["artifact_path"]))
+                )
         return {"run_id": run_id, "artifacts": [to_jsonable(item) for item in artifacts]}
+
+    def list_operator_deliveries(
+        self,
+        *,
+        status: OperatorDeliveryStatus | None = OperatorDeliveryStatus.PENDING,
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).isoformat()
+        sql = """
+            SELECT
+                d.*,
+                e.run_id,
+                e.run_request_id,
+                e.contract_id,
+                e.kind,
+                e.title,
+                e.summary,
+                e.branch_name,
+                e.mode,
+                e.status AS run_status,
+                e.phase,
+                e.blocking_question,
+                e.recommended_action,
+                e.requires_reapproval,
+                e.artifact_path
+            FROM api_run_operator_deliveries d
+            JOIN api_run_lifecycle_events e ON e.lifecycle_event_id = d.lifecycle_event_id
+        """
+        params: list[Any] = []
+        if status is not None:
+            sql += " WHERE d.status = ?"
+            params.append(status.value)
+            if status is OperatorDeliveryStatus.PENDING:
+                sql += " AND COALESCE(d.next_attempt_at, d.updated_at, d.created_at) <= ?"
+                params.append(now_iso)
+        sql += " ORDER BY COALESCE(d.next_attempt_at, d.created_at) ASC, d.created_at ASC LIMIT ?"
+        params.append(limit)
+        rows = self.database.fetchall(sql, tuple(params))
+        deliveries: list[dict[str, Any]] = []
+        for row in rows:
+            payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
+            metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+            deliveries.append(
+                {
+                    "delivery_id": str(row["delivery_id"]),
+                    "lifecycle_event_id": str(row["lifecycle_event_id"]),
+                    "adapter": str(row["adapter"]),
+                    "surface": str(row["surface"]),
+                    "channel_hint": str(row["channel_hint"]),
+                    "status": str(row["status"]),
+                    "attempts": int(row["attempts"]),
+                    "last_error": str(row["last_error"]) if row["last_error"] else None,
+                    "next_attempt_at": str(row["next_attempt_at"]) if row["next_attempt_at"] else None,
+                    "payload": payload,
+                    "metadata": metadata,
+                    "event": {
+                        "run_id": str(row["run_id"]),
+                        "run_request_id": str(row["run_request_id"]),
+                        "contract_id": str(row["contract_id"]) if row["contract_id"] else None,
+                        "kind": str(row["kind"]),
+                        "title": str(row["title"]),
+                        "summary": str(row["summary"]),
+                        "branch_name": str(row["branch_name"]) if row["branch_name"] else None,
+                        "mode": str(row["mode"]) if row["mode"] else None,
+                        "status": str(row["run_status"]) if row["run_status"] else None,
+                        "phase": str(row["phase"]) if row["phase"] else None,
+                        "blocking_question": str(row["blocking_question"]) if row["blocking_question"] else None,
+                        "recommended_action": str(row["recommended_action"]) if row["recommended_action"] else None,
+                        "requires_reapproval": bool(row["requires_reapproval"]),
+                        "artifact_path": str(row["artifact_path"]) if row["artifact_path"] else None,
+                    },
+                }
+            )
+        return {"deliveries": deliveries}
+
+    def mark_operator_delivery(
+        self,
+        *,
+        delivery_id: str,
+        status: OperatorDeliveryStatus,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        row = self.database.fetchone(
+            "SELECT * FROM api_run_operator_deliveries WHERE delivery_id = ?",
+            (delivery_id,),
+        )
+        if row is None:
+            raise KeyError(f"Unknown operator delivery: {delivery_id}")
+        delivery_metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+        if metadata:
+            delivery_metadata.update(metadata)
+        attempts = int(row["attempts"] or 0) + 1
+        updated_at = datetime.now(timezone.utc).isoformat()
+        final_status = status
+        next_attempt_at: str | None = None
+        if status is OperatorDeliveryStatus.PENDING:
+            max_attempts = max(1, int(getattr(self.execution_policy, "operator_delivery_max_attempts", 4)))
+            if attempts >= max_attempts:
+                final_status = OperatorDeliveryStatus.FAILED
+            else:
+                base_seconds = max(1, int(getattr(self.execution_policy, "operator_delivery_retry_base_seconds", 30)))
+                max_seconds = max(base_seconds, int(getattr(self.execution_policy, "operator_delivery_retry_max_seconds", 900)))
+                delay_seconds = min(max_seconds, base_seconds * (2 ** max(0, attempts - 1)))
+                jitter_seconds = min(15, abs(hash(delivery_id)) % 7)
+                next_attempt_at = (datetime.now(timezone.utc) + timedelta(seconds=delay_seconds + jitter_seconds)).isoformat()
+                delivery_metadata["retry_backoff_seconds"] = delay_seconds + jitter_seconds
+        else:
+            delivery_metadata.pop("retry_backoff_seconds", None)
+        self.database.execute(
+            """
+            UPDATE api_run_operator_deliveries
+            SET status = ?, attempts = ?, last_error = ?, next_attempt_at = ?, metadata_json = ?, updated_at = ?
+            WHERE delivery_id = ?
+            """,
+            (
+                final_status.value,
+                attempts,
+                error,
+                next_attempt_at,
+                dump_json(delivery_metadata),
+                updated_at,
+                delivery_id,
+            ),
+        )
+        self.journal.append(
+            "api_run_operator_delivery_updated",
+            "api_runs",
+            {
+                "delivery_id": delivery_id,
+                "status": final_status.value,
+                "attempts": attempts,
+                "last_error": error or "",
+            },
+        )
+        self._refresh_live_snapshot()
+        return {
+            "delivery_id": delivery_id,
+            "status": final_status.value,
+            "attempts": attempts,
+            "last_error": error,
+            "next_attempt_at": next_attempt_at,
+            "metadata": delivery_metadata,
+        }
 
     def monitor_snapshot(self, *, limit: int = 5) -> dict[str, Any]:
         snapshot = self._build_monitor_snapshot(limit=limit)
@@ -637,6 +1374,7 @@ class ApiRunService:
                 q.objective,
                 q.branch_name,
                 q.status,
+                q.metadata_json,
                 q.communication_mode,
                 q.speech_policy,
                 q.operator_language,
@@ -667,6 +1405,15 @@ class ApiRunService:
         event_rows = self.database.fetchall(
             "SELECT * FROM api_run_events ORDER BY created_at DESC",
         )
+        clarification_rows = self.database.fetchall(
+            "SELECT * FROM clarification_reports ORDER BY created_at DESC",
+        )
+        lifecycle_rows = self.database.fetchall(
+            "SELECT * FROM api_run_lifecycle_events ORDER BY created_at DESC",
+        )
+        delivery_rows = self.database.fetchall(
+            "SELECT * FROM api_run_operator_deliveries ORDER BY created_at DESC",
+        )
         cost_rows = self.database.fetchall(
             "SELECT estimated_cost_eur, created_at FROM api_run_results ORDER BY created_at DESC",
         )
@@ -676,6 +1423,15 @@ class ApiRunService:
         events: dict[str, Any] = {}
         for row in event_rows:
             events.setdefault(str(row["run_id"]), row)
+        clarifications: dict[str, Any] = {}
+        for row in clarification_rows:
+            clarifications.setdefault(str(row["run_id"]), row)
+        lifecycle_events: dict[str, Any] = {}
+        for row in lifecycle_rows:
+            lifecycle_events.setdefault(str(row["run_id"]), row)
+        deliveries: dict[str, Any] = {}
+        for row in delivery_rows:
+            deliveries.setdefault(str(row["lifecycle_event_id"]), row)
         now = datetime.now(timezone.utc)
         day_key = now.date().isoformat()
         month_key = now.strftime("%Y-%m")
@@ -695,6 +1451,12 @@ class ApiRunService:
             run_id = str(row["run_id"]) if row["run_id"] else None
             review_row = reviews.get(run_id) if run_id else None
             event_row = events.get(run_id) if run_id else None
+            clarification_row = clarifications.get(run_id) if run_id else None
+            lifecycle_row = lifecycle_events.get(run_id) if run_id else None
+            delivery_row = deliveries.get(str(lifecycle_row["lifecycle_event_id"])) if lifecycle_row else None
+            request_metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+            guard_reason = self._normalize_operator_guard_reason(request_metadata.get("operator_dashboard_reason"))
+            clarification_metadata = json.loads(clarification_row["metadata_json"]) if clarification_row else {}
             items.append(
                 {
                     "run_id": run_id,
@@ -715,9 +1477,30 @@ class ApiRunService:
                     "speech_policy": str(row["speech_policy"] or self.execution_policy.default_run_speech_policy.value),
                     "operator_language": str(row["operator_language"] or self.execution_policy.operator_language),
                     "audience": str(row["audience"] or self.execution_policy.operator_audience.value),
+                    "operator_guard_reason": guard_reason,
+                    "operator_guard_raw": str(request_metadata.get("operator_dashboard_reason") or "unknown"),
                     "phase": str(event_row["phase"]) if event_row else None,
                     "machine_summary": str(event_row["machine_summary"]) if event_row else None,
                     "human_summary": str(event_row["human_summary"]) if event_row and event_row["human_summary"] else None,
+                    "lifecycle_event_id": str(lifecycle_row["lifecycle_event_id"]) if lifecycle_row else None,
+                    "lifecycle_event_kind": str(lifecycle_row["kind"]) if lifecycle_row else None,
+                    "lifecycle_event_title": str(lifecycle_row["title"]) if lifecycle_row else None,
+                    "lifecycle_event_summary": str(lifecycle_row["summary"]) if lifecycle_row else None,
+                    "operator_channel_hint": str(lifecycle_row["channel_hint"]) if lifecycle_row else None,
+                    "operator_delivery_status": str(delivery_row["status"]) if delivery_row else None,
+                    "operator_delivery_attempts": int(delivery_row["attempts"]) if delivery_row else 0,
+                    "operator_delivery_error": str(delivery_row["last_error"]) if delivery_row and delivery_row["last_error"] else None,
+                    "operator_delivery_next_attempt_at": (
+                        str(delivery_row["next_attempt_at"]) if delivery_row and delivery_row["next_attempt_at"] else None
+                    ),
+                    "clarification_report_id": str(clarification_row["report_id"]) if clarification_row else None,
+                    "clarification_reason": str(clarification_row["cause"]) if clarification_row else None,
+                    "clarification_question": str(clarification_row["question_for_founder"]) if clarification_row else None,
+                    "clarification_recommended_contract_change": (
+                        str(clarification_row["recommended_contract_change"]) if clarification_row else None
+                    ),
+                    "clarification_requires_reapproval": bool(clarification_row["requires_reapproval"]) if clarification_row else False,
+                    "clarification_artifact_path": str(clarification_metadata.get("artifact_path") or "") if clarification_row else None,
                 }
             )
 
@@ -726,6 +1509,7 @@ class ApiRunService:
         )
         current_contract = None
         if current_contract_row is not None:
+            current_contract_metadata = json.loads(current_contract_row["metadata_json"]) if current_contract_row["metadata_json"] else {}
             current_contract = {
                 "contract_id": str(current_contract_row["contract_id"]),
                 "mode": str(current_contract_row["mode"]),
@@ -735,9 +1519,25 @@ class ApiRunService:
                 "estimated_cost_eur": float(current_contract_row["estimated_cost_eur"]),
                 "founder_decision": str(current_contract_row["founder_decision"]) if current_contract_row["founder_decision"] else None,
                 "created_at": str(current_contract_row["created_at"]),
+                "clarification_pending": bool(current_contract_metadata.get("clarification_pending")),
+                "requires_reapproval": bool(current_contract_metadata.get("requires_reapproval")),
+                "pending_clarification_report_id": str(current_contract_metadata.get("pending_clarification_report_id") or ""),
             }
 
+        status_counts: dict[str, int] = {}
+        review_counts: dict[str, int] = {}
+        operator_delivery_counts: dict[str, int] = {}
+        for item in items:
+            status_key = str(item.get("status") or "unknown")
+            status_counts[status_key] = status_counts.get(status_key, 0) + 1
+            review_key = str(item.get("review_verdict") or "pending")
+            review_counts[review_key] = review_counts.get(review_key, 0) + 1
+            delivery_key = str(item.get("operator_delivery_status") or "none")
+            operator_delivery_counts[delivery_key] = operator_delivery_counts.get(delivery_key, 0) + 1
+
         snapshot = {
+            "schema_version": "2",
+            "generated_at": now.isoformat(),
             "current_run": items[0] if items else None,
             "current_contract": current_contract,
             "budget": {
@@ -746,58 +1546,153 @@ class ApiRunService:
                 "daily_soft_limit_eur": self.execution_policy.daily_soft_limit_eur,
                 "monthly_limit_eur": self.execution_policy.monthly_limit_eur,
             },
+            "status_counts": status_counts,
+            "review_counts": review_counts,
+            "operator_delivery_counts": operator_delivery_counts,
             "latest_runs": items,
         }
         return snapshot
 
     def render_terminal_dashboard(self, *, limit: int = 5) -> str:
         snapshot = self.monitor_snapshot(limit=limit)
+        width = max(88, min(shutil.get_terminal_size(fallback=(120, 40)).columns, 140))
+        return "\n".join(self._render_terminal_frame(snapshot, width=width))
+
+    def _normalize_operator_guard_reason(self, reason: Any) -> str:
+        normalized = str(reason or "unknown").strip().lower()
+        mapping = {
+            "beacon_verified": "beacon",
+            "recent_operator_beacon": "recent_beacon",
+            "founder_approval_fallback": "founder_fallback",
+            "dashboard_reachable": "dashboard_only",
+            "dashboard_disabled": "dashboard_disabled",
+        }
+        return mapping.get(normalized, normalized or "unknown")
+
+    def _render_terminal_frame(self, snapshot: dict[str, Any], *, width: int) -> list[str]:
+        width = max(88, width)
         lines = [
-            "Project OS Runs API",
-            "====================",
-            f"Depense du jour: {snapshot['budget']['daily_spend_estimate_eur']:.4f} EUR / {snapshot['budget']['daily_soft_limit_eur']:.2f} EUR",
-            f"Depense du mois: {snapshot['budget']['monthly_spend_estimate_eur']:.4f} EUR / {snapshot['budget']['monthly_limit_eur']:.2f} EUR",
-            "",
+            "+" + "-" * (width - 2) + "+",
+            self._terminal_line(
+                f" Project OS API Monitor | snapshot {snapshot.get('generated_at') or 'n/a'}",
+                width=width,
+            ),
+            "+" + "-" * (width - 2) + "+",
         ]
+        budget = snapshot["budget"]
+        budget_line = (
+            f"Jour {budget['daily_spend_estimate_eur']:.4f}/{budget['daily_soft_limit_eur']:.2f} EUR"
+            f" | Mois {budget['monthly_spend_estimate_eur']:.4f}/{budget['monthly_limit_eur']:.2f} EUR"
+        )
+        delivery_counts = snapshot.get("operator_delivery_counts") or {}
+        delivery_line = ", ".join(f"{key}={value}" for key, value in sorted(delivery_counts.items())) or "aucune livraison"
+        lines.extend(self._terminal_section("Budget", [budget_line, f"Livraisons operateur: {delivery_line}"], width=width))
+
         current = snapshot.get("current_run")
         if current:
-            lines.extend(
-                [
-                    f"Run courant: {current['run_id'] or 'en_attente_de_resultat'}",
-                    f"Mode: {current['mode']}",
-                    f"Branche: {current['branch_name']}",
-                    f"Statut: {current['status']}",
-                    f"Contrat: {current['contract_status'] or 'sans_contrat'}",
-                    f"Phase: {current['phase'] or 'preparation'}",
-                    f"Derniere revue: {current['review_verdict'] or 'pending'}",
-                    f"Resume machine: {current['machine_summary'] or 'aucun evenement live'}",
-                    f"Artefacts: {current['raw_output_path'] or 'n/a'} | {current['structured_output_path'] or 'n/a'}",
-                    "",
-                ]
-            )
+            current_lines = [
+                (
+                    f"Run {current['run_id'] or 'en_attente'}"
+                    f" | mode={current['mode']}"
+                    f" | statut={current['status']}"
+                    f" | phase={current['phase'] or 'preparation'}"
+                ),
+                (
+                    f"Garde operateur: {current.get('operator_guard_reason') or 'unknown'}"
+                    f" | revue={current['review_verdict'] or 'pending'}"
+                    f" | contrat={current['contract_status'] or 'sans_contrat'}"
+                ),
+                (
+                    f"Signal humain: {current.get('lifecycle_event_kind') or 'n/a'}"
+                    f" | canal={current.get('operator_channel_hint') or 'n/a'}"
+                    f" | livraison={current.get('operator_delivery_status') or 'none'}"
+                ),
+                f"Branche: {current['branch_name']}",
+                f"Objectif: {current['objective']}",
+                f"Resume machine: {current['machine_summary'] or 'aucun evenement live'}",
+                (
+                    f"Artefacts: raw={current['raw_output_path'] or 'n/a'}"
+                    f" | structured={current['structured_output_path'] or 'n/a'}"
+                ),
+            ]
+            if current["status"] == ApiRunStatus.CLARIFICATION_REQUIRED.value:
+                current_lines.extend(
+                    [
+                        f"Raison de clarification: {current.get('clarification_reason') or 'n/a'}",
+                        f"Question bloquante: {current.get('clarification_question') or 'n/a'}",
+                        (
+                            f"Contrat a appliquer: {current.get('clarification_recommended_contract_change') or 'n/a'}"
+                            f" | re-go requis={'oui' if current.get('clarification_requires_reapproval') else 'non'}"
+                        ),
+                    ]
+                )
+        else:
+            current_lines = ["Aucun run API enregistre pour le moment."]
+        lines.extend(self._terminal_section("Run courant", current_lines, width=width))
+
         current_contract = snapshot.get("current_contract")
         if current_contract:
-            lines.extend(
-                [
-                    "Contrat courant",
-                    "---------------",
-                    f"Contrat: {current_contract['contract_id']}",
-                    f"Statut: {current_contract['status']}",
-                    f"Decision fondateur: {current_contract['founder_decision'] or 'en_attente'}",
-                    f"Objectif: {current_contract['summary']}",
-                    "",
-                ]
-            )
-        lines.append("Derniers runs")
-        lines.append("-------------")
+            contract_lines = [
+                (
+                    f"Contrat {current_contract['contract_id']}"
+                    f" | statut={current_contract['status']}"
+                    f" | decision={current_contract['founder_decision'] or 'en_attente'}"
+                ),
+                f"Branche: {current_contract['branch_name']}",
+                f"Objectif: {current_contract['summary']}",
+            ]
+            if current_contract.get("clarification_pending"):
+                contract_lines.append("Clarification en attente: le contrat doit etre amende puis reapprouve.")
+        else:
+            contract_lines = ["Aucun contrat recent."]
+        lines.extend(self._terminal_section("Contrat courant", contract_lines, width=width))
+
+        recent_lines: list[str] = []
         for item in snapshot["latest_runs"]:
-            lines.append(
-                f"- {item['created_at']} | {item['mode']} | {item['branch_name']} | {item['status']} | "
-                f"{item['estimated_cost_eur']:.4f} EUR | phase={item['phase'] or 'preparation'} | review={item['review_verdict'] or 'pending'}"
+            recent_lines.append(
+                self._fit_terminal_text(
+                    (
+                        f"{item['created_at']} | {item['status']} | {item['mode']} | "
+                        f"guard={item.get('operator_guard_reason') or 'unknown'} | "
+                        f"phase={item['phase'] or 'preparation'} | "
+                        f"review={item['review_verdict'] or 'pending'} | "
+                        f"{item['branch_name']}"
+                    ),
+                    width - 6,
+                )
             )
-        if not snapshot["latest_runs"]:
-            lines.append("- aucun run api pour le moment")
-        return "\n".join(lines)
+        if not recent_lines:
+            recent_lines.append("Aucun run API pour le moment.")
+        lines.extend(self._terminal_section("Derniers runs", recent_lines, width=width))
+        lines.append("+" + "-" * (width - 2) + "+")
+        return lines
+
+    def _terminal_section(self, title: str, body_lines: list[str], *, width: int) -> list[str]:
+        lines = [self._terminal_line(f" [{title}] ", width=width)]
+        for body in body_lines:
+            wrapped = textwrap.wrap(
+                str(body or ""),
+                width=max(20, width - 6),
+                break_long_words=False,
+                break_on_hyphens=False,
+            ) or [""]
+            for item in wrapped:
+                lines.append(self._terminal_line(f" {item}", width=width))
+        lines.append("+" + "-" * (width - 2) + "+")
+        return lines
+
+    def _terminal_line(self, content: str, *, width: int) -> str:
+        inner_width = max(10, width - 4)
+        clipped = self._fit_terminal_text(content, inner_width)
+        return f"| {clipped:<{inner_width}} |"
+
+    def _fit_terminal_text(self, content: str, width: int) -> str:
+        text = str(content or "")
+        if len(text) <= width:
+            return text
+        if width <= 3:
+            return text[:width]
+        return text[: width - 3] + "..."
 
     def get_context_pack(self, context_pack_id: str) -> ContextPack:
         row = self.database.fetchone("SELECT * FROM context_packs WHERE context_pack_id = ?", (context_pack_id,))
@@ -905,6 +1800,7 @@ class ApiRunService:
             success_criteria=json.loads(row["success_criteria_json"]),
             estimated_cost_eur=float(row["estimated_cost_eur"]),
             founder_decision=str(row["founder_decision"]) if row["founder_decision"] else None,
+            founder_decision_at=str(row["founder_decision_at"]) if row["founder_decision_at"] else None,
             status=RunContractStatus(str(row["status"])),
             metadata=json.loads(row["metadata_json"]),
             created_at=str(row["created_at"]),
@@ -1114,6 +2010,60 @@ class ApiRunService:
             metadata={"mode": request.mode.value, "branch_name": request.branch_name},
         )
 
+    def _structured_output_requires_clarification(self, structured_output: dict[str, Any]) -> bool:
+        if bool(structured_output.get("clarification_needed")):
+            return True
+        return bool(str(structured_output.get("blocking_reason") or "").strip()) and bool(
+            str(structured_output.get("question_for_founder") or "").strip()
+        )
+
+    def _build_clarification_report(
+        self,
+        *,
+        run_id: str,
+        request: ApiRunRequest,
+        structured_output: dict[str, Any],
+    ) -> ClarificationReport:
+        cause = str(structured_output.get("blocking_reason") or "Le brief doit etre clarifie avant de continuer.").strip()
+        question = str(structured_output.get("question_for_founder") or "Quelle correction precise faut-il apporter au contrat ?").strip()
+        recommended_change = str(
+            structured_output.get("recommended_contract_change") or "Amender le contrat courant puis redonner un go explicite."
+        ).strip()
+        why = str(structured_output.get("why") or "").strip()
+        return ClarificationReport(
+            report_id=new_id("clarification_report"),
+            run_id=run_id,
+            cause=cause,
+            impact=why or "Le run s'arrete proprement pour eviter une implementation erronee ou hors cadre.",
+            question_for_founder=question,
+            recommended_contract_change=recommended_change,
+            requires_reapproval=True,
+            metadata={"mode": request.mode.value, "branch_name": request.branch_name},
+        )
+
+    def _mark_contract_clarification_pending(
+        self,
+        *,
+        contract: RunContract,
+        clarification: ClarificationReport,
+        connection: sqlite3.Connection | None = None,
+        expected_updated_at: str | None = None,
+    ) -> None:
+        contract.status = RunContractStatus.PREPARED
+        contract.founder_decision = None
+        contract.founder_decision_at = None
+        contract.updated_at = datetime.now(timezone.utc).isoformat()
+        contract.metadata["clarification_pending"] = True
+        contract.metadata["pending_clarification_report_id"] = clarification.report_id
+        contract.metadata["requires_reapproval"] = clarification.requires_reapproval
+        contract.metadata["last_clarification_report_id"] = clarification.report_id
+        contract.metadata.pop("founder_decision_at", None)
+        self._persist_run_contract(
+            contract,
+            connection=connection,
+            expected_updated_at=expected_updated_at,
+        )
+
     def _detect_noise_signal(self, *, run_id: str, structured_output: dict[str, Any], request: ApiRunRequest) -> None:
         text_parts: list[str] = []
         for key in ("decision", "why"):
@@ -1208,51 +2158,102 @@ class ApiRunService:
             ),
         )
 
-    def _persist_run_contract(self, contract: RunContract) -> None:
+    def _persist_run_contract(
+        self,
+        contract: RunContract,
+        *,
+        connection: sqlite3.Connection | None = None,
+        expected_updated_at: str | None = None,
+    ) -> None:
         artifact_path = self._write_runtime_json(
             self.paths.api_runs_root / "contracts",
             contract.contract_id,
             to_jsonable(contract),
         )
         contract.metadata["artifact_path"] = str(artifact_path)
+        params = (
+            contract.context_pack_id,
+            contract.prompt_template_id,
+            contract.mode.value,
+            contract.objective,
+            contract.branch_name,
+            contract.target_profile,
+            contract.model,
+            contract.reasoning_effort,
+            contract.communication_mode.value,
+            contract.speech_policy.value,
+            contract.operator_language,
+            contract.audience.value,
+            dump_json(contract.expected_outputs),
+            contract.summary,
+            dump_json(contract.non_goals),
+            dump_json(contract.success_criteria),
+            contract.estimated_cost_eur,
+            contract.founder_decision,
+            contract.founder_decision_at,
+            contract.status.value,
+            dump_json(contract.metadata),
+            contract.created_at,
+            contract.updated_at,
+            contract.contract_id,
+        )
+        if expected_updated_at is not None:
+            cursor = self.database.execute(
+                """
+                UPDATE api_run_contracts
+                SET context_pack_id = ?, prompt_template_id = ?, mode = ?, objective = ?, branch_name = ?,
+                    target_profile = ?, model = ?, reasoning_effort = ?, communication_mode = ?, speech_policy = ?,
+                    operator_language = ?, audience = ?, expected_outputs_json = ?, summary = ?, non_goals_json = ?,
+                    success_criteria_json = ?, estimated_cost_eur = ?, founder_decision = ?, founder_decision_at = ?,
+                    status = ?, metadata_json = ?, created_at = ?, updated_at = ?
+                WHERE contract_id = ? AND updated_at = ?
+                """,
+                (*params, expected_updated_at),
+                connection=connection,
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError(
+                    f"Run contract {contract.contract_id} was modified concurrently; reload before applying more changes."
+                )
+            return
+        existing = self.database.fetchone(
+            "SELECT contract_id FROM api_run_contracts WHERE contract_id = ?",
+            (contract.contract_id,),
+            connection=connection,
+        )
+        if existing is None:
+            self.database.execute(
+                """
+                INSERT INTO api_run_contracts(
+                    contract_id, context_pack_id, prompt_template_id, mode, objective, branch_name,
+                    target_profile, model, reasoning_effort, communication_mode, speech_policy,
+                    operator_language, audience, expected_outputs_json, summary, non_goals_json,
+                    success_criteria_json, estimated_cost_eur, founder_decision, founder_decision_at, status,
+                    metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    contract.contract_id,
+                    *params[:-1],
+                ),
+                connection=connection,
+            )
+            return
         self.database.execute(
             """
-            INSERT OR REPLACE INTO api_run_contracts(
-                contract_id, context_pack_id, prompt_template_id, mode, objective, branch_name,
-                target_profile, model, reasoning_effort, communication_mode, speech_policy,
-                operator_language, audience, expected_outputs_json, summary, non_goals_json,
-                success_criteria_json, estimated_cost_eur, founder_decision, status, metadata_json,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            UPDATE api_run_contracts
+            SET context_pack_id = ?, prompt_template_id = ?, mode = ?, objective = ?, branch_name = ?,
+                target_profile = ?, model = ?, reasoning_effort = ?, communication_mode = ?, speech_policy = ?,
+                operator_language = ?, audience = ?, expected_outputs_json = ?, summary = ?, non_goals_json = ?,
+                success_criteria_json = ?, estimated_cost_eur = ?, founder_decision = ?, founder_decision_at = ?,
+                status = ?, metadata_json = ?, created_at = ?, updated_at = ?
+            WHERE contract_id = ?
             """,
-            (
-                contract.contract_id,
-                contract.context_pack_id,
-                contract.prompt_template_id,
-                contract.mode.value,
-                contract.objective,
-                contract.branch_name,
-                contract.target_profile,
-                contract.model,
-                contract.reasoning_effort,
-                contract.communication_mode.value,
-                contract.speech_policy.value,
-                contract.operator_language,
-                contract.audience.value,
-                dump_json(contract.expected_outputs),
-                contract.summary,
-                dump_json(contract.non_goals),
-                dump_json(contract.success_criteria),
-                contract.estimated_cost_eur,
-                contract.founder_decision,
-                contract.status.value,
-                dump_json(contract.metadata),
-                contract.created_at,
-                contract.updated_at,
-            ),
+            params,
+            connection=connection,
         )
 
-    def _persist_run_request(self, request: ApiRunRequest) -> None:
+    def _persist_run_request(self, request: ApiRunRequest, *, connection: sqlite3.Connection | None = None) -> None:
         self.database.execute(
             """
             INSERT OR REPLACE INTO api_run_requests(
@@ -1285,9 +2286,10 @@ class ApiRunService:
                 request.created_at,
                 request.updated_at,
             ),
+            connection=connection,
         )
 
-    def _persist_run_result(self, result: ApiRunResult) -> None:
+    def _persist_run_result(self, result: ApiRunResult, *, connection: sqlite3.Connection | None = None) -> None:
         self.database.execute(
             """
             INSERT OR REPLACE INTO api_run_results(
@@ -1312,6 +2314,7 @@ class ApiRunService:
                 result.created_at,
                 result.updated_at,
             ),
+            connection=connection,
         )
 
     def _persist_run_review(self, review: ApiRunReview) -> None:
@@ -1346,6 +2349,7 @@ class ApiRunService:
         human_summary: str | None,
         payload: dict[str, Any],
         created_at: str,
+        connection: sqlite3.Connection | None = None,
     ) -> None:
         self.database.execute(
             """
@@ -1363,6 +2367,7 @@ class ApiRunService:
                 dump_json(payload),
                 created_at,
             ),
+            connection=connection,
         )
 
     def _record_run_event(
@@ -1374,6 +2379,8 @@ class ApiRunService:
         machine_summary: str,
         human_summary: str | None,
         payload: dict[str, Any],
+        connection: sqlite3.Connection | None = None,
+        refresh_snapshot: bool = True,
     ) -> None:
         event_id = new_id("api_event")
         created_at = datetime.now(timezone.utc).isoformat()
@@ -1386,6 +2393,7 @@ class ApiRunService:
             human_summary=human_summary,
             payload=payload,
             created_at=created_at,
+            connection=connection,
         )
         self.journal.append(
             "api_run_event",
@@ -1398,7 +2406,198 @@ class ApiRunService:
                 "machine_summary": machine_summary,
             },
         )
-        self._refresh_live_snapshot()
+        if refresh_snapshot:
+            self._refresh_live_snapshot()
+
+    def _emit_run_lifecycle_event(
+        self,
+        *,
+        run_id: str,
+        run_request_id: str,
+        contract_id: str | None,
+        kind: RunLifecycleEventKind,
+        mode: ApiRunMode,
+        branch_name: str,
+        status: ApiRunStatus,
+        phase: str,
+        title: str,
+        summary: str,
+        blocking_question: str | None = None,
+        recommended_action: str | None = None,
+        requires_reapproval: bool = False,
+        metadata: dict[str, Any] | None = None,
+        connection: sqlite3.Connection | None = None,
+        refresh_snapshot: bool = True,
+    ) -> RunLifecycleEvent:
+        event = RunLifecycleEvent(
+            lifecycle_event_id=new_id("lifecycle_event"),
+            run_id=run_id,
+            run_request_id=run_request_id,
+            contract_id=contract_id,
+            kind=kind,
+            title=title,
+            summary=summary,
+            branch_name=branch_name,
+            mode=mode,
+            channel_hint=self._channel_hint_for_lifecycle(kind),
+            status=status,
+            phase=phase,
+            blocking_question=blocking_question,
+            recommended_action=recommended_action,
+            requires_reapproval=requires_reapproval,
+            metadata=dict(metadata or {}),
+        )
+        self._persist_lifecycle_event(event, connection=connection)
+        self._prune_pending_operator_deliveries(incoming_channel_hint=event.channel_hint, connection=connection)
+        delivery: OperatorDelivery | None = None
+        if self._should_enqueue_operator_delivery(incoming_channel_hint=event.channel_hint, connection=connection):
+            delivery = OperatorDelivery(
+                delivery_id=new_id("operator_delivery"),
+                lifecycle_event_id=event.lifecycle_event_id,
+                adapter="openclaw",
+                surface="discord",
+                channel_hint=event.channel_hint,
+                status=OperatorDeliveryStatus.PENDING,
+                payload=self._build_operator_delivery_payload(event),
+                metadata={"run_id": run_id, "kind": kind.value},
+                next_attempt_at=event.created_at,
+            )
+            self._persist_operator_delivery(delivery, connection=connection)
+        else:
+            self.journal.append(
+                "api_run_operator_delivery_skipped",
+                "api_runs",
+                {
+                    "lifecycle_event_id": event.lifecycle_event_id,
+                    "run_id": run_id,
+                    "kind": kind.value,
+                    "channel_hint": event.channel_hint.value,
+                    "reason": "pending_backlog_limit",
+                },
+            )
+        self.journal.append(
+            "api_run_lifecycle_event_created",
+            "api_runs",
+            {
+                "lifecycle_event_id": event.lifecycle_event_id,
+                "run_id": run_id,
+                "kind": kind.value,
+                "delivery_id": delivery.delivery_id if delivery else None,
+                "channel_hint": event.channel_hint.value,
+            },
+        )
+        if refresh_snapshot:
+            self._refresh_live_snapshot()
+        return event
+
+    def _channel_hint_for_lifecycle(self, kind: RunLifecycleEventKind) -> OperatorChannelHint:
+        if kind is RunLifecycleEventKind.CLARIFICATION_REQUIRED:
+            return OperatorChannelHint.APPROVALS
+        if kind is RunLifecycleEventKind.RUN_FAILED:
+            return OperatorChannelHint.INCIDENTS
+        return OperatorChannelHint.RUNS_LIVE
+
+    def _build_operator_delivery_payload(self, event: RunLifecycleEvent) -> dict[str, Any]:
+        return {
+            "version": "v1",
+            "surface": "discord",
+            "channel_hint": event.channel_hint.value,
+            "text": self._render_operator_delivery_text(event),
+            "card": {
+                "title": event.title,
+                "summary": event.summary,
+                "kind": event.kind.value,
+                "status": event.status.value if event.status else None,
+                "phase": event.phase,
+                "branch_name": event.branch_name,
+                "mode": event.mode.value if event.mode else None,
+                "blocking_question": event.blocking_question,
+                "recommended_action": event.recommended_action,
+                "requires_reapproval": event.requires_reapproval,
+            },
+            "event": to_jsonable(event),
+        }
+
+    def _render_operator_delivery_text(self, event: RunLifecycleEvent) -> str:
+        lines = [
+            f"[Project OS] {event.title}",
+            f"Mode: {event.mode.value if event.mode else 'n/a'} | Branche: {event.branch_name or 'n/a'}",
+            f"Statut: {event.status.value if event.status else 'n/a'} | Phase: {event.phase or 'n/a'}",
+            f"Resume: {event.summary}",
+        ]
+        if event.blocking_question:
+            lines.append(f"Question: {event.blocking_question}")
+        if event.recommended_action:
+            lines.append(f"Action recommandee: {event.recommended_action}")
+        if event.requires_reapproval:
+            lines.append("Re-go requis: oui")
+        return "\n".join(lines)
+
+    def _pending_operator_delivery_count(self, *, connection: sqlite3.Connection | None = None) -> int:
+        row = self.database.fetchone(
+            "SELECT COUNT(*) AS count FROM api_run_operator_deliveries WHERE status = ?",
+            (OperatorDeliveryStatus.PENDING.value,),
+            connection=connection,
+        )
+        return int(row["count"] or 0) if row is not None else 0
+
+    def _should_enqueue_operator_delivery(
+        self,
+        *,
+        incoming_channel_hint: OperatorChannelHint,
+        connection: sqlite3.Connection | None = None,
+    ) -> bool:
+        max_pending = max(1, int(getattr(self.execution_policy, "operator_delivery_max_pending", 64)))
+        pending_count = self._pending_operator_delivery_count(connection=connection)
+        if pending_count < max_pending:
+            return True
+        return incoming_channel_hint is not OperatorChannelHint.RUNS_LIVE
+
+    def _prune_pending_operator_deliveries(
+        self,
+        *,
+        incoming_channel_hint: OperatorChannelHint,
+        connection: sqlite3.Connection | None = None,
+    ) -> int:
+        max_pending = max(1, int(getattr(self.execution_policy, "operator_delivery_max_pending", 64)))
+        pending_count = self._pending_operator_delivery_count(connection=connection)
+        if pending_count < max_pending:
+            return 0
+        overflow = pending_count - max_pending + 1
+        prune_rows = self.database.fetchall(
+            """
+            SELECT delivery_id
+            FROM api_run_operator_deliveries
+            WHERE status = ? AND channel_hint = ?
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (
+                OperatorDeliveryStatus.PENDING.value,
+                OperatorChannelHint.RUNS_LIVE.value,
+                overflow,
+            ),
+            connection=connection,
+        )
+        if not prune_rows:
+            return 0
+        pruned_at = datetime.now(timezone.utc).isoformat()
+        for row in prune_rows:
+            self.database.execute(
+                """
+                UPDATE api_run_operator_deliveries
+                SET status = ?, last_error = ?, next_attempt_at = NULL, updated_at = ?
+                WHERE delivery_id = ?
+                """,
+                (
+                    OperatorDeliveryStatus.SKIPPED.value,
+                    f"pending_backlog_limit:{incoming_channel_hint.value}",
+                    pruned_at,
+                    str(row["delivery_id"]),
+                ),
+                connection=connection,
+            )
+        return len(prune_rows)
 
     def _refresh_live_snapshot(self, *, limit: int = 8) -> None:
         try:
@@ -1408,7 +2607,74 @@ class ApiRunService:
         except Exception as exc:
             self.logger.log("WARNING", "api_run_snapshot_refresh_failed", error=str(exc))
 
-    def _persist_completion_report(self, report: CompletionReport) -> None:
+    def _persist_lifecycle_event(self, event: RunLifecycleEvent, *, connection: sqlite3.Connection | None = None) -> None:
+        artifact_path = self._write_runtime_json(
+            self.paths.api_runs_root / "lifecycle_events",
+            event.lifecycle_event_id,
+            to_jsonable(event),
+        )
+        event.artifact_path = str(artifact_path)
+        self.database.execute(
+            """
+            INSERT INTO api_run_lifecycle_events(
+                lifecycle_event_id, run_id, run_request_id, contract_id, kind, title, summary,
+                branch_name, mode, channel_hint, status, phase, blocking_question,
+                recommended_action, requires_reapproval, artifact_path, metadata_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event.lifecycle_event_id,
+                event.run_id,
+                event.run_request_id,
+                event.contract_id,
+                event.kind.value,
+                event.title,
+                event.summary,
+                event.branch_name,
+                event.mode.value if event.mode else None,
+                event.channel_hint.value,
+                event.status.value if event.status else None,
+                event.phase,
+                event.blocking_question,
+                event.recommended_action,
+                1 if event.requires_reapproval else 0,
+                event.artifact_path,
+                dump_json(event.metadata),
+                event.created_at,
+            ),
+            connection=connection,
+        )
+
+    def _persist_operator_delivery(self, delivery: OperatorDelivery, *, connection: sqlite3.Connection | None = None) -> None:
+        next_attempt_at = delivery.next_attempt_at
+        if delivery.status is OperatorDeliveryStatus.PENDING and not next_attempt_at:
+            next_attempt_at = delivery.created_at
+        self.database.execute(
+            """
+            INSERT INTO api_run_operator_deliveries(
+                delivery_id, lifecycle_event_id, adapter, surface, channel_hint, status,
+                attempts, payload_json, last_error, next_attempt_at, metadata_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                delivery.delivery_id,
+                delivery.lifecycle_event_id,
+                delivery.adapter,
+                delivery.surface,
+                delivery.channel_hint.value,
+                delivery.status.value,
+                delivery.attempts,
+                dump_json(delivery.payload),
+                delivery.last_error,
+                next_attempt_at,
+                dump_json(delivery.metadata),
+                delivery.created_at,
+                delivery.updated_at,
+            ),
+            connection=connection,
+        )
+
+    def _persist_completion_report(self, report: CompletionReport, *, connection: sqlite3.Connection | None = None) -> None:
         artifact_path = self._write_runtime_json(
             self.paths.api_runs_root / "completion_reports",
             report.report_id,
@@ -1434,9 +2700,10 @@ class ApiRunService:
                 dump_json(report.metadata),
                 report.created_at,
             ),
+            connection=connection,
         )
 
-    def _persist_blockage_report(self, report: BlockageReport) -> None:
+    def _persist_blockage_report(self, report: BlockageReport, *, connection: sqlite3.Connection | None = None) -> None:
         artifact_path = self._write_runtime_json(
             self.paths.api_runs_root / "blockage_reports",
             report.report_id,
@@ -1459,18 +2726,63 @@ class ApiRunService:
                 dump_json(report.metadata),
                 report.created_at,
             ),
+            connection=connection,
         )
 
-    def _update_request_status(self, run_request_id: str, status: ApiRunStatus) -> None:
+    def _persist_clarification_report(self, report: ClarificationReport, *, connection: sqlite3.Connection | None = None) -> None:
+        artifact_path = self._write_runtime_json(
+            self.paths.api_runs_root / "clarification_reports",
+            report.report_id,
+            to_jsonable(report),
+        )
+        report.metadata["artifact_path"] = str(artifact_path)
+        self.database.execute(
+            """
+            INSERT OR REPLACE INTO clarification_reports(
+                report_id, run_id, cause, impact, question_for_founder, recommended_contract_change,
+                requires_reapproval, metadata_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                report.report_id,
+                report.run_id,
+                report.cause,
+                report.impact,
+                report.question_for_founder,
+                report.recommended_contract_change,
+                1 if report.requires_reapproval else 0,
+                dump_json(report.metadata),
+                report.created_at,
+            ),
+            connection=connection,
+        )
+
+    def _update_request_status(
+        self,
+        run_request_id: str,
+        status: ApiRunStatus,
+        *,
+        updated_at: str | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
         self.database.execute(
             "UPDATE api_run_requests SET status = ?, updated_at = ? WHERE run_request_id = ?",
-            (status.value, datetime.now(timezone.utc).isoformat(), run_request_id),
+            (status.value, updated_at or datetime.now(timezone.utc).isoformat(), run_request_id),
+            connection=connection,
         )
 
-    def _update_result_status(self, run_id: str, status: ApiRunStatus) -> None:
+    def _update_result_status(
+        self,
+        run_id: str,
+        status: ApiRunStatus,
+        *,
+        updated_at: str | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
         self.database.execute(
             "UPDATE api_run_results SET status = ?, updated_at = ? WHERE run_id = ?",
-            (status.value, datetime.now(timezone.utc).isoformat(), run_id),
+            (status.value, updated_at or datetime.now(timezone.utc).isoformat(), run_id),
+            connection=connection,
         )
 
     def _normalize_branch_name(self, branch_name: str | None) -> str:
@@ -1567,7 +2879,11 @@ class ApiRunService:
             )
         sections.append(
             "# Instructions de reponse\n"
-            "Retourne uniquement du JSON structure conforme au schema. Ne bavarde pas pendant l'execution. Produis une sortie exploitable par un inspecteur humain, claire en francais pour les resumes destines a l'operateur, et garde une voie repo/CLI first."
+            "Retourne uniquement du JSON structure conforme au schema. Ne bavarde pas pendant l'execution. "
+            "Produis une sortie exploitable par un inspecteur humain, claire en francais pour les resumes destines a l'operateur, "
+            "et garde une voie repo/CLI first. Si le brief est contradictoire, dangereux, sous-specifie, hors-scope ou en conflit "
+            "avec la verite repo/runtime, active clarification_needed, explique le blocage, pose la question minimale bloquante "
+            "et n'invente pas une implementation finale."
         )
         return "\n\n".join(sections)
 
@@ -1587,6 +2903,10 @@ class ApiRunService:
                 "risks": array_of_strings,
                 "acceptance_criteria": array_of_strings,
                 "open_questions": array_of_strings,
+                "clarification_needed": {"type": "boolean"},
+                "blocking_reason": {"type": "string"},
+                "recommended_contract_change": {"type": "string"},
+                "question_for_founder": {"type": "string"},
             },
             "required": [
                 "decision",
@@ -1599,6 +2919,10 @@ class ApiRunService:
                 "risks",
                 "acceptance_criteria",
                 "open_questions",
+                "clarification_needed",
+                "blocking_reason",
+                "recommended_contract_change",
+                "question_for_founder",
             ],
         }
 
@@ -1618,6 +2942,7 @@ class ApiRunService:
             "Ne contourne jamais le Mission Router, la verite runtime, ni la policy d'approbation.",
             "Reste silencieux pendant le run. Les messages naturels n'arrivent qu'en cas de blocage reel ou en fin de run.",
             "Retourne du JSON structure uniquement et signale explicitement les faits manquants.",
+            "Si une ambiguite majeure ou une contradiction rend le lot non fiable, demande une clarification au lieu de deviner.",
         ]
 
     def _default_acceptance_criteria(self, mode: ApiRunMode) -> list[str]:
