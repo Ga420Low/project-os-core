@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from typing import Any
 
 from .bootstrap import bootstrap_environment, doctor_report, health_snapshot
+from .gateway.openclaw_adapter import build_dispatch_from_openclaw_payload
 from .models import (
     ActionRiskClass,
     ApprovalStatus,
@@ -29,12 +31,10 @@ def _json_arg(value: str | None) -> dict[str, Any]:
     return json.loads(value) if value else {}
 
 
-def _build_services():
-    return build_app_services()
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="project-os")
+    parser.add_argument("--config-path", help=argparse.SUPPRESS)
+    parser.add_argument("--policy-path", help=argparse.SUPPRESS)
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     bootstrap_parser = subparsers.add_parser("bootstrap")
@@ -132,6 +132,13 @@ def main(argv: list[str] | None = None) -> int:
     gateway_sub = gateway_parser.add_subparsers(dest="gateway_command", required=True)
     gateway_discord = gateway_sub.add_parser("ingest-discord")
     _add_gateway_args(gateway_discord)
+    gateway_openclaw = gateway_sub.add_parser("ingest-openclaw-event")
+    gateway_openclaw.add_argument("--stdin", action="store_true")
+    gateway_openclaw.add_argument("--file")
+    gateway_openclaw.add_argument("--target-profile")
+    gateway_openclaw.add_argument("--requested-worker")
+    gateway_openclaw.add_argument("--risk-class", choices=[item.value for item in ActionRiskClass])
+    gateway_openclaw.add_argument("--metadata")
 
     orchestration_parser = subparsers.add_parser("orchestration")
     orchestration_sub = orchestration_parser.add_subparsers(dest="orchestration_command", required=True)
@@ -156,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(health_snapshot(), indent=2, ensure_ascii=True, sort_keys=True))
         return 0
 
-    services = _build_services()
+    services = build_app_services(config_path=args.config_path, policy_path=args.policy_path)
     try:
         if args.command == "secrets" and args.secrets_command == "doctor":
             print(json.dumps(services.secret_resolver.source_report(), indent=2, ensure_ascii=True, sort_keys=True))
@@ -281,6 +288,18 @@ def main(argv: list[str] | None = None) -> int:
                 requested_worker=args.requested_worker,
                 risk_class=ActionRiskClass(args.risk_class) if args.risk_class else None,
                 metadata=_json_arg(args.metadata),
+            )
+            print(json.dumps(to_jsonable(dispatch), indent=2, ensure_ascii=True, sort_keys=True))
+            return 0 if dispatch.operator_reply.reply_kind != "blocked" else 1
+        if args.command == "gateway" and args.gateway_command == "ingest-openclaw-event":
+            payload = _read_json_payload(args)
+            adapted = build_dispatch_from_openclaw_payload(payload)
+            dispatch = services.gateway.dispatch_event(
+                adapted.event,
+                target_profile=args.target_profile or adapted.target_profile,
+                requested_worker=args.requested_worker or adapted.requested_worker,
+                risk_class=ActionRiskClass(args.risk_class) if args.risk_class else adapted.risk_class,
+                metadata={**(adapted.metadata or {}), **_json_arg(args.metadata)},
             )
             print(json.dumps(to_jsonable(dispatch), indent=2, ensure_ascii=True, sort_keys=True))
             return 0 if dispatch.operator_reply.reply_kind != "blocked" else 1
@@ -413,6 +432,19 @@ def _gateway_event_from_args(args) -> ChannelEvent:
         ),
         raw_payload={"source": "cli"},
     )
+
+
+def _read_json_payload(args) -> dict[str, Any]:
+    if args.stdin:
+        raw = sys.stdin.read()
+    elif args.file:
+        raw = open(args.file, "r", encoding="utf-8").read()
+    else:
+        raise RuntimeError("gateway ingest-openclaw-event requires --stdin or --file")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise RuntimeError("openclaw payload must be a JSON object")
+    return payload
 
 
 def _mark_infisical_required(repo_root) -> None:

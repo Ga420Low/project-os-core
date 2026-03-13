@@ -78,10 +78,18 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
 - [x] Types gateway/orchestration/promotions poses
 - [x] Adaptateur gateway interne `ChannelEvent -> Mission Router` implemente
 - [x] `ExecutionTicket` emis seulement par le graphe canonique
+- [x] Workflow hybride `Codex + API 1M + runtime local` documente
+- [x] Discipline `DECISION CONFIRMED / DECISION CHANGED` documentee
+- [x] Skills de mega prompt documentes
 
 ## Lots suivants
 
 - [ ] Lot 4 - Gateway + Mission Router adapter `OpenClaw` live
+  - [x] Entree Python generique `gateway ingest-openclaw-event`
+  - [x] Adaptateur package `OpenClaw` local cree
+  - [x] Politique `OpenClaw facade / Project OS verite` respectee dans le code
+  - [x] Ingress `message_received -> ChannelEvent -> Mission Router` branche
+  - [ ] Runtime `OpenClaw` reel connecte sur Discord/WebChat du poste
 - [ ] Lot 5 - Orchestration durable `LangGraph` live
 - [ ] Lot 6 - Windows worker + perception
 - [ ] Lot 7 - Browser worker `Stagehand`

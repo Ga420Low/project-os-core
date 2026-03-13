@@ -1,0 +1,11 @@
+{
+  "name": "@project-os/openclaw-gateway-adapter",
+  "version": "0.1.0",
+  "description": "OpenClaw ingress adapter for Project OS",
+  "type": "module",
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ]
+  }
+}
