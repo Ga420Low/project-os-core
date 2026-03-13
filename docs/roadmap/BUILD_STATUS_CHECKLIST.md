@@ -84,6 +84,21 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
 
 ## Lots suivants
 
+- [x] API Lead Agent v1
+  - [x] `api_runs` subsystem pose
+  - [x] Modes `audit / design / patch_plan / generate_patch` poses
+  - [x] `ContextPack` canonique pose
+  - [x] `MegaPrompt` canonique pose
+  - [x] `ApiRunResult` canonique pose
+  - [x] `ApiRunReview` canonique pose
+  - [x] Stockage repo/runtime separe pour les gros runs
+  - [x] `learning` layer posee
+  - [x] Promotion `DECISION CONFIRMED / CHANGED` posee
+  - [x] Signaux `loop / refresh / dataset` poses
+  - [x] Monitor texte local des runs pose
+  - [x] Dashboard web local des runs pose
+  - [x] Dashboard compact en francais avec terminal integre
+  - [x] Run API reel `gpt-5.4` valide sur le poste
 - [ ] Lot 4 - Gateway + Mission Router adapter `OpenClaw` live
   - [x] Entree Python generique `gateway ingest-openclaw-event`
   - [x] Adaptateur package `OpenClaw` local cree

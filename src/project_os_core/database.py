@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-CURRENT_SCHEMA_VERSION = "3"
+CURRENT_SCHEMA_VERSION = "4"
 
 
 class CanonicalDatabase:
@@ -352,6 +352,146 @@ class CanonicalDatabase:
                     payload_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS context_packs (
+                    context_pack_id TEXT PRIMARY KEY,
+                    mode TEXT NOT NULL,
+                    objective TEXT NOT NULL,
+                    branch_name TEXT NOT NULL,
+                    target_profile TEXT,
+                    source_refs_json TEXT NOT NULL,
+                    repo_state_json TEXT NOT NULL,
+                    runtime_facts_json TEXT NOT NULL,
+                    constraints_json TEXT NOT NULL,
+                    acceptance_criteria_json TEXT NOT NULL,
+                    skill_tags_json TEXT NOT NULL,
+                    artifact_path TEXT,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS mega_prompt_templates (
+                    prompt_template_id TEXT PRIMARY KEY,
+                    context_pack_id TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    agent_identity TEXT NOT NULL,
+                    skill_tags_json TEXT NOT NULL,
+                    output_contract_json TEXT NOT NULL,
+                    rendered_prompt TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    reasoning_effort TEXT NOT NULL,
+                    artifact_path TEXT,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS api_run_requests (
+                    run_request_id TEXT PRIMARY KEY,
+                    context_pack_id TEXT NOT NULL,
+                    prompt_template_id TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    objective TEXT NOT NULL,
+                    branch_name TEXT NOT NULL,
+                    target_profile TEXT,
+                    skill_tags_json TEXT NOT NULL,
+                    expected_outputs_json TEXT NOT NULL,
+                    coding_lane TEXT NOT NULL,
+                    desktop_lane TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS api_run_results (
+                    run_id TEXT PRIMARY KEY,
+                    run_request_id TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    mode TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    raw_output_path TEXT,
+                    prompt_artifact_path TEXT,
+                    result_artifact_path TEXT,
+                    structured_output_json TEXT NOT NULL,
+                    estimated_cost_eur REAL NOT NULL,
+                    usage_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS api_run_reviews (
+                    review_id TEXT PRIMARY KEY,
+                    run_id TEXT NOT NULL,
+                    verdict TEXT NOT NULL,
+                    reviewer TEXT NOT NULL,
+                    findings_json TEXT NOT NULL,
+                    accepted_changes_json TEXT NOT NULL,
+                    followup_actions_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS learning_signals (
+                    signal_id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    source_ids_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS decision_records (
+                    decision_record_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    scope TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    source_run_id TEXT,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS loop_signals (
+                    loop_signal_id TEXT PRIMARY KEY,
+                    repeated_pattern TEXT NOT NULL,
+                    impacted_area TEXT NOT NULL,
+                    recommended_reset TEXT NOT NULL,
+                    source_ids_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS refresh_recommendations (
+                    refresh_recommendation_id TEXT PRIMARY KEY,
+                    cause TEXT NOT NULL,
+                    context_to_reload_json TEXT NOT NULL,
+                    next_step TEXT NOT NULL,
+                    source_ids_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS dataset_candidates (
+                    dataset_candidate_id TEXT PRIMARY KEY,
+                    source_type TEXT NOT NULL,
+                    quality_score REAL NOT NULL,
+                    export_ready INTEGER NOT NULL,
+                    source_ids_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS eval_candidates (
+                    eval_candidate_id TEXT PRIMARY KEY,
+                    scenario TEXT NOT NULL,
+                    target_system TEXT NOT NULL,
+                    expected_behavior TEXT NOT NULL,
+                    source_ids_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -408,6 +548,26 @@ class CanonicalDatabase:
                 ON role_handoffs(mission_run_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_execution_tickets_mission
                 ON execution_tickets(mission_run_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_context_packs_created
+                ON context_packs(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_api_run_requests_branch_status
+                ON api_run_requests(branch_name, status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_api_run_results_request_created
+                ON api_run_results(run_request_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_api_run_reviews_run_created
+                ON api_run_reviews(run_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_learning_signals_kind_created
+                ON learning_signals(kind, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_decision_records_status_updated
+                ON decision_records(status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_loop_signals_created
+                ON loop_signals(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_refresh_recommendations_created
+                ON refresh_recommendations(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_dataset_candidates_created
+                ON dataset_candidates(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_eval_candidates_created
+                ON eval_candidates(created_at DESC);
             """
         )
 

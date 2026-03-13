@@ -1,0 +1,54 @@
+{
+  "version": "v1",
+  "shared": {
+    "agent_identity": "Project OS Lead Agent v1",
+    "output_contract": [
+      "decision",
+      "why",
+      "alternatives",
+      "files_to_change",
+      "interfaces",
+      "patch_outline",
+      "tests",
+      "risks",
+      "acceptance_criteria",
+      "open_questions"
+    ],
+    "instructions": [
+      "Treat Project OS runtime, memory, evidence, and mission router as the source of truth.",
+      "Prefer repo and CLI workflows over Windows computer use for coding lane v1.",
+      "Do not propose hidden side effects or undocumented architecture changes.",
+      "Preserve the OpenClaw facade and the Project OS truth boundary."
+    ]
+  },
+  "modes": {
+    "audit": {
+      "model": "gpt-5.4",
+      "reasoning_effort": "high",
+      "instructions": [
+        "Prioritize findings, risks, regressions, and missing tests over summaries."
+      ]
+    },
+    "design": {
+      "model": "gpt-5.4",
+      "reasoning_effort": "high",
+      "instructions": [
+        "Design for six-month stability and avoid rework-prone shortcuts."
+      ]
+    },
+    "patch_plan": {
+      "model": "gpt-5.4",
+      "reasoning_effort": "high",
+      "instructions": [
+        "Produce a step-by-step patch plan that is immediately implementable by Codex."
+      ]
+    },
+    "generate_patch": {
+      "model": "gpt-5.4",
+      "reasoning_effort": "xhigh",
+      "instructions": [
+        "Generate the strongest safe patch outline you can, but assume Codex will still inspect and test locally."
+      ]
+    }
+  }
+}

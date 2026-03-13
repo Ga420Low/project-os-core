@@ -31,6 +31,9 @@ class ProjectPaths:
     bootstrap_state_path: Path
     health_snapshot_path: Path
     structured_log_path: Path
+    api_runs_root: Path
+    learning_root: Path
+    api_runs_terminal_snapshot_path: Path
 
 
 def _path(value: str) -> Path:
@@ -66,6 +69,9 @@ def build_project_paths(config: RuntimeConfig) -> ProjectPaths:
         bootstrap_state_path=runtime_root / "bootstrap" / "latest_bootstrap_state.json",
         health_snapshot_path=runtime_root / "health" / "latest_health.json",
         structured_log_path=runtime_root / "logs" / "structured.jsonl",
+        api_runs_root=runtime_root / "api_runs",
+        learning_root=runtime_root / "learning",
+        api_runs_terminal_snapshot_path=runtime_root / "api_runs" / "latest_terminal_snapshot.json",
     )
 
 
@@ -134,6 +140,9 @@ def ensure_project_roots(paths: ProjectPaths) -> dict[str, str]:
         paths.bootstrap_state_path.parent,
         paths.health_snapshot_path.parent,
         paths.structured_log_path.parent,
+        paths.api_runs_root,
+        paths.learning_root,
+        paths.api_runs_terminal_snapshot_path.parent,
     ]
     for root in managed:
         root.mkdir(parents=True, exist_ok=True)

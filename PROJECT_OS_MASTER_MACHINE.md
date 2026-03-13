@@ -47,6 +47,35 @@ Regles:
 Reference detaillee:
 
 - `docs/architecture/HYBRID_LARGE_CONTEXT_WORKFLOW.md`
+- `docs/integrations/API_LEAD_AGENT_V1.md`
+
+## API Lead Agent v1
+
+Le premier systeme de gros runs est maintenant pose dans le coeur.
+
+Il repose sur:
+
+- `gpt-5.4` comme lead agent obligatoire
+- une lane `repo_cli` pour le code
+- une lane `future_computer_use` reservee pour plus tard
+- un systeme de `ContextPack`
+- un systeme de `MegaPrompt`
+- un systeme de `ApiRunResult`
+- un systeme de `ApiRunReview`
+- un monitor texte local des runs
+- un dashboard web local des runs pour la supervision visuelle
+
+Les modes canoniques sont:
+
+- `audit`
+- `design`
+- `patch_plan`
+- `generate_patch`
+
+Regle dure:
+
+- l'API peut produire un gros lot
+- mais `Codex` et l'humain gardent la revue locale avant integration dans `main`
 
 ## Vision produit
 
@@ -270,6 +299,8 @@ Le noyau local a maintenant les fondations suivantes en etat reel:
 
 - `OpenMemory` actif comme memoire primaire
 - `SQLite + sqlite-vec` actifs comme verite locale et retrieval
+- `api_runs` actif pour les gros runs `gpt-5.4`
+- `learning` actif pour les signaux de progression, boucle et refresh
 - `Mission Router` actif avec:
   - route `cheap` deterministe
   - route standard `gpt-5.4 high`
@@ -280,6 +311,7 @@ Le noyau local a maintenant les fondations suivantes en etat reel:
 - `health snapshot` local actif
 - `doctor --strict` vert avec `Universal Auth`
 - `OPENAI_API_KEY` resolu depuis `Infisical` sans dependance a la session utilisateur
+- premier run API reel `gpt-5.4` valide sur le poste
 
 Le projet secrets actif est:
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .api_runs.service import ApiRunService
 from .config import RuntimeConfig, load_runtime_config
 from .database import CanonicalDatabase
 from .embedding import EmbeddingStrategy, choose_embedding_strategy
 from .gateway.service import GatewayService
+from .learning.service import LearningService
 from .memory.store import MemoryStore
 from .observability import StructuredLogger
 from .orchestration.graph import CanonicalMissionGraph
@@ -26,10 +28,12 @@ class AppServices:
     database: CanonicalDatabase
     journal: LocalJournal
     memory: MemoryStore
+    learning: LearningService
     runtime: RuntimeStore
     router: MissionRouter
     gateway: GatewayService
     orchestration: CanonicalMissionGraph
+    api_runs: ApiRunService
     logger: StructuredLogger
 
     def close(self) -> None:
@@ -49,6 +53,11 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
     journal = LocalJournal(database, paths.journal_file_path)
     logger = StructuredLogger(paths, path_policy)
     memory = MemoryStore(database, paths, path_policy, embedding_strategy, secret_resolver)
+    learning = LearningService(
+        database=database,
+        journal=journal,
+        memory=memory,
+    )
     runtime = RuntimeStore(database, paths, path_policy, journal)
     router = MissionRouter(
         database=database,
@@ -67,6 +76,16 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         database=database,
         journal=journal,
     )
+    api_runs = ApiRunService(
+        database=database,
+        journal=journal,
+        paths=paths,
+        path_policy=path_policy,
+        secret_resolver=secret_resolver,
+        logger=logger,
+        execution_policy=config.execution_policy,
+        learning=learning,
+    )
     return AppServices(
         config=config,
         paths=paths,
@@ -76,9 +95,11 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         database=database,
         journal=journal,
         memory=memory,
+        learning=learning,
         runtime=runtime,
         router=router,
         gateway=gateway,
         orchestration=orchestration,
+        api_runs=api_runs,
         logger=logger,
     )

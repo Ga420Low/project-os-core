@@ -97,6 +97,43 @@ class AgentRole(str, Enum):
     EXECUTOR_COORDINATOR = "executor_coordinator"
 
 
+class ApiRunMode(str, Enum):
+    AUDIT = "audit"
+    DESIGN = "design"
+    PATCH_PLAN = "patch_plan"
+    GENERATE_PATCH = "generate_patch"
+
+
+class ApiRunStatus(str, Enum):
+    PREPARED = "prepared"
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    PAUSED = "paused"
+    STOPPED = "stopped"
+    REVIEWED = "reviewed"
+
+
+class ApiRunReviewVerdict(str, Enum):
+    ACCEPTED = "accepted"
+    NEEDS_REVISION = "needs_revision"
+    REJECTED = "rejected"
+
+
+class DecisionStatus(str, Enum):
+    CONFIRMED = "confirmed"
+    CHANGED = "changed"
+
+
+class LearningSignalKind(str, Enum):
+    PATCH_REJECTED = "patch_rejected"
+    PATCH_ACCEPTED = "patch_accepted"
+    LOOP_DETECTED = "loop_detected"
+    CAPABILITY_DRIFT = "capability_drift"
+    REFRESH_NEEDED = "refresh_needed"
+    DECISION_PROMOTED = "decision_promoted"
+
+
 def to_jsonable(value: Any) -> Any:
     if is_dataclass(value):
         return {key: to_jsonable(item) for key, item in asdict(value).items()}
@@ -606,4 +643,176 @@ class HealthSnapshot:
     overall_status: str
     payload: dict[str, Any]
     path: str | None = None
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ContextSource:
+    source_id: str
+    path: str
+    kind: str
+    content: str
+    truncated: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class ContextPack:
+    context_pack_id: str
+    mode: ApiRunMode
+    objective: str
+    branch_name: str
+    target_profile: str | None = None
+    source_refs: list[ContextSource] = field(default_factory=list)
+    repo_state: dict[str, Any] = field(default_factory=dict)
+    runtime_facts: dict[str, Any] = field(default_factory=dict)
+    constraints: list[str] = field(default_factory=list)
+    acceptance_criteria: list[str] = field(default_factory=list)
+    skill_tags: list[str] = field(default_factory=list)
+    artifact_path: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class MegaPromptTemplate:
+    prompt_template_id: str
+    context_pack_id: str
+    mode: ApiRunMode
+    agent_identity: str
+    skill_tags: list[str]
+    output_contract: list[str]
+    rendered_prompt: str
+    model: str
+    reasoning_effort: str
+    artifact_path: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ApiRunRequest:
+    run_request_id: str
+    context_pack_id: str
+    prompt_template_id: str
+    mode: ApiRunMode
+    objective: str
+    branch_name: str
+    target_profile: str | None = None
+    skill_tags: list[str] = field(default_factory=list)
+    expected_outputs: list[str] = field(default_factory=list)
+    coding_lane: str = "repo_cli"
+    desktop_lane: str = "future_computer_use"
+    status: ApiRunStatus = ApiRunStatus.PREPARED
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ApiRunArtifact:
+    artifact_id: str
+    run_id: str
+    artifact_kind: str
+    path: str
+    checksum_sha256: str | None = None
+    size_bytes: int | None = None
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ApiRunResult:
+    run_id: str
+    run_request_id: str
+    model: str
+    mode: ApiRunMode
+    status: ApiRunStatus
+    structured_output: dict[str, Any] = field(default_factory=dict)
+    raw_output_path: str | None = None
+    prompt_artifact_path: str | None = None
+    result_artifact_path: str | None = None
+    estimated_cost_eur: float = 0.0
+    usage: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ApiRunReview:
+    review_id: str
+    run_id: str
+    verdict: ApiRunReviewVerdict
+    reviewer: str
+    findings: list[str] = field(default_factory=list)
+    accepted_changes: list[str] = field(default_factory=list)
+    followup_actions: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class LearningSignal:
+    signal_id: str
+    kind: LearningSignalKind
+    severity: str
+    summary: str
+    source_ids: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class DecisionRecord:
+    decision_record_id: str
+    status: DecisionStatus
+    scope: str
+    summary: str
+    source_run_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class LoopSignal:
+    loop_signal_id: str
+    repeated_pattern: str
+    impacted_area: str
+    recommended_reset: str
+    source_ids: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class RefreshRecommendation:
+    refresh_recommendation_id: str
+    cause: str
+    context_to_reload: list[str] = field(default_factory=list)
+    next_step: str = ""
+    source_ids: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class DatasetCandidate:
+    dataset_candidate_id: str
+    source_type: str
+    quality_score: float
+    export_ready: bool
+    source_ids: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class EvalCandidate:
+    eval_candidate_id: str
+    scenario: str
+    target_system: str
+    expected_behavior: str
+    source_ids: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)

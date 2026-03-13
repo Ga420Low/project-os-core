@@ -2,16 +2,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
+import time
 from typing import Any
 
+from .api_runs.dashboard import serve_dashboard
 from .bootstrap import bootstrap_environment, doctor_report, health_snapshot
 from .gateway.openclaw_adapter import build_dispatch_from_openclaw_payload
 from .models import (
     ActionRiskClass,
+    ApiRunMode,
+    ApiRunReviewVerdict,
+    ApiRunStatus,
     ApprovalStatus,
     ChannelEvent,
     ConversationThreadRef,
+    DecisionStatus,
     MemoryTier,
     MemoryType,
     MissionIntent,
@@ -144,6 +151,71 @@ def main(argv: list[str] | None = None) -> int:
     orchestration_sub = orchestration_parser.add_subparsers(dest="orchestration_command", required=True)
     orchestration_sim = orchestration_sub.add_parser("simulate")
     _add_router_args(orchestration_sim)
+
+    api_runs_parser = subparsers.add_parser("api-runs")
+    api_runs_sub = api_runs_parser.add_subparsers(dest="api_runs_command", required=True)
+
+    api_build = api_runs_sub.add_parser("build-context")
+    _add_api_run_request_args(api_build)
+
+    api_prompt = api_runs_sub.add_parser("render-prompt")
+    api_prompt.add_argument("--context-pack-id", required=True)
+
+    api_execute = api_runs_sub.add_parser("execute")
+    _add_api_run_request_args(api_execute)
+    api_execute.add_argument("--expected-output", action="append", default=[])
+
+    api_review = api_runs_sub.add_parser("review-result")
+    api_review.add_argument("--run-id", required=True)
+    api_review.add_argument("--verdict", choices=[item.value for item in ApiRunReviewVerdict], required=True)
+    api_review.add_argument("--reviewer", required=True)
+    api_review.add_argument("--finding", action="append", default=[])
+    api_review.add_argument("--accepted-change", action="append", default=[])
+    api_review.add_argument("--followup-action", action="append", default=[])
+    api_review.add_argument("--metadata")
+
+    api_set = api_runs_sub.add_parser("set-status")
+    api_set.add_argument("--run-id", required=True)
+    api_set.add_argument("--status", choices=[item.value for item in ApiRunStatus], required=True)
+
+    api_show = api_runs_sub.add_parser("show-artifacts")
+    api_show.add_argument("--run-id", required=True)
+
+    api_monitor = api_runs_sub.add_parser("monitor")
+    api_monitor.add_argument("--limit", type=int, default=5)
+    api_monitor.add_argument("--watch", action="store_true")
+    api_monitor.add_argument("--interval", type=float, default=3.0)
+    api_monitor.add_argument("--iterations", type=int, default=0)
+
+    api_dashboard = api_runs_sub.add_parser("dashboard")
+    api_dashboard.add_argument("--host", default="127.0.0.1")
+    api_dashboard.add_argument("--port", type=int, default=8765)
+    api_dashboard.add_argument("--limit", type=int, default=8)
+    api_dashboard.add_argument("--refresh-seconds", type=int, default=4)
+    api_dashboard.add_argument("--open-browser", action="store_true")
+
+    learning_parser = subparsers.add_parser("learning")
+    learning_sub = learning_parser.add_subparsers(dest="learning_command", required=True)
+
+    learning_confirm = learning_sub.add_parser("confirm-decision")
+    _add_learning_decision_args(learning_confirm)
+
+    learning_change = learning_sub.add_parser("change-decision")
+    _add_learning_decision_args(learning_change)
+
+    learning_loop = learning_sub.add_parser("record-loop")
+    learning_loop.add_argument("--pattern", required=True)
+    learning_loop.add_argument("--impacted-area", required=True)
+    learning_loop.add_argument("--recommended-reset", required=True)
+    learning_loop.add_argument("--source-id", action="append", default=[])
+    learning_loop.add_argument("--metadata")
+
+    learning_refresh = learning_sub.add_parser("recommend-refresh")
+    learning_refresh.add_argument("--cause", required=True)
+    learning_refresh.add_argument("--context", action="append", default=[])
+    learning_refresh.add_argument("--next-step", required=True)
+    learning_refresh.add_argument("--source-id", action="append", default=[])
+    learning_refresh.add_argument("--metadata")
 
     args = parser.parse_args(argv)
 
@@ -319,6 +391,117 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(to_jsonable(prepared), indent=2, ensure_ascii=True, sort_keys=True))
             return 0
 
+        if args.command == "api-runs":
+            if args.api_runs_command == "build-context":
+                context_pack = services.api_runs.build_context_pack(
+                    mode=ApiRunMode(args.mode),
+                    objective=args.objective,
+                    branch_name=args.branch_name,
+                    skill_tags=args.skill_tag,
+                    target_profile=args.target_profile,
+                    source_paths=args.source_ref,
+                    constraints=args.constraint,
+                    acceptance_criteria=args.acceptance,
+                    metadata=_json_arg(args.metadata),
+                )
+                print(json.dumps(to_jsonable(context_pack), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.api_runs_command == "render-prompt":
+                prompt = services.api_runs.render_prompt(context_pack_id=args.context_pack_id)
+                print(json.dumps(to_jsonable(prompt), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.api_runs_command == "execute":
+                payload = services.api_runs.execute_run(
+                    mode=ApiRunMode(args.mode),
+                    objective=args.objective,
+                    branch_name=args.branch_name,
+                    skill_tags=args.skill_tag,
+                    target_profile=args.target_profile,
+                    source_paths=args.source_ref,
+                    constraints=args.constraint,
+                    acceptance_criteria=args.acceptance,
+                    expected_outputs=args.expected_output,
+                    metadata=_json_arg(args.metadata),
+                )
+                print(json.dumps(to_jsonable(payload), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0 if payload["result"].status is not ApiRunStatus.FAILED else 1
+            if args.api_runs_command == "review-result":
+                review = services.api_runs.review_result(
+                    run_id=args.run_id,
+                    verdict=ApiRunReviewVerdict(args.verdict),
+                    reviewer=args.reviewer,
+                    findings=args.finding,
+                    accepted_changes=args.accepted_change,
+                    followup_actions=args.followup_action,
+                    metadata=_json_arg(args.metadata),
+                )
+                print(json.dumps(to_jsonable(review), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.api_runs_command == "set-status":
+                payload = services.api_runs.set_run_status(run_id=args.run_id, status=ApiRunStatus(args.status))
+                print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.api_runs_command == "show-artifacts":
+                payload = services.api_runs.show_artifacts(run_id=args.run_id)
+                print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.api_runs_command == "monitor":
+                if args.watch:
+                    return _watch_api_runs_monitor(services, interval=args.interval, iterations=args.iterations, limit=args.limit)
+                print(services.api_runs.render_terminal_dashboard(limit=args.limit))
+                return 0
+            if args.api_runs_command == "dashboard":
+                return serve_dashboard(
+                    services,
+                    host=args.host,
+                    port=args.port,
+                    limit=args.limit,
+                    refresh_seconds=args.refresh_seconds,
+                    open_browser=bool(args.open_browser),
+                )
+
+        if args.command == "learning":
+            if args.learning_command == "confirm-decision":
+                record = services.learning.record_decision(
+                    status=DecisionStatus.CONFIRMED,
+                    scope=args.scope,
+                    summary=args.summary,
+                    source_run_id=args.source_run_id,
+                    metadata=_json_arg(args.metadata),
+                )
+                print(json.dumps(to_jsonable(record), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.learning_command == "change-decision":
+                record = services.learning.record_decision(
+                    status=DecisionStatus.CHANGED,
+                    scope=args.scope,
+                    summary=args.summary,
+                    source_run_id=args.source_run_id,
+                    metadata=_json_arg(args.metadata),
+                )
+                print(json.dumps(to_jsonable(record), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.learning_command == "record-loop":
+                loop_signal = services.learning.record_loop_signal(
+                    repeated_pattern=args.pattern,
+                    impacted_area=args.impacted_area,
+                    recommended_reset=args.recommended_reset,
+                    source_ids=args.source_id,
+                    metadata=_json_arg(args.metadata),
+                )
+                print(json.dumps(to_jsonable(loop_signal), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.learning_command == "recommend-refresh":
+                recommendation = services.learning.recommend_refresh(
+                    cause=args.cause,
+                    context_to_reload=args.context,
+                    next_step=args.next_step,
+                    source_ids=args.source_id,
+                    metadata=_json_arg(args.metadata),
+                )
+                print(json.dumps(to_jsonable(recommendation), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+
         return 1
     finally:
         services.close()
@@ -357,6 +540,25 @@ def _add_gateway_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--requested-worker")
     parser.add_argument("--risk-class", choices=[item.value for item in ActionRiskClass])
     parser.add_argument("--attachment", action="append", default=[])
+    parser.add_argument("--metadata")
+
+
+def _add_api_run_request_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--mode", choices=[item.value for item in ApiRunMode], required=True)
+    parser.add_argument("--objective", required=True)
+    parser.add_argument("--branch-name")
+    parser.add_argument("--skill-tag", action="append", default=[])
+    parser.add_argument("--target-profile")
+    parser.add_argument("--source-ref", action="append", default=[])
+    parser.add_argument("--constraint", action="append", default=[])
+    parser.add_argument("--acceptance", action="append", default=[])
+    parser.add_argument("--metadata")
+
+
+def _add_learning_decision_args(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--scope", required=True)
+    parser.add_argument("--summary", required=True)
+    parser.add_argument("--source-run-id")
     parser.add_argument("--metadata")
 
 
@@ -459,3 +661,17 @@ def _mark_infisical_required(repo_root) -> None:
     secret_config.update(payload["secret_config"])
     existing["secret_config"] = secret_config
     target.write_text(json.dumps(existing, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _watch_api_runs_monitor(services, *, interval: float, iterations: int, limit: int) -> int:
+    count = 0
+    try:
+        while True:
+            os.system("cls")
+            print(services.api_runs.render_terminal_dashboard(limit=limit))
+            count += 1
+            if iterations and count >= iterations:
+                return 0
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        return 0
