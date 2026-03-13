@@ -58,6 +58,18 @@ Une fois le contrat approuve:
   - en cas de blocage reel
   - a la fin avec le rapport final
 
+## Visibilite obligatoire
+
+Avant tout run reel:
+
+- le dashboard local doit etre disponible sur le PC
+- `Project OS` doit le lancer automatiquement si necessaire
+- l'operateur doit pouvoir voir le run vivre en direct sans devoir le lancer a la main
+
+Si cette visibilite ne peut pas etre fournie:
+
+- le run doit etre bloque
+
 ## Rapport final associe
 
 A la fin, le run doit produire un rapport en francais simple:

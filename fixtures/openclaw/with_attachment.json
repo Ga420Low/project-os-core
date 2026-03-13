@@ -1,0 +1,45 @@
+{
+  "fixture_id": "with_attachment",
+  "channel": "discord",
+  "thread_ref": "discord-thread-attachment",
+  "message_type": "artifact_ref",
+  "attachments": [
+    "brief_capture.png"
+  ],
+  "expected_route": {
+    "allowed": true,
+    "reply_kind": "ack",
+    "promoted_memory_count": 1
+  },
+  "description": "Message avec piece jointe qui doit rester tracable et produire une promotion episodique.",
+  "event": {
+    "from": "founder-discord",
+    "content": "Voici la capture de validation a relier au run en cours.",
+    "timestamp": 1770000002,
+    "metadata": {
+      "senderId": "founder-1",
+      "senderName": "Founder",
+      "messageId": "discord-message-attachment",
+      "threadId": "discord-thread-attachment",
+      "originatingChannel": "pilotage",
+      "originatingTo": "channel-pilotage",
+      "channelName": "pilotage",
+      "mediaPath": "D:/ProjectOS/runtime/openclaw/live/brief_capture.png",
+      "mediaType": "image/png"
+    }
+  },
+  "context": {
+    "channelId": "discord",
+    "accountId": "default",
+    "conversationId": "channel-pilotage"
+  },
+  "pluginConfig": {
+    "defaultTargetProfile": "browser",
+    "defaultRequestedWorker": "browser",
+    "enabledChannels": [
+      "discord",
+      "webchat"
+    ],
+    "sendAckReplies": false
+  }
+}

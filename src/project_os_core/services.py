@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from .api_runs.service import ApiRunService
 from .config import RuntimeConfig, load_runtime_config
 from .database import CanonicalDatabase
+from .gateway.openclaw_live import OpenClawLiveService
 from .embedding import EmbeddingStrategy, choose_embedding_strategy
 from .gateway.service import GatewayService
 from .learning.service import LearningService
@@ -32,6 +33,7 @@ class AppServices:
     runtime: RuntimeStore
     router: MissionRouter
     gateway: GatewayService
+    openclaw: OpenClawLiveService
     orchestration: CanonicalMissionGraph
     api_runs: ApiRunService
     logger: StructuredLogger
@@ -72,6 +74,14 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         router=router,
         memory=memory,
     )
+    openclaw = OpenClawLiveService(
+        config=config,
+        paths=paths,
+        path_policy=path_policy,
+        runtime=runtime,
+        database=database,
+        logger=logger,
+    )
     orchestration = CanonicalMissionGraph(
         database=database,
         journal=journal,
@@ -84,6 +94,7 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         secret_resolver=secret_resolver,
         logger=logger,
         execution_policy=config.execution_policy,
+        dashboard_config=config.api_dashboard_config,
         learning=learning,
     )
     return AppServices(
@@ -99,6 +110,7 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         runtime=runtime,
         router=router,
         gateway=gateway,
+        openclaw=openclaw,
         orchestration=orchestration,
         api_runs=api_runs,
         logger=logger,

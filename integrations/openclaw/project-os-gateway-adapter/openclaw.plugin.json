@@ -1,0 +1,56 @@
+{
+  "id": "project-os-gateway-adapter",
+  "name": "Project OS Gateway Adapter",
+  "description": "Fait transiter les evenements operateur OpenClaw vers le Gateway canonique de Project OS.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "projectOsRepoRoot": {
+        "type": "string",
+        "default": "D:/ProjectOS/project-os-core"
+      },
+      "projectOsConfigPath": {
+        "type": "string",
+        "default": "D:/ProjectOS/project-os-core/config/storage_roots.local.json"
+      },
+      "projectOsPolicyPath": {
+        "type": "string",
+        "default": "D:/ProjectOS/project-os-core/config/runtime_policy.local.json"
+      },
+      "pythonCommand": {
+        "type": "string",
+        "default": "py"
+      },
+      "defaultTargetProfile": {
+        "type": "string",
+        "default": "core"
+      },
+      "defaultRequestedWorker": {
+        "type": "string"
+      },
+      "defaultRiskClass": {
+        "type": "string",
+        "enum": ["read_only", "safe_write", "destructive"]
+      },
+      "enabledChannels": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": ["discord", "webchat"]
+        },
+        "default": ["discord", "webchat"]
+      },
+      "sendAckReplies": {
+        "type": "boolean",
+        "default": false
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 120000,
+        "default": 45000
+      }
+    }
+  }
+}

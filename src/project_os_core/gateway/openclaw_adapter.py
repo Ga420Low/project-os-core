@@ -43,7 +43,12 @@ def build_dispatch_from_openclaw_payload(payload: dict[str, Any]) -> OpenClawDis
         raise ValueError("openclaw payload config must be an object")
 
     surface = _as_text(payload.get("surface")) or _as_text(metadata.get("surface")) or _as_text(context.get("channelId")) or "unknown"
-    channel = _as_text(context.get("channelId")) or surface
+    channel = (
+        _as_text(metadata.get("originatingChannel"))
+        or _as_text(metadata.get("channelName"))
+        or _as_text(context.get("channelId"))
+        or surface
+    )
     actor_id = _as_text(metadata.get("senderId")) or _as_text(event.get("from")) or "unknown_sender"
     message_text = _as_text(event.get("content")) or ""
     thread_id = (

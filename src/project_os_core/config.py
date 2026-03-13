@@ -19,11 +19,15 @@ def _expand_path(value: str) -> str:
 @dataclass(slots=True)
 class RuntimeConfig:
     repo_root: Path
+    storage_config_path: Path
+    runtime_policy_path: Path
     storage_roots: StorageRoots
     forbidden_zone_policy: ForbiddenZonePolicy
     secret_config: SecretConfig
     embedding_policy: EmbeddingPolicy
     execution_policy: ExecutionPolicy
+    openclaw_config: OpenClawConfig
+    api_dashboard_config: ApiDashboardConfig
 
 
 @dataclass(slots=True)
@@ -47,6 +51,30 @@ class EmbeddingPolicy:
     max_openai_model: str = "text-embedding-3-large"
     local_model: str = "local-hash-v1"
     local_dimensions: int = 64
+
+
+@dataclass(slots=True)
+class OpenClawConfig:
+    binary_command: str = "openclaw"
+    runtime_root: str = field(default_factory=lambda: _expand_path("D:/ProjectOS/openclaw-runtime"))
+    state_root: str = field(default_factory=lambda: _expand_path("D:/ProjectOS/runtime/openclaw"))
+    plugin_id: str = "project-os-gateway-adapter"
+    plugin_source_path: str | None = None
+    enabled_channels: list[str] = field(default_factory=lambda: ["discord", "webchat"])
+    send_ack_replies: bool = False
+    timeout_ms: int = 45000
+    require_replay_before_live: bool = True
+
+
+@dataclass(slots=True)
+class ApiDashboardConfig:
+    host: str = "127.0.0.1"
+    port: int = 8765
+    limit: int = 8
+    refresh_seconds: int = 4
+    auto_start: bool = True
+    auto_open_browser: bool = True
+    require_visible_ui: bool = True
 
 
 def _storage_from_dict(payload: dict[str, str]) -> StorageRoots:
@@ -90,10 +118,33 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "run_contract_required": True,
             "default_run_speech_policy": RunSpeechPolicy.SILENT_UNTIL_TERMINAL_STATE.value,
         },
+        "openclaw_config": {
+            "binary_command": "openclaw",
+            "runtime_root": _expand_path("D:/ProjectOS/openclaw-runtime"),
+            "state_root": _expand_path("D:/ProjectOS/runtime/openclaw"),
+            "plugin_id": "project-os-gateway-adapter",
+            "plugin_source_path": None,
+            "enabled_channels": ["discord", "webchat"],
+            "send_ack_replies": False,
+            "timeout_ms": 45000,
+            "require_replay_before_live": True,
+        },
+        "api_dashboard_config": {
+            "host": "127.0.0.1",
+            "port": 8765,
+            "limit": 8,
+            "refresh_seconds": 4,
+            "auto_start": True,
+            "auto_open_browser": True,
+            "require_visible_ui": True,
+        },
     }
 
 
-def _load_runtime_policy(root: Path, policy_path: str | Path | None = None) -> tuple[SecretConfig, EmbeddingPolicy, ExecutionPolicy]:
+def _load_runtime_policy(
+    root: Path,
+    policy_path: str | Path | None = None,
+) -> tuple[SecretConfig, EmbeddingPolicy, ExecutionPolicy, OpenClawConfig, ApiDashboardConfig]:
     env_override = os.getenv("PROJECT_OS_RUNTIME_POLICY")
     chosen = Path(policy_path) if policy_path else (Path(env_override) if env_override else None)
     if chosen is None:
@@ -104,7 +155,7 @@ def _load_runtime_policy(root: Path, policy_path: str | Path | None = None) -> t
     payload = _runtime_policy_defaults()
     if chosen.exists():
         loaded = json.loads(chosen.read_text(encoding="utf-8"))
-        for key in ("secret_config", "embedding_policy", "execution_policy"):
+        for key in ("secret_config", "embedding_policy", "execution_policy", "openclaw_config", "api_dashboard_config"):
             if key in loaded and isinstance(loaded[key], dict):
                 payload[key].update(loaded[key])
 
@@ -116,7 +167,15 @@ def _load_runtime_policy(root: Path, policy_path: str | Path | None = None) -> t
     execution_payload["operator_audience"] = OperatorAudience(str(execution_payload["operator_audience"]))
     execution_payload["default_run_speech_policy"] = RunSpeechPolicy(str(execution_payload["default_run_speech_policy"]))
     execution_policy = ExecutionPolicy(**execution_payload)
-    return secret_config, embedding_policy, execution_policy
+    openclaw_payload = dict(payload["openclaw_config"])
+    openclaw_payload["runtime_root"] = _expand_path(str(openclaw_payload["runtime_root"]))
+    openclaw_payload["state_root"] = _expand_path(str(openclaw_payload["state_root"]))
+    plugin_source_path = openclaw_payload.get("plugin_source_path")
+    if plugin_source_path:
+        openclaw_payload["plugin_source_path"] = _expand_path(str(plugin_source_path))
+    openclaw_config = OpenClawConfig(**openclaw_payload)
+    api_dashboard_config = ApiDashboardConfig(**payload["api_dashboard_config"])
+    return secret_config, embedding_policy, execution_policy, openclaw_config, api_dashboard_config
 
 
 def load_runtime_config(config_path: str | Path | None = None, policy_path: str | Path | None = None) -> RuntimeConfig:
@@ -130,14 +189,22 @@ def load_runtime_config(config_path: str | Path | None = None, policy_path: str 
         chosen = local if local.exists() else example
 
     payload = json.loads(Path(chosen).read_text(encoding="utf-8"))
+    chosen_storage_path = Path(chosen).resolve(strict=False)
+    chosen_policy_path = Path(policy_path).resolve(strict=False) if policy_path else (
+        root / "config" / ("runtime_policy.local.json" if (root / "config" / "runtime_policy.local.json").exists() else "runtime_policy.example.json")
+    ).resolve(strict=False)
     storage_roots = _storage_from_dict(payload)
     policy = ForbiddenZonePolicy(roots=[storage_roots.archive_do_not_touch_root])
-    secret_config, embedding_policy, execution_policy = _load_runtime_policy(root, policy_path)
+    secret_config, embedding_policy, execution_policy, openclaw_config, api_dashboard_config = _load_runtime_policy(root, policy_path)
     return RuntimeConfig(
         repo_root=root,
+        storage_config_path=chosen_storage_path,
+        runtime_policy_path=chosen_policy_path,
         storage_roots=storage_roots,
         forbidden_zone_policy=policy,
         secret_config=secret_config,
         embedding_policy=embedding_policy,
         execution_policy=execution_policy,
+        openclaw_config=openclaw_config,
+        api_dashboard_config=api_dashboard_config,
     )

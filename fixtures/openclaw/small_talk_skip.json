@@ -1,0 +1,40 @@
+{
+  "fixture_id": "small_talk_skip",
+  "channel": "discord",
+  "thread_ref": "discord-thread-chat",
+  "message_type": "chat",
+  "attachments": [],
+  "expected_route": {
+    "allowed": true,
+    "reply_kind": "ack",
+    "promoted_memory_count": 0
+  },
+  "description": "Petit message sans valeur durable qui doit rester hors memoire canonique.",
+  "event": {
+    "from": "founder-discord",
+    "content": "Salut, merci pour le check de ce matin.",
+    "timestamp": 1770000004,
+    "metadata": {
+      "senderId": "founder-1",
+      "senderName": "Founder",
+      "messageId": "discord-message-chat",
+      "threadId": "discord-thread-chat",
+      "originatingChannel": "pilotage",
+      "originatingTo": "channel-pilotage",
+      "channelName": "pilotage"
+    }
+  },
+  "context": {
+    "channelId": "discord",
+    "accountId": "default",
+    "conversationId": "channel-pilotage"
+  },
+  "pluginConfig": {
+    "defaultTargetProfile": "core",
+    "enabledChannels": [
+      "discord",
+      "webchat"
+    ],
+    "sendAckReplies": false
+  }
+}

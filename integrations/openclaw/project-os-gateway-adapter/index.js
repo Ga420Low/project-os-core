@@ -1,6 +1,6 @@
 const DEFAULT_PROJECT_OS_REPO_ROOT = "D:/ProjectOS/project-os-core";
 const DEFAULT_PYTHON_COMMAND = process.platform === "win32" ? "py" : "python3";
-const DEFAULT_CHANNELS = new Set(["discord", "webchat", "internal"]);
+const DEFAULT_CHANNELS = new Set(["discord", "webchat"]);
 
 function resolveConfig(api) {
   const raw = api.pluginConfig && typeof api.pluginConfig === "object" ? api.pluginConfig : {};
@@ -162,6 +162,9 @@ const plugin = {
             `[project-os-gateway-adapter] Project OS dispatch failed with code ${String(result.code)}: ${result.stderr || "no stderr"}`
           );
           return;
+        }
+        if (parsed) {
+          api.logger.info(`CLI_STDOUT_JSON:${JSON.stringify(parsed)}`);
         }
         api.logger.info(
           `[project-os-gateway-adapter] forwarded ${ctx.channelId}:${ctx.conversationId || "no-conversation"} to Project OS`

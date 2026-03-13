@@ -109,6 +109,14 @@ Format impose:
 
 Le dashboard et les cartes Discord remplacent la narration.
 
+Regle dure supplementaire:
+
+- un gros run API ne doit pas partir sans control room locale sur le PC
+- le dashboard local doit etre lance automatiquement avant l'execution
+- l'interface doit s'ouvrir localement pour que l'operateur puisse verifier visuellement que le run vit vraiment
+- l'ouverture doit etre prouvee par un signal live du navigateur vers le dashboard, pas seulement par le lancement silencieux d'un serveur
+- si le dashboard ne peut pas etre lance, le run doit echouer ferme
+
 Ils doivent montrer:
 
 - est-ce qu'il travaille
@@ -129,3 +137,16 @@ Si un run n'explique pas assez un blocage reel:
 - emettre un signal de capacite ou de qualite
 
 La communication est donc aussi un objet d'apprentissage.
+
+## Regle anti-memoire-de-conversation
+
+Une implementation n'est jamais consideree valide parce qu'elle "marchait pendant la conversation".
+
+Elle doit etre prouvee par le code lui-meme via au moins un de ces mecanismes:
+
+- test automatise
+- doctor dedie
+- replay harness
+- health snapshot
+- evidence persistante
+- beacon live pour les interfaces visibles

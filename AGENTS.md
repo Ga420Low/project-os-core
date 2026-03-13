@@ -186,6 +186,15 @@ La visibilite passe par:
 - terminal live
 - cartes Discord compactes dans `#runs-live`
 
+Regle dure supplementaire:
+
+- un run API de production ne doit pas vivre dans le vide
+- il doit lancer la control room locale sur le PC avant execution
+- si la control room n'est pas disponible, le run doit echouer ferme
+- une implementation n'est jamais consideree "bonne" parce qu'elle a fonctionne dans la conversation
+- elle n'est validee que si le code peut la prouver seul via test, doctor, replay, health, evidence ou beacon live
+- toute dependance a une action manuelle implicite de l'agent pendant la conversation doit etre remplacee par un garde-fou code
+
 Texte naturel autorise seulement:
 
 - au depart, sous forme de contrat de run court

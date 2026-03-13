@@ -721,6 +721,80 @@ class HealthSnapshot:
 
 
 @dataclass(slots=True)
+class OpenClawRuntimeRoots:
+    runtime_root: str
+    state_root: str
+    plugin_source_path: str
+    plugin_manifest_path: str
+    storage_config_path: str
+    runtime_policy_path: str
+
+
+@dataclass(slots=True)
+class OpenClawBootstrapReport:
+    report_id: str
+    install_method: str
+    plugin_status: str
+    readiness: str
+    blocking_reasons: list[str] = field(default_factory=list)
+    actionable_fixes: list[str] = field(default_factory=list)
+    checks: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class OpenClawDoctorReport:
+    report_id: str
+    verdict: str
+    summary: str
+    actionable_fixes: list[str] = field(default_factory=list)
+    checks: list[dict[str, Any]] = field(default_factory=list)
+    runtime_roots: OpenClawRuntimeRoots | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class OpenClawReplayFixture:
+    fixture_id: str
+    channel: str
+    thread_ref: str
+    message_type: str
+    attachments: list[str] = field(default_factory=list)
+    expected_route: dict[str, Any] = field(default_factory=dict)
+    payload_path: str | None = None
+    description: str | None = None
+
+
+@dataclass(slots=True)
+class OpenClawReplayResult:
+    replay_result_id: str
+    fixture_id: str
+    dispatch_status: str
+    router_verdict: str
+    policy_verdict: str
+    promoted_memory_count: int = 0
+    artifact_count: int = 0
+    passed: bool = False
+    run_card: dict[str, Any] = field(default_factory=dict)
+    evidence_refs: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class OpenClawLiveValidationResult:
+    validation_id: str
+    channel: str
+    success: bool
+    evidence_refs: list[str] = field(default_factory=list)
+    failure_reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
 class ContextSource:
     source_id: str
     path: str

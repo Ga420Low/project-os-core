@@ -1,5 +1,5 @@
 param(
-    [string]$Host = "127.0.0.1",
+    [string]$BindHost = "127.0.0.1",
     [int]$Port = 8765,
     [int]$Limit = 8,
     [int]$RefreshSeconds = 4,
@@ -13,7 +13,7 @@ $args = @(
     $entry,
     "api-runs",
     "dashboard",
-    "--host", $Host,
+    "--host", $BindHost,
     "--port", "$Port",
     "--limit", "$Limit",
     "--refresh-seconds", "$RefreshSeconds"

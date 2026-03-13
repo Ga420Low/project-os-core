@@ -1,0 +1,42 @@
+{
+  "fixture_id": "tasking_browser",
+  "channel": "discord",
+  "thread_ref": "discord-thread-tasking",
+  "message_type": "tasking",
+  "attachments": [],
+  "expected_route": {
+    "allowed": true,
+    "reply_kind": "ack",
+    "promoted_memory_count": 1
+  },
+  "description": "Demande de travail navigateur qui doit traverser la facade OpenClaw puis Mission Router.",
+  "event": {
+    "from": "founder-discord",
+    "content": "Fais un lot navigateur propre pour relier OpenClaw live et garde le workflow repo/CLI first.",
+    "timestamp": 1770000003,
+    "metadata": {
+      "senderId": "founder-1",
+      "senderName": "Founder",
+      "messageId": "discord-message-tasking",
+      "threadId": "discord-thread-tasking",
+      "originatingChannel": "pilotage",
+      "originatingTo": "channel-pilotage",
+      "channelName": "pilotage"
+    }
+  },
+  "context": {
+    "channelId": "discord",
+    "accountId": "default",
+    "conversationId": "channel-pilotage"
+  },
+  "pluginConfig": {
+    "defaultTargetProfile": "browser",
+    "defaultRequestedWorker": "browser",
+    "defaultRiskClass": "safe_write",
+    "enabledChannels": [
+      "discord",
+      "webchat"
+    ],
+    "sendAckReplies": false
+  }
+}

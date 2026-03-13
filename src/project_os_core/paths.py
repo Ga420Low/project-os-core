@@ -10,6 +10,8 @@ from .config import RuntimeConfig
 class ProjectPaths:
     repo_root: Path
     runtime_root: Path
+    openclaw_runtime_root: Path
+    openclaw_state_root: Path
     memory_hot_root: Path
     memory_warm_root: Path
     index_root: Path
@@ -34,6 +36,13 @@ class ProjectPaths:
     api_runs_root: Path
     learning_root: Path
     api_runs_terminal_snapshot_path: Path
+    openclaw_reports_root: Path
+    openclaw_replay_root: Path
+    openclaw_live_root: Path
+    openclaw_bootstrap_report_path: Path
+    openclaw_doctor_report_path: Path
+    openclaw_replay_report_path: Path
+    openclaw_live_validation_report_path: Path
 
 
 def _path(value: str) -> Path:
@@ -45,9 +54,13 @@ def build_project_paths(config: RuntimeConfig) -> ProjectPaths:
     runtime_root = _path(roots.runtime_root)
     memory_hot_root = _path(roots.memory_hot_root)
     memory_warm_root = _path(roots.memory_warm_root)
+    openclaw_runtime_root = _path(config.openclaw_config.runtime_root)
+    openclaw_state_root = _path(config.openclaw_config.state_root)
     return ProjectPaths(
         repo_root=config.repo_root,
         runtime_root=runtime_root,
+        openclaw_runtime_root=openclaw_runtime_root,
+        openclaw_state_root=openclaw_state_root,
         memory_hot_root=memory_hot_root,
         memory_warm_root=memory_warm_root,
         index_root=_path(roots.index_root),
@@ -72,6 +85,13 @@ def build_project_paths(config: RuntimeConfig) -> ProjectPaths:
         api_runs_root=runtime_root / "api_runs",
         learning_root=runtime_root / "learning",
         api_runs_terminal_snapshot_path=runtime_root / "api_runs" / "latest_terminal_snapshot.json",
+        openclaw_reports_root=runtime_root / "openclaw" / "reports",
+        openclaw_replay_root=runtime_root / "openclaw" / "replay",
+        openclaw_live_root=runtime_root / "openclaw" / "live",
+        openclaw_bootstrap_report_path=runtime_root / "openclaw" / "reports" / "latest_bootstrap.json",
+        openclaw_doctor_report_path=runtime_root / "openclaw" / "reports" / "latest_doctor.json",
+        openclaw_replay_report_path=runtime_root / "openclaw" / "replay" / "latest_replay.json",
+        openclaw_live_validation_report_path=runtime_root / "openclaw" / "live" / "latest_live_validation.json",
     )
 
 
@@ -81,6 +101,7 @@ class PathPolicy:
         self._forbidden_roots = [paths.archive_do_not_touch_root]
         self._managed_roots = [
             paths.runtime_root,
+            paths.openclaw_runtime_root,
             paths.memory_hot_root,
             paths.memory_warm_root,
             paths.index_root,
@@ -121,6 +142,8 @@ class PathPolicy:
 def ensure_project_roots(paths: ProjectPaths) -> dict[str, str]:
     managed = [
         paths.runtime_root,
+        paths.openclaw_runtime_root,
+        paths.openclaw_state_root,
         paths.memory_hot_root,
         paths.memory_warm_root,
         paths.index_root,
@@ -143,6 +166,9 @@ def ensure_project_roots(paths: ProjectPaths) -> dict[str, str]:
         paths.api_runs_root,
         paths.learning_root,
         paths.api_runs_terminal_snapshot_path.parent,
+        paths.openclaw_reports_root,
+        paths.openclaw_replay_root,
+        paths.openclaw_live_root,
     ]
     for root in managed:
         root.mkdir(parents=True, exist_ok=True)

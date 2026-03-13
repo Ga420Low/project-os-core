@@ -92,6 +92,7 @@ Regle dure:
 - l'API peut produire un gros lot
 - mais `Codex` et l'humain gardent la revue locale avant integration dans `main`
 - pendant un run de code, le texte naturel est remplace par dashboard + terminal + cartes compactes
+- avant tout run API reel, le dashboard local doit etre lance automatiquement sur le PC pour offrir une preuve visuelle immediate
 
 ## Mode operatoire vNext
 
@@ -363,25 +364,44 @@ Le projet secrets actif est:
 
 ## Etat OpenClaw actuel
 
-Le lot `OpenClaw` est maintenant pose en deux etages:
+Le lot `OpenClaw` est maintenant pose en quatre etages:
 
 - frontiere d'architecture figee
 - adaptateur local `OpenClaw -> Project OS` code dans le repo
+- bootstrap natif `OpenClaw` valide sur le poste
+- doctor + replay fail-closed valides sur le poste
 
 Le package live est:
 
 - `integrations/openclaw/project-os-gateway-adapter`
+
+Le runtime reel retenu est:
+
+- `D:\ProjectOS\openclaw-runtime`
+- `D:\ProjectOS\runtime\openclaw`
 
 Role actuel:
 
 - capter `message_received` depuis `OpenClaw`
 - convertir l'evenement en charge utile canonique `Project OS`
 - appeler `gateway ingest-openclaw-event`
+- prouver en replay que tout passe par `Gateway -> Mission Router`
+- echouer ferme tant qu'aucun message reel Discord/WebChat n'a ete valide
+
+Ce qui est deja valide:
+
+- bootstrap natif via `openclaw plugins install --link`
+- plugin visible dans `OpenClaw`
+- configuration et policy `Project OS` lisibles
+- doctor `OpenClaw` vert et comprehensible
+- replay sur fixtures reelles vert
+- validation live bloquee proprement tant qu'aucun canal reel n'a ete prouve
 
 Ce qui reste avant de considerer le lot 4 totalement termine:
 
-- brancher cet adaptateur sur un runtime `OpenClaw` reel du poste
-- valider Discord/WebChat avec un message live
+- brancher un vrai canal `Discord` ou `WebChat`
+- faire passer un vrai message entrant jusqu'au `Mission Router`
+- produire une carte ou une reponse compacte visible cote humain
 
 ## Memory OS locale
 
@@ -528,7 +548,7 @@ La politique modele retenue est:
 
 Pour le canal `Discord`, la policy adaptative est:
 
-- banal / check rapide / accusé de reception -> `gpt-5.4` avec `reasoning.effort=medium` si un LLM est necessaire
+- banal / check rapide / accuse de reception -> `gpt-5.4` avec `reasoning.effort=medium` si un LLM est necessaire
 - operateur standard -> `gpt-5.4 high`
 - complexe / critique / ambigu -> `gpt-5.4 xhigh`
 - exceptionnel -> `gpt-5.4-pro` seulement avec approval explicite

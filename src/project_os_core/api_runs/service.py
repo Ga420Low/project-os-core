@@ -62,6 +62,7 @@ class ApiRunService:
         secret_resolver: SecretResolver,
         logger: StructuredLogger,
         execution_policy,
+        dashboard_config,
         learning: LearningService,
     ) -> None:
         self.database = database
@@ -71,6 +72,7 @@ class ApiRunService:
         self.secret_resolver = secret_resolver
         self.logger = logger
         self.execution_policy = execution_policy
+        self.dashboard_config = dashboard_config
         self.learning = learning
         self.repo_root = paths.repo_root
         self.templates_path = self.repo_root / "config" / "api_run_templates.json"
@@ -254,6 +256,7 @@ class ApiRunService:
         response_runner: Callable[[ApiRunRequest, MegaPromptTemplate, ContextPack], Any] | None = None,
         contract_id: str | None = None,
     ) -> dict[str, Any]:
+        self._ensure_operator_dashboard()
         contract = self.get_run_contract(contract_id) if contract_id else None
         if contract is not None:
             if contract.status is not RunContractStatus.APPROVED:
@@ -305,6 +308,22 @@ class ApiRunService:
         )
         self._persist_run_request(request)
         self._update_request_status(request.run_request_id, ApiRunStatus.RUNNING)
+        run_id = new_id("api_run")
+        placeholder_result = ApiRunResult(
+            run_id=run_id,
+            run_request_id=request.run_request_id,
+            model=prompt_template.model,
+            mode=request.mode,
+            status=ApiRunStatus.RUNNING,
+            structured_output={},
+            raw_output_path=None,
+            prompt_artifact_path=prompt_template.artifact_path,
+            result_artifact_path=None,
+            estimated_cost_eur=0.0,
+            usage={},
+            metadata={"live_state": "running"},
+        )
+        self._persist_run_result(placeholder_result)
         if contract is not None:
             contract.status = RunContractStatus.EXECUTED
             contract.updated_at = datetime.now(timezone.utc).isoformat()
@@ -318,7 +337,7 @@ class ApiRunService:
             branch_name=request.branch_name,
         )
         self._record_run_event(
-            run_id=request.run_request_id,
+            run_id=run_id,
             phase="demarrage",
             severity="info",
             machine_summary="Le run de code a demarre en mode silencieux.",
@@ -334,6 +353,7 @@ class ApiRunService:
             "api_run_started",
             "api_runs",
             {
+                "run_id": run_id,
                 "run_request_id": request.run_request_id,
                 "context_pack_id": context_pack.context_pack_id,
                 "prompt_template_id": prompt_template.prompt_template_id,
@@ -341,8 +361,6 @@ class ApiRunService:
                 "branch_name": request.branch_name,
             },
         )
-
-        run_id = new_id("api_run")
         try:
             self._record_run_event(
                 run_id=run_id,
@@ -482,6 +500,23 @@ class ApiRunService:
             "monitor_snapshot": snapshot,
         }
 
+    def _ensure_operator_dashboard(self) -> None:
+        if not getattr(self.dashboard_config, "auto_start", False):
+            return
+        from .dashboard import ensure_dashboard_running
+
+        status = ensure_dashboard_running(
+            repo_root=self.repo_root,
+            host=self.dashboard_config.host,
+            port=self.dashboard_config.port,
+            limit=self.dashboard_config.limit,
+            refresh_seconds=self.dashboard_config.refresh_seconds,
+            open_browser=self.dashboard_config.auto_open_browser,
+            require_visible_ui=getattr(self.dashboard_config, "require_visible_ui", True),
+        )
+        if not status.get("ready"):
+            raise RuntimeError("La control room locale n'a pas pu etre ouverte et verifiee sur le PC.")
+
     def review_result(
         self,
         *,
@@ -588,6 +623,12 @@ class ApiRunService:
         return {"run_id": run_id, "artifacts": [to_jsonable(item) for item in artifacts]}
 
     def monitor_snapshot(self, *, limit: int = 5) -> dict[str, Any]:
+        snapshot = self._build_monitor_snapshot(limit=limit)
+        snapshot_path = self.path_policy.ensure_allowed_write(self.paths.api_runs_terminal_snapshot_path)
+        snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
+        return snapshot
+
+    def _build_monitor_snapshot(self, *, limit: int = 5) -> dict[str, Any]:
         rows = self.database.fetchall(
             """
             SELECT
@@ -707,8 +748,6 @@ class ApiRunService:
             },
             "latest_runs": items,
         }
-        snapshot_path = self.path_policy.ensure_allowed_write(self.paths.api_runs_terminal_snapshot_path)
-        snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
         return snapshot
 
     def render_terminal_dashboard(self, *, limit: int = 5) -> str:
@@ -927,12 +966,43 @@ class ApiRunService:
             output_text = getattr(response_payload, "output_text", None)
         if not output_text:
             raise RuntimeError("Responses API returned no output_text")
-        structured_output = json.loads(output_text)
+        structured_output = self._parse_structured_output_text(str(output_text))
         usage = raw_payload.get("usage")
         if usage is None and hasattr(response_payload, "usage") and getattr(response_payload, "usage") is not None:
             usage_obj = getattr(response_payload, "usage")
             usage = usage_obj.model_dump() if hasattr(usage_obj, "model_dump") else dict(usage_obj)
         return structured_output, raw_payload, usage or {}
+
+    def _parse_structured_output_text(self, output_text: str) -> dict[str, Any]:
+        text = output_text.strip()
+        decoder = json.JSONDecoder()
+        try:
+            parsed, _ = decoder.raw_decode(text)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+        if "```json" in text:
+            start = text.find("```json") + len("```json")
+            end = text.find("```", start)
+            if end > start:
+                fenced = text[start:end].strip()
+                parsed, _ = decoder.raw_decode(fenced)
+                if isinstance(parsed, dict):
+                    return parsed
+
+        for marker in ("{", "["):
+            start = text.find(marker)
+            if start >= 0:
+                try:
+                    parsed, _ = decoder.raw_decode(text[start:])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict):
+                    return parsed
+
+        raise RuntimeError("Responses API returned an invalid structured payload")
 
     def _apply_learning(self, *, review: ApiRunReview, result: ApiRunResult, request: ApiRunRequest) -> None:
         source_ids = [result.run_id, review.review_id]
@@ -1328,6 +1398,15 @@ class ApiRunService:
                 "machine_summary": machine_summary,
             },
         )
+        self._refresh_live_snapshot()
+
+    def _refresh_live_snapshot(self, *, limit: int = 8) -> None:
+        try:
+            snapshot = self._build_monitor_snapshot(limit=limit)
+            snapshot_path = self.path_policy.ensure_allowed_write(self.paths.api_runs_terminal_snapshot_path)
+            snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
+        except Exception as exc:
+            self.logger.log("WARNING", "api_run_snapshot_refresh_failed", error=str(exc))
 
     def _persist_completion_report(self, report: CompletionReport) -> None:
         artifact_path = self._write_runtime_json(

@@ -5,9 +5,11 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from project_os_core.api_runs.dashboard import build_dashboard_payload, render_dashboard_html
 from project_os_core.models import ApiRunMode, ApiRunReviewVerdict
 from project_os_core.services import build_app_services
 
@@ -45,6 +47,10 @@ def _build_services(tmp_path: Path):
             "local_model": "local-hash-v1",
             "local_dimensions": 64,
         },
+        "api_dashboard_config": {
+            "auto_start": False,
+            "auto_open_browser": False,
+        },
     }
     policy_path = tmp_path / "runtime_policy.json"
     policy_path.write_text(json.dumps(policy_payload), encoding="utf-8")
@@ -71,6 +77,87 @@ def _prepare_approved_contract(services, *, mode: ApiRunMode, objective: str, br
 
 
 class ApiRunServiceTests(unittest.TestCase):
+    def test_dashboard_html_emits_operator_beacon_script(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                payload = build_dashboard_payload(services, limit=4)
+                html = render_dashboard_html(payload, refresh_seconds=4)
+                self.assertIn("/api/operator-beacon", html)
+                self.assertIn('params.get("focus")', html)
+            finally:
+                services.close()
+
+    def test_execute_run_fails_closed_if_visible_ui_cannot_be_verified(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                services.config.api_dashboard_config.auto_start = True
+                services.config.api_dashboard_config.auto_open_browser = True
+                services.config.api_dashboard_config.require_visible_ui = True
+                services.api_runs.dashboard_config = services.config.api_dashboard_config
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier le garde-fou de visibility UI.",
+                    branch_name="codex/test-ui-guard",
+                    skill_tags=["audit", "dashboard"],
+                )
+                with patch(
+                    "project_os_core.api_runs.dashboard.ensure_dashboard_running",
+                    return_value={"ready": False, "ui_visible": False, "url": "http://127.0.0.1:8765/"},
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "control room locale"):
+                        services.api_runs.execute_run(contract_id=contract.contract_id)
+            finally:
+                services.close()
+
+    def test_live_snapshot_updates_while_run_is_still_executing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier le live dashboard pendant un run API.",
+                    branch_name="codex/test-live-snapshot",
+                    skill_tags=["audit", "dashboard"],
+                )
+                observed_snapshot: dict[str, object] = {}
+
+                def _runner(request, prompt, context):
+                    snapshot_path = services.paths.api_runs_terminal_snapshot_path
+                    observed_snapshot.update(json.loads(snapshot_path.read_text(encoding="utf-8")))
+                    return {
+                        "model": "gpt-5.4",
+                        "output_text": json.dumps(
+                            {
+                                "decision": "Le dashboard live doit afficher generation pendant le run.",
+                                "why": "La visibilite temps reel est obligatoire.",
+                                "alternatives": ["N'afficher que le resultat final."],
+                                "files_to_change": ["src/project_os_core/api_runs/service.py"],
+                                "interfaces": ["ApiRunResult"],
+                                "patch_outline": ["Creer un placeholder running.", "Rafraichir le snapshot a chaque phase."],
+                                "tests": ["Verifier le snapshot pendant response_runner."],
+                                "risks": ["Snapshot live absent ou stale."],
+                                "acceptance_criteria": ["Le snapshot montre generation avant la fin du run."],
+                                "open_questions": [],
+                            }
+                        ),
+                        "usage": {"input_tokens": 600, "output_tokens": 250},
+                    }
+
+                payload = services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
+                    response_runner=_runner,
+                )
+                self.assertEqual(observed_snapshot["current_run"]["status"], "running")
+                self.assertEqual(observed_snapshot["current_run"]["phase"], "generation")
+                self.assertEqual(observed_snapshot["current_run"]["branch_name"], "codex/test-live-snapshot")
+                self.assertEqual(observed_snapshot["current_run"]["run_id"], payload["result"].run_id)
+            finally:
+                services.close()
+
     def test_patch_plan_run_builds_context_and_persists_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = _build_services(Path(tmp))
@@ -202,6 +289,22 @@ class ApiRunServiceTests(unittest.TestCase):
                 )
                 signal_rows = services.database.fetchall("SELECT * FROM learning_signals")
                 self.assertTrue(any(str(row["kind"]) == "patch_rejected" for row in signal_rows))
+            finally:
+                services.close()
+
+    def test_response_parser_accepts_extra_text_after_json_object(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                parsed, _, _ = services.api_runs._normalize_response_payload(
+                    {
+                        "model": "gpt-5.4",
+                        "output_text": '{"decision":"OK","why":"Test"}\n{"ignored":"extra"}',
+                        "usage": {"input_tokens": 10, "output_tokens": 5},
+                    }
+                )
+                self.assertEqual(parsed["decision"], "OK")
+                self.assertEqual(parsed["why"], "Test")
             finally:
                 services.close()
 

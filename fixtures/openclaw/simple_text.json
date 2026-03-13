@@ -1,0 +1,41 @@
+{
+  "fixture_id": "simple_text",
+  "channel": "discord",
+  "thread_ref": "discord-thread-simple",
+  "message_type": "chat",
+  "attachments": [],
+  "expected_route": {
+    "allowed": true,
+    "reply_kind": "ack",
+    "promoted_memory_count": 1
+  },
+  "description": "Message simple de pilotage qui doit etre route et promu en memoire durable.",
+  "event": {
+    "from": "founder-discord",
+    "content": "Decision: on garde OpenClaw comme facade operateur et on route le web vers le worker navigateur.",
+    "timestamp": 1770000001,
+    "metadata": {
+      "senderId": "founder-1",
+      "senderName": "Founder",
+      "messageId": "discord-message-simple",
+      "threadId": "discord-thread-simple",
+      "originatingChannel": "pilotage",
+      "originatingTo": "channel-pilotage",
+      "channelName": "pilotage"
+    }
+  },
+  "context": {
+    "channelId": "discord",
+    "accountId": "default",
+    "conversationId": "channel-pilotage"
+  },
+  "pluginConfig": {
+    "defaultTargetProfile": "browser",
+    "defaultRequestedWorker": "browser",
+    "enabledChannels": [
+      "discord",
+      "webchat"
+    ],
+    "sendAckReplies": false
+  }
+}

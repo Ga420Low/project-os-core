@@ -46,6 +46,11 @@ def _build_services(tmp_path: Path):
             "local_model": "local-hash-v1",
             "local_dimensions": 64,
         },
+        "api_dashboard_config": {
+            "auto_start": False,
+            "auto_open_browser": False,
+            "require_visible_ui": False,
+        },
     }
     policy_path = tmp_path / "runtime_policy.json"
     policy_path.write_text(json.dumps(policy_payload), encoding="utf-8")

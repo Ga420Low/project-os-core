@@ -147,6 +147,19 @@ def main(argv: list[str] | None = None) -> int:
     gateway_openclaw.add_argument("--risk-class", choices=[item.value for item in ActionRiskClass])
     gateway_openclaw.add_argument("--metadata")
 
+    openclaw_parser = subparsers.add_parser("openclaw")
+    openclaw_sub = openclaw_parser.add_subparsers(dest="openclaw_command", required=True)
+    openclaw_bootstrap = openclaw_sub.add_parser("bootstrap")
+    openclaw_bootstrap.add_argument("--install-if-missing", action="store_true")
+    openclaw_doctor = openclaw_sub.add_parser("doctor")
+    openclaw_doctor.add_argument("--with-system-doctor", action="store_true")
+    openclaw_replay = openclaw_sub.add_parser("replay")
+    openclaw_replay.add_argument("--fixture")
+    openclaw_replay.add_argument("--all", action="store_true")
+    openclaw_live = openclaw_sub.add_parser("validate-live")
+    openclaw_live.add_argument("--channel", required=True)
+    openclaw_live.add_argument("--payload-file", required=True)
+
     orchestration_parser = subparsers.add_parser("orchestration")
     orchestration_sub = orchestration_parser.add_subparsers(dest="orchestration_command", required=True)
     orchestration_sim = orchestration_sub.add_parser("simulate")
@@ -390,6 +403,24 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(to_jsonable(dispatch), indent=2, ensure_ascii=True, sort_keys=True))
             return 0 if dispatch.operator_reply.reply_kind != "blocked" else 1
+
+        if args.command == "openclaw":
+            if args.openclaw_command == "bootstrap":
+                report = services.openclaw.bootstrap(install_if_missing=bool(args.install_if_missing))
+                print(json.dumps(to_jsonable(report), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0 if report.readiness == "ok" else 1
+            if args.openclaw_command == "doctor":
+                report = services.openclaw.doctor(with_system_doctor=bool(args.with_system_doctor))
+                print(json.dumps(to_jsonable(report), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0 if report.verdict == "OK" else 1
+            if args.openclaw_command == "replay":
+                report = services.openclaw.replay(fixture_id=args.fixture, run_all=bool(args.all))
+                print(json.dumps(report, indent=2, ensure_ascii=True, sort_keys=True))
+                return 0 if report["verdict"] == "OK" else 1
+            if args.openclaw_command == "validate-live":
+                report = services.openclaw.validate_live(channel=args.channel, payload_file=args.payload_file)
+                print(json.dumps(to_jsonable(report), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0 if report.success else 1
 
         if args.command == "orchestration" and args.orchestration_command == "simulate":
             intent = _router_intent_from_args(args)

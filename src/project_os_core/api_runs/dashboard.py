@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import json
+import socket
+import subprocess
+import sys
+import threading
+import time
 import webbrowser
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+_OPERATOR_BEACONS: dict[str, float] = {}
+_OPERATOR_BEACON_LOCK = threading.Lock()
 
 
 def build_dashboard_payload(services, *, limit: int = 8) -> dict[str, Any]:
@@ -57,6 +65,107 @@ def build_dashboard_payload(services, *, limit: int = 8) -> dict[str, Any]:
             "memory_sync": "selective_sync",
         },
     }
+
+
+def ensure_dashboard_running(
+    *,
+    repo_root: Path,
+    host: str = "127.0.0.1",
+    port: int = 8765,
+    limit: int = 8,
+    refresh_seconds: int = 4,
+    open_browser: bool = True,
+    require_visible_ui: bool = True,
+    wait_seconds: float = 6.0,
+) -> dict[str, Any]:
+    url = f"http://{host}:{port}/"
+    if not _dashboard_reachable(host, port):
+        entry = repo_root / "scripts" / "project_os_entry.py"
+        command = [
+            sys.executable,
+            str(entry),
+            "api-runs",
+            "dashboard",
+            "--host",
+            host,
+            "--port",
+            str(port),
+            "--limit",
+            str(limit),
+            "--refresh-seconds",
+            str(refresh_seconds),
+        ]
+        creationflags = 0
+        if sys.platform.startswith("win"):
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        subprocess.Popen(
+            command,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            cwd=str(repo_root),
+            creationflags=creationflags,
+        )
+        deadline = time.time() + wait_seconds
+        while time.time() < deadline:
+            if _dashboard_reachable(host, port):
+                break
+            time.sleep(0.25)
+    beacon_token = f"focus_{time.time_ns()}"
+    focus_url = f"{url}?focus={beacon_token}"
+    if open_browser:
+        _launch_operator_dashboard(focus_url if require_visible_ui else url)
+    ui_visible = True
+    if require_visible_ui:
+        ui_visible = _wait_for_operator_beacon(beacon_token, timeout_seconds=wait_seconds)
+    return {
+        "url": url,
+        "ready": _dashboard_reachable(host, port) and ui_visible,
+        "ui_visible": ui_visible,
+        "beacon_token": beacon_token if require_visible_ui else None,
+    }
+
+
+def _dashboard_reachable(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.75):
+            return True
+    except OSError:
+        return False
+
+
+def _launch_operator_dashboard(url: str) -> None:
+    try:
+        if sys.platform.startswith("win"):
+            subprocess.Popen(
+                ["cmd", "/c", "start", "", url],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+            )
+            return
+        webbrowser.open(url, new=1)
+    except Exception:
+        try:
+            webbrowser.open(url, new=1)
+        except Exception:
+            pass
+
+
+def _mark_operator_beacon(token: str) -> None:
+    with _OPERATOR_BEACON_LOCK:
+        _OPERATOR_BEACONS[token] = time.time()
+
+
+def _wait_for_operator_beacon(token: str, *, timeout_seconds: float) -> bool:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        with _OPERATOR_BEACON_LOCK:
+            if token in _OPERATOR_BEACONS:
+                _OPERATOR_BEACONS.pop(token, None)
+                return True
+        time.sleep(0.1)
+    return False
 
 
 def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) -> str:
@@ -397,6 +506,22 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
     </div>
     <div class="footer">Le runtime Project OS et le repo restent la source de verite.</div>
   </div>
+  <script>
+    (function () {{
+      try {{
+        const params = new URLSearchParams(window.location.search);
+        const focus = params.get("focus");
+        if (focus) {{
+          fetch("/api/operator-beacon?token=" + encodeURIComponent(focus), {{
+            method: "GET",
+            cache: "no-store",
+          }}).catch(() => null);
+        }}
+      }} catch (_err) {{
+        // ignore beacon errors, UI still renders
+      }}
+    }})();
+  </script>
 </body>
 </html>"""
 
@@ -445,6 +570,14 @@ def _make_handler(*, services, limit: int, refresh_seconds: int):
                         return
                     payload = services.api_runs.show_artifacts(run_id=run_id)
                     self._send_json(_attach_file_links(payload))
+                    return
+                if parsed.path == "/api/operator-beacon":
+                    token = parse_qs(parsed.query).get("token", [""])[0]
+                    if not token:
+                        self._send_json({"error": "token is required"}, status=400)
+                        return
+                    _mark_operator_beacon(token)
+                    self._send_json({"ok": True, "token": token})
                     return
                 self._send_json({"error": "not_found"}, status=404)
             except Exception as exc:  # pragma: no cover

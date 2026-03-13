@@ -101,6 +101,7 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
   - [x] Monitor texte local des runs pose
   - [x] Dashboard web local des runs pose
   - [x] Dashboard compact en francais avec terminal integre
+  - [x] Dashboard auto-lance avant chaque run API reel
   - [x] Run API reel `gpt-5.4` valide sur le poste
 - [x] Operating Model vNext
   - [x] `AGENTS.md` racine complet
@@ -114,6 +115,13 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
   - [x] Adaptateur package `OpenClaw` local cree
   - [x] Politique `OpenClaw facade / Project OS verite` respectee dans le code
   - [x] Ingress `message_received -> ChannelEvent -> Mission Router` branche
+  - [x] Runtime OpenClaw dedie pose (`D:\ProjectOS\openclaw-runtime`)
+  - [x] State OpenClaw dedie pose (`D:\ProjectOS\runtime\openclaw`)
+  - [x] Bootstrap natif `plugins install --link` valide sur le poste
+  - [x] `project-os openclaw doctor` vert sur le poste
+  - [x] Replay harness obligatoire vert sur le poste
+  - [x] Validation live en mode fail-closed posee
+  - [x] Cartes Discord compactes preparees dans le modele operateur
   - [ ] Runtime `OpenClaw` reel connecte sur Discord/WebChat du poste
 - [ ] Lot 5 - Orchestration durable `LangGraph` live
 - [ ] Lot 6 - Windows worker + perception
