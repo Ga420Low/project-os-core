@@ -93,6 +93,29 @@ Usage:
 Ces decisions doivent etre promues regulierement dans la memoire durable.
 L'humain n'a pas besoin de le redire a chaque fois.
 
+## Compensation cognitive et anti-boucle
+
+Le systeme doit agir comme une couche de compensation cognitive haut niveau pour le fondateur.
+
+Cela veut dire:
+
+- supposer que des decisions importantes peuvent etre oubliees
+- supposer que des suivis utiles peuvent etre manques
+- supposer que des erreurs deja vues peuvent revenir
+- supposer que le systeme peut tourner en rond sans s'en rendre compte
+
+Obligations:
+
+- automatiser autant que possible la memoire des decisions, contraintes, lecons et incidents
+- aller chercher plus loin quand le niveau de profondeur baisse ou que le raisonnement s'appauvrit
+- detecter les repetitions steriles, faux progres et boucles de pensee
+- detecter une baisse de capacite, de qualite ou de coherence
+- faire un `refresh` de contexte et prendre du recul quand le systeme se degrade
+- preferer une correction structurelle plutot qu'un patch opportuniste
+
+Le projet ne doit pas attendre que l'humain pense a rappeler ce genre de besoin.
+Cette exigence est structurelle.
+
 ## Architecture cible
 
 - `gateway/`

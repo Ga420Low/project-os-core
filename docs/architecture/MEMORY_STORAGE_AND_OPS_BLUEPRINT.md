@@ -146,6 +146,25 @@ Avant branchement du disque archive, utiliser un placeholder de lettre.
 - aucune donnee critique ne doit dependre d'un service cloud externe pour exister
 - la migration `SQLite -> Qdrant/LanceDB` doit rester possible
 
+## Politique memoire proactive
+
+La memoire ne sert pas seulement a stocker.
+Elle sert a compenser l'oubli, a limiter les repetitions steriles et a maintenir la qualite du systeme.
+
+Le systeme doit donc:
+
+- promouvoir regulierement les decisions confirmees
+- promouvoir regulierement les decisions changees
+- retenir les erreurs recurrentes et leurs corrections
+- retenir les indices de derive, de boucle et de baisse de capacite
+- soutenir des mecanismes de `refresh` quand le raisonnement se deconnecte de l'historique utile
+
+Cette politique est proactive:
+
+- l'humain n'a pas besoin de rappeler constamment ce qu'il faut memoriser
+- le systeme doit anticiper ce qui merite d'etre retenu
+- le systeme doit chercher ce qui manque quand il sent qu'il s'appauvrit
+
 ## Decision pour les 6 prochains mois
 
 On construit:

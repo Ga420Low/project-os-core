@@ -154,6 +154,8 @@ On revient dans `Codex`.
 - verifier les risques
 - verifier les tests a lancer
 - corriger les erreurs de raisonnement
+- detecter les signes de boucle, d'appauvrissement ou de baisse de capacite
+- forcer un `refresh` de contexte si la sortie perd en qualite ou recycle les memes idees
 
 ### Phase F - Integration
 
@@ -316,6 +318,30 @@ Objectif:
 - zero duplication inutile
 - coherence sur le long terme
 
+## Detection de derive et prise de recul
+
+Le workflow doit explicitement traiter les cas suivants:
+
+- l'agent tourne en rond
+- l'agent repete des solutions deja invalidees
+- l'agent oublie des decisions deja confirmees
+- la qualite du raisonnement baisse
+- la capacite apparente diminue a cause d'un contexte mal rafraichi
+
+Quand ces signaux apparaissent, le systeme doit:
+
+- remonter l'alerte
+- relire la memoire canonique utile
+- recharger les decisions confirmees et changees
+- aller chercher plus loin dans les sources et dans le contexte
+- produire une proposition de correction ou de recentrage
+
+Objectif:
+
+- garder un niveau haut
+- eviter les faux mouvements
+- maintenir une trajectoire intelligente et autonome
+
 ## Standing attendu
 
 `Project OS` est construit avec un standard haut niveau:
@@ -333,4 +359,3 @@ Reference mentale:
 
 - on construit `Jarvis`
 - pas un assemblage de scripts opportunistes
-
