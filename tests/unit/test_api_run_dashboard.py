@@ -23,8 +23,36 @@ from project_os_core.api_runs.dashboard import (
     ensure_dashboard_running,
     render_dashboard_html,
 )
-from project_os_core.models import ApiRunMode
+from project_os_core.models import ApiRunMode, ApiRunReview, ApiRunReviewVerdict, new_id
 from project_os_core.services import build_app_services
+
+
+def _install_stub_reviewer(services):
+    def _stub(result, context_pack):
+        review = ApiRunReview(
+            review_id=new_id("run_review"),
+            run_id=result.run_id,
+            verdict=ApiRunReviewVerdict.ACCEPTED_WITH_RESERVES,
+            reviewer="claude-sonnet-4-20250514",
+            findings=["Claude review found one minor reserve."],
+            followup_actions=["Apply the minor correction before integration."],
+            metadata={
+                "type": "review_result",
+                "source": "test_stub",
+                "summary": "Claude review found one minor reserve.",
+                "recommendation": "Apply the minor correction before integration.",
+                "issues_found": 1,
+                "critical": 0,
+                "high": 1,
+                "usage": {"input_tokens": 120, "output_tokens": 40},
+                "estimated_cost_eur": 0.0012,
+                "context_pack_id": context_pack.context_pack_id,
+            },
+        )
+        services.api_runs._store_run_review(review)
+        return review
+
+    services.api_runs._call_reviewer = _stub
 
 
 def _build_services(tmp_path: Path):
@@ -71,10 +99,33 @@ def _build_services(tmp_path: Path):
 
     services = build_app_services(config_path=str(config_path), policy_path=str(policy_path))
     services.secret_resolver.write_local_fallback("OPENAI_API_KEY", "sk-test-secret")
+    services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "anthropic-test-secret")
+    _install_stub_reviewer(services)
     return services
 
 
 class ApiRunDashboardTests(unittest.TestCase):
+    def test_dashboard_renders_needs_revision_badge(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                payload = build_dashboard_payload(services, limit=2)
+                payload["snapshot"]["current_run"] = {
+                    "run_id": "api_run_test",
+                    "review_verdict": "needs_revision",
+                    "status": "reviewed",
+                    "mode": "patch_plan",
+                    "branch_name": "codex/test-needs-revision",
+                    "objective": "Revise the lot before integration.",
+                }
+                payload["snapshot"]["latest_runs"] = [dict(payload["snapshot"]["current_run"])]
+                html = render_dashboard_html(payload, refresh_seconds=4)
+
+                self.assertIn("review-needs_revision", html)
+                self.assertIn("needs_revision", html)
+            finally:
+                services.close()
+
     def test_recent_operator_visibility_allows_reuse_without_new_browser_open(self):
         with tempfile.TemporaryDirectory() as tmp:
             state_path = Path(tmp) / "operator_visibility.json"

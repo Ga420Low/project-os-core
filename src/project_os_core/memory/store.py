@@ -68,29 +68,25 @@ class MemoryStore:
                 self.openmemory.mark_unavailable(str(exc))
                 record.metadata["openmemory_warning"] = str(exc)
 
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO memory_records(
-                memory_id, openmemory_id, user_id, project_id, mission_id, content,
-                memory_type, tier, tags_json, metadata_json, archived_artifact_path,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                record.memory_id,
-                record.openmemory_id,
-                record.user_id,
-                record.project_id,
-                record.mission_id,
-                record.content,
-                record.memory_type.value,
-                record.tier.value,
-                dump_json(record.tags),
-                dump_json(record.metadata),
-                record.archived_artifact_path,
-                record.created_at,
-                record.updated_at,
-            ),
+        self.database.upsert(
+            "memory_records",
+            {
+                "memory_id": record.memory_id,
+                "openmemory_id": record.openmemory_id,
+                "user_id": record.user_id,
+                "project_id": record.project_id,
+                "mission_id": record.mission_id,
+                "content": record.content,
+                "memory_type": record.memory_type.value,
+                "tier": record.tier.value,
+                "tags_json": dump_json(record.tags),
+                "metadata_json": dump_json(record.metadata),
+                "archived_artifact_path": record.archived_artifact_path,
+                "created_at": record.created_at,
+                "updated_at": record.updated_at,
+            },
+            conflict_columns="memory_id",
+            immutable_columns=["created_at"],
         )
         try:
             vector = self.embedding_service.embed_text(content)
@@ -151,24 +147,21 @@ class MemoryStore:
             storage_tier=target_tier,
             payload=to_jsonable(record),
         )
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO artifact_pointers(
-                artifact_id, owner_type, owner_id, artifact_kind, storage_tier, path,
-                checksum_sha256, size_bytes, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                artifact.artifact_id,
-                "memory_record",
-                record.memory_id,
-                artifact.artifact_kind,
-                artifact.storage_tier.value,
-                artifact.path,
-                artifact.checksum_sha256,
-                artifact.size_bytes,
-                artifact.created_at,
-            ),
+        self.database.upsert(
+            "artifact_pointers",
+            {
+                "artifact_id": artifact.artifact_id,
+                "owner_type": "memory_record",
+                "owner_id": record.memory_id,
+                "artifact_kind": artifact.artifact_kind,
+                "storage_tier": artifact.storage_tier.value,
+                "path": artifact.path,
+                "checksum_sha256": artifact.checksum_sha256,
+                "size_bytes": artifact.size_bytes,
+                "created_at": artifact.created_at,
+            },
+            conflict_columns="artifact_id",
+            immutable_columns=["created_at"],
         )
         return artifact.path
 

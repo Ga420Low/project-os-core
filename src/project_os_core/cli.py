@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .api_runs.dashboard import serve_dashboard
 from .bootstrap import bootstrap_environment, doctor_report, health_snapshot
 from .gateway.openclaw_adapter import build_dispatch_from_openclaw_payload
+from .mission.chain import STANDARD_CHAINS
 from .models import (
     ActionRiskClass,
     ApiRunMode,
@@ -268,6 +269,44 @@ def main(argv: list[str] | None = None) -> int:
     learning_refresh.add_argument("--next-step", required=True)
     learning_refresh.add_argument("--source-id", action="append", default=[])
     learning_refresh.add_argument("--metadata")
+
+    github_parser = subparsers.add_parser("github")
+    github_sub = github_parser.add_subparsers(dest="github_command", required=True)
+    github_sync = github_sub.add_parser("sync-learning")
+    github_sync.add_argument("--limit", type=int, default=100)
+
+    chain_parser = subparsers.add_parser("chain")
+    chain_sub = chain_parser.add_subparsers(dest="chain_command", required=True)
+
+    chain_create = chain_sub.add_parser("create")
+    chain_create.add_argument("--objective", required=True)
+    chain_create.add_argument("--template", choices=list(STANDARD_CHAINS.keys()))
+    chain_create.add_argument("--branch-name", required=True)
+    chain_create.add_argument("--target-profile")
+    chain_create.add_argument("--skill-tag", action="append", default=[])
+    chain_create.add_argument("--source-ref", action="append", default=[])
+    chain_create.add_argument("--constraint", action="append", default=[])
+    chain_create.add_argument("--acceptance", action="append", default=[])
+    chain_create.add_argument("--metadata")
+
+    chain_advance = chain_sub.add_parser("advance")
+    chain_advance.add_argument("--chain-id", required=True)
+
+    chain_status = chain_sub.add_parser("status")
+    chain_status.add_argument("--chain-id", required=True)
+
+    chain_list = chain_sub.add_parser("list")
+    chain_list.add_argument("--status", choices=["running", "completed", "failed", "paused"])
+
+    scheduler_parser = subparsers.add_parser("scheduler")
+    scheduler_sub = scheduler_parser.add_subparsers(dest="scheduler_command", required=True)
+
+    scheduler_sub.add_parser("tick")
+    scheduler_sub.add_parser("list")
+    scheduler_enable = scheduler_sub.add_parser("enable")
+    scheduler_enable.add_argument("--name", required=True)
+    scheduler_disable = scheduler_sub.add_parser("disable")
+    scheduler_disable.add_argument("--name", required=True)
 
     args = parser.parse_args(argv)
 
@@ -639,6 +678,55 @@ def main(argv: list[str] | None = None) -> int:
                 print(json.dumps(to_jsonable(recommendation), indent=2, ensure_ascii=True, sort_keys=True))
                 return 0
 
+        if args.command == "github":
+            if args.github_command == "sync-learning":
+                payload = services.github.sync_learning(limit=args.limit)
+                print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+                return 0 if payload.get("status") != "failed" else 1
+
+        if args.command == "chain":
+            if args.chain_command == "create":
+                chain = services.chain.create_chain(
+                    objective=args.objective,
+                    branch_name=args.branch_name,
+                    chain_template=args.template,
+                    target_profile=args.target_profile,
+                    skill_tags=args.skill_tag,
+                    source_paths=args.source_ref,
+                    constraints=args.constraint,
+                    acceptance_criteria=args.acceptance,
+                    metadata=_json_arg(args.metadata),
+                )
+                print(json.dumps(to_jsonable(chain), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.chain_command == "advance":
+                payload = services.chain.advance_chain(args.chain_id)
+                print(json.dumps(to_jsonable(payload), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0 if payload.get("status") != "failed" else 1
+            if args.chain_command == "status":
+                chain = services.chain.chain_status(args.chain_id)
+                print(json.dumps(to_jsonable(chain), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.chain_command == "list":
+                chains = services.chain.list_chains(status=args.status)
+                print(json.dumps([to_jsonable(item) for item in chains], indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+
+        if args.command == "scheduler":
+            if args.scheduler_command == "tick":
+                results = services.scheduler.tick(executor=lambda command, args_dict: _execute_scheduler_task(services, command, args_dict))
+                print(json.dumps(results, indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.scheduler_command == "list":
+                print(json.dumps([to_jsonable(item) for item in services.scheduler.list_tasks()], indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.scheduler_command == "enable":
+                print(json.dumps(to_jsonable(services.scheduler.enable_task(args.name)), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.scheduler_command == "disable":
+                print(json.dumps(to_jsonable(services.scheduler.disable_task(args.name)), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+
         return 1
     finally:
         services.close()
@@ -800,11 +888,19 @@ def _mark_infisical_required(repo_root) -> None:
     target.write_text(json.dumps(existing, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _clear_live_console() -> None:
+    if sys.stdout.isatty():
+        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.flush()
+        return
+    print("\n" * 3)
+
+
 def _watch_api_runs_monitor(services, *, interval: float, iterations: int, limit: int) -> int:
     count = 0
     try:
         while True:
-            os.system("cls" if os.name == "nt" else "clear")
+            _clear_live_console()
             print(services.api_runs.render_terminal_dashboard(limit=limit))
             count += 1
             if iterations and count >= iterations:
@@ -812,3 +908,52 @@ def _watch_api_runs_monitor(services, *, interval: float, iterations: int, limit
             time.sleep(interval)
     except KeyboardInterrupt:
         return 0
+
+
+def _execute_scheduler_task(services, command: str, args_dict: dict[str, Any]) -> dict[str, Any]:
+    if command == "memory_compact":
+        return services.tier_manager.compact(trigger=str(args_dict.get("trigger", "scheduled")))
+    if command == "health_check":
+        state = services.runtime.latest_runtime_state()
+        return {"runtime_state": to_jsonable(state) if state is not None else None}
+    if command == "daily_audit":
+        metadata = {"scheduled": True, "scheduled_task": "daily_audit"}
+        previous_policy = services.api_runs.execution_policy.run_contract_required
+        branch_name = f"codex/scheduled-audit-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
+        try:
+            services.api_runs.execution_policy.run_contract_required = False
+            payload = services.api_runs.execute_run(
+                mode=ApiRunMode(args_dict.get("mode", ApiRunMode.AUDIT.value)),
+                objective=str(args_dict.get("objective", "Audit quotidien automatique du repo")),
+                branch_name=branch_name,
+                skill_tags=["audit", "scheduled"],
+                metadata=metadata,
+            )
+        finally:
+            services.api_runs.execution_policy.run_contract_required = previous_policy
+        result = payload.get("result")
+        return {
+            "run_id": result.run_id if result else None,
+            "status": result.status.value if result else None,
+            "branch_name": branch_name,
+        }
+    if command == "cleanup_deliveries":
+        max_age = int(args_dict.get("max_age_hours", 48))
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=max_age)).isoformat()
+        cursor = services.database.execute(
+            """
+            UPDATE api_run_operator_deliveries
+            SET status = ?, next_attempt_at = NULL, updated_at = ?
+            WHERE status = ? AND created_at < ?
+            """,
+            (
+                OperatorDeliveryStatus.EXPIRED.value,
+                datetime.now(timezone.utc).isoformat(),
+                OperatorDeliveryStatus.PENDING.value,
+                cutoff,
+            ),
+        )
+        return {"expired_count": int(cursor.rowcount or 0), "cutoff": cutoff}
+    if command == "github_issue_learning_sync":
+        return services.github.sync_learning(limit=int(args_dict.get("limit", 100)))
+    raise RuntimeError(f"Unknown scheduled command: {command}")

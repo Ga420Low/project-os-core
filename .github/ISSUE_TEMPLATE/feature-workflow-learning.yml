@@ -1,0 +1,36 @@
+name: Feature / Workflow Learning
+description: Track features that add durable workflow leverage and reusable learning.
+title: "[FEATURE] "
+labels:
+  - task
+  - module:github
+  - module:learning
+body:
+  - type: markdown
+    attributes:
+      value: "Use this for features that improve workflow, reliability, learning capture, or team leverage."
+  - type: textarea
+    id: structured_body
+    attributes:
+      label: Structured body
+      description: Keep the reserved headings. Fill every section or use N/A when truly not applicable.
+      value: |
+        ## Description
+
+        ## Impact
+
+        ## Root Cause
+
+        ## Resolution
+
+        ## Regression Coverage
+
+        ## Durable Lesson
+
+        ## Reusable Pattern
+
+        ## Repeated Pattern
+
+        ## Eval Scenario
+    validations:
+      required: true

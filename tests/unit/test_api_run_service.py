@@ -11,8 +11,60 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from project_os_core.api_runs.dashboard import build_dashboard_payload, render_dashboard_html
-from project_os_core.models import ApiRunMode, ApiRunReviewVerdict, ApiRunStatus, OperatorDeliveryStatus, RunContractStatus
+from project_os_core.models import (
+    ApiRunMode,
+    ApiRunRequest,
+    ApiRunResult,
+    ApiRunReview,
+    ApiRunReviewVerdict,
+    ApiRunStatus,
+    DecisionStatus,
+    LearningSignalKind,
+    OperatorChannelHint,
+    OperatorDeliveryStatus,
+    RunLifecycleEvent,
+    RunLifecycleEventKind,
+    RunContractStatus,
+    new_id,
+)
 from project_os_core.services import build_app_services
+
+
+def _install_stub_reviewer(
+    services,
+    *,
+    verdict: ApiRunReviewVerdict = ApiRunReviewVerdict.ACCEPTED,
+    summary: str = "Claude review accepted the run.",
+    recommendation: str = "Proceed to the next step.",
+    issues_found: int = 0,
+    critical: int = 0,
+    high: int = 0,
+):
+    def _stub(result, context_pack):
+        review = ApiRunReview(
+            review_id=new_id("run_review"),
+            run_id=result.run_id,
+            verdict=verdict,
+            reviewer="claude-sonnet-4-20250514",
+            findings=[summary] if issues_found or verdict is not ApiRunReviewVerdict.ACCEPTED else [],
+            followup_actions=[recommendation] if recommendation else [],
+            metadata={
+                "type": "review_result",
+                "source": "test_stub",
+                "summary": summary,
+                "recommendation": recommendation,
+                "issues_found": issues_found,
+                "critical": critical,
+                "high": high,
+                "usage": {"input_tokens": 120, "output_tokens": 40},
+                "estimated_cost_eur": 0.0012,
+                "context_pack_id": context_pack.context_pack_id,
+            },
+        )
+        services.api_runs._store_run_review(review)
+        return review
+
+    services.api_runs._call_reviewer = _stub
 
 
 def _build_services(tmp_path: Path):
@@ -58,6 +110,8 @@ def _build_services(tmp_path: Path):
 
     services = build_app_services(config_path=str(config_path), policy_path=str(policy_path))
     services.secret_resolver.write_local_fallback("OPENAI_API_KEY", "sk-test-secret")
+    services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "anthropic-test-secret")
+    _install_stub_reviewer(services)
     return services
 
 
@@ -81,6 +135,11 @@ def _prepare_approved_contract(services, *, mode: ApiRunMode, objective: str, br
 
 
 class ApiRunServiceTests(unittest.TestCase):
+    def test_review_verdict_values_are_unique_and_include_needs_revision(self):
+        values = [item.value for item in ApiRunReviewVerdict]
+        self.assertEqual(len(values), len(set(values)))
+        self.assertIn("needs_revision", values)
+
     def test_templates_require_contradiction_guard_for_all_modes(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = _build_services(Path(tmp))
@@ -89,6 +148,101 @@ class ApiRunServiceTests(unittest.TestCase):
                     template = services.api_runs._template_for_mode(mode)
                     self.assertIn("clarification_needed", template["output_contract"])
                     self.assertTrue(any("Challenge the brief if needed" in item for item in template["instructions"]))
+            finally:
+                services.close()
+
+    def test_build_context_pack_injects_learning_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                branch_name = "codex/learning-injection"
+                services.learning.record_decision(
+                    status=DecisionStatus.CONFIRMED,
+                    scope=f"api_run:audit:{branch_name}",
+                    summary="Prefer narrower diffs on this branch.",
+                    metadata={"branch_name": branch_name},
+                )
+
+                context_pack = services.api_runs.build_context_pack(
+                    mode=ApiRunMode.AUDIT,
+                    objective="Inject learning context into the run.",
+                    branch_name=branch_name,
+                    skill_tags=["audit", "learning"],
+                )
+
+                learning_context = context_pack.runtime_facts["learning_context"]
+                self.assertEqual(len(learning_context["decisions"]), 1)
+                self.assertEqual(learning_context["decisions"][0]["scope"], f"api_run:audit:{branch_name}")
+            finally:
+                services.close()
+
+    def test_render_prompt_contains_learning_context_section_when_lessons_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                branch_name = "codex/learning-prompt"
+                services.learning.record_decision(
+                    status=DecisionStatus.CONFIRMED,
+                    scope=f"api_run:patch_plan:{branch_name}",
+                    summary="Keep the architecture boundary stable.",
+                    metadata={"branch_name": branch_name},
+                )
+                services.learning.record_signal(
+                    kind=LearningSignalKind.PATCH_REJECTED,
+                    severity="high",
+                    summary=f"Rejected patch_plan run for {branch_name}.",
+                    source_ids=["run_1"],
+                    metadata={"branch_name": branch_name},
+                )
+
+                context_pack = services.api_runs.build_context_pack(
+                    mode=ApiRunMode.PATCH_PLAN,
+                    objective="Render prompt with learning context.",
+                    branch_name=branch_name,
+                    skill_tags=["patch_plan", "learning"],
+                )
+                prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
+
+                self.assertIn("## Learning Context (lessons from recent runs)", prompt.rendered_prompt)
+                self.assertIn("High-severity signals from recent runs:", prompt.rendered_prompt)
+                self.assertIn("Recent confirmed decisions:", prompt.rendered_prompt)
+            finally:
+                services.close()
+
+    def test_render_prompt_omits_learning_context_section_when_no_lessons_exist(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                context_pack = services.api_runs.build_context_pack(
+                    mode=ApiRunMode.DESIGN,
+                    objective="Render prompt without prior lessons.",
+                    branch_name="codex/no-learning-prompt",
+                    skill_tags=["design"],
+                )
+                prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
+
+                self.assertNotIn("## Learning Context (lessons from recent runs)", prompt.rendered_prompt)
+            finally:
+                services.close()
+
+    def test_build_context_pack_survives_learning_injection_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                def _raise_learning(**_kwargs):
+                    raise RuntimeError("learning_db_down")
+
+                services.learning.gather_learning_context = _raise_learning  # type: ignore[method-assign]
+
+                context_pack = services.api_runs.build_context_pack(
+                    mode=ApiRunMode.GENERATE_PATCH,
+                    objective="Continue even if learning injection fails.",
+                    branch_name="codex/learning-failure",
+                    skill_tags=["generate_patch"],
+                )
+
+                self.assertEqual(context_pack.runtime_facts["learning_context"]["error"], "learning_db_down")
+                self.assertEqual(context_pack.runtime_facts["learning_context"]["decisions"], [])
             finally:
                 services.close()
 
@@ -362,8 +516,8 @@ class ApiRunServiceTests(unittest.TestCase):
                     },
                 )
                 deliveries = services.api_runs.list_operator_deliveries(limit=10)["deliveries"]
-                self.assertGreaterEqual(len(deliveries), 2)
-                latest = deliveries[-1]
+                self.assertEqual(len(deliveries), 1)
+                latest = deliveries[0]
                 self.assertEqual(latest["event"]["run_id"], payload["result"].run_id)
                 self.assertEqual(latest["status"], "pending")
                 ack = services.api_runs.mark_operator_delivery(
@@ -733,6 +887,521 @@ class ApiRunServiceTests(unittest.TestCase):
                 )
                 signal_rows = services.database.fetchall("SELECT * FROM learning_signals")
                 self.assertTrue(any(str(row["kind"]) == "patch_rejected" for row in signal_rows))
+            finally:
+                services.close()
+
+    def test_guardian_pre_spend_check_allows_run_when_budget_is_ok(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                services.api_runs.execution_policy.daily_budget_limit_eur = 1.0
+                context_pack = services.api_runs.build_context_pack(
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier le guardian budget ok.",
+                    branch_name="codex/test-guardian-budget-ok",
+                    skill_tags=["audit"],
+                )
+                prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
+                request = ApiRunRequest(
+                    run_request_id=new_id("run_request"),
+                    context_pack_id=context_pack.context_pack_id,
+                    prompt_template_id=prompt.prompt_template_id,
+                    mode=ApiRunMode.AUDIT,
+                    objective=context_pack.objective,
+                    branch_name=context_pack.branch_name,
+                )
+
+                allowed, reason = services.api_runs._guardian_pre_spend_check(
+                    request=request,
+                    prompt_template=prompt,
+                )
+
+                self.assertTrue(allowed)
+                self.assertIsNone(reason)
+            finally:
+                services.close()
+
+    def test_guardian_pre_spend_check_blocks_when_budget_is_exceeded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                services.api_runs.execution_policy.daily_budget_limit_eur = 0.20
+                now_iso = datetime.now(timezone.utc).isoformat()
+                services.api_runs._persist_run_result(
+                    ApiRunResult(
+                        run_id=new_id("api_run"),
+                        run_request_id=new_id("run_request"),
+                        model="gpt-5.4",
+                        mode=ApiRunMode.AUDIT,
+                        status=ApiRunStatus.COMPLETED,
+                        estimated_cost_eur=0.15,
+                        created_at=now_iso,
+                        updated_at=now_iso,
+                    )
+                )
+                context_pack = services.api_runs.build_context_pack(
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier le guardian budget bloque.",
+                    branch_name="codex/test-guardian-budget-blocked",
+                    skill_tags=["audit"],
+                )
+                prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
+                request = ApiRunRequest(
+                    run_request_id=new_id("run_request"),
+                    context_pack_id=context_pack.context_pack_id,
+                    prompt_template_id=prompt.prompt_template_id,
+                    mode=ApiRunMode.AUDIT,
+                    objective=context_pack.objective,
+                    branch_name=context_pack.branch_name,
+                )
+
+                allowed, reason = services.api_runs._guardian_pre_spend_check(
+                    request=request,
+                    prompt_template=prompt,
+                )
+
+                self.assertFalse(allowed)
+                self.assertIsNotNone(reason)
+                self.assertIn("budget_exceeded:", str(reason))
+            finally:
+                services.close()
+
+    def test_guardian_pre_spend_check_blocks_when_loop_is_detected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                services.api_runs.execution_policy.daily_budget_limit_eur = 10.0
+                services.api_runs.execution_policy.loop_detection_window_hours = 2
+                services.api_runs.execution_policy.loop_detection_threshold = 3
+                context_pack = services.api_runs.build_context_pack(
+                    mode=ApiRunMode.DESIGN,
+                    objective="Verifier le guardian boucle.",
+                    branch_name="codex/test-guardian-loop",
+                    skill_tags=["design"],
+                )
+                prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
+                now_iso = datetime.now(timezone.utc).isoformat()
+                for _ in range(3):
+                    services.api_runs._persist_run_request(
+                        ApiRunRequest(
+                            run_request_id=new_id("run_request"),
+                            context_pack_id=context_pack.context_pack_id,
+                            prompt_template_id=prompt.prompt_template_id,
+                            mode=ApiRunMode.DESIGN,
+                            objective=context_pack.objective,
+                            branch_name=context_pack.branch_name,
+                            created_at=now_iso,
+                            updated_at=now_iso,
+                        )
+                    )
+                request = ApiRunRequest(
+                    run_request_id=new_id("run_request"),
+                    context_pack_id=context_pack.context_pack_id,
+                    prompt_template_id=prompt.prompt_template_id,
+                    mode=ApiRunMode.DESIGN,
+                    objective=context_pack.objective,
+                    branch_name=context_pack.branch_name,
+                )
+
+                allowed, reason = services.api_runs._guardian_pre_spend_check(
+                    request=request,
+                    prompt_template=prompt,
+                )
+
+                self.assertFalse(allowed)
+                self.assertIsNotNone(reason)
+                self.assertIn("loop_detected:", str(reason))
+            finally:
+                services.close()
+
+    def test_guardian_pre_spend_check_allows_override_even_if_budget_is_exceeded(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                services.api_runs.execution_policy.daily_budget_limit_eur = 0.01
+                context_pack = services.api_runs.build_context_pack(
+                    mode=ApiRunMode.GENERATE_PATCH,
+                    objective="Verifier le guardian override.",
+                    branch_name="codex/test-guardian-override",
+                    skill_tags=["generate_patch"],
+                )
+                prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
+                request = ApiRunRequest(
+                    run_request_id=new_id("run_request"),
+                    context_pack_id=context_pack.context_pack_id,
+                    prompt_template_id=prompt.prompt_template_id,
+                    mode=ApiRunMode.GENERATE_PATCH,
+                    objective=context_pack.objective,
+                    branch_name=context_pack.branch_name,
+                    metadata={"guardian_override": True},
+                )
+
+                allowed, reason = services.api_runs._guardian_pre_spend_check(
+                    request=request,
+                    prompt_template=prompt,
+                )
+
+                self.assertTrue(allowed)
+                self.assertIsNone(reason)
+            finally:
+                services.close()
+
+    def test_execute_run_returns_clarification_required_when_guardian_blocks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                services.api_runs.execution_policy.daily_budget_limit_eur = 0.01
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier le guardian bloque avant l'appel API.",
+                    branch_name="codex/test-guardian-blocked",
+                    skill_tags=["audit", "guardian"],
+                )
+
+                def _runner(*_args, **_kwargs):
+                    raise AssertionError("response_runner should not be called when guardian blocks the run")
+
+                payload = services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
+                    response_runner=_runner,
+                )
+
+                self.assertEqual(payload["result"].status, ApiRunStatus.CLARIFICATION_REQUIRED)
+                self.assertTrue(payload["result"].metadata["guardian_blocked"])
+                self.assertIn("clarification_report_path", payload["result"].metadata)
+                current_contract = services.api_runs.get_run_contract(contract.contract_id)
+                self.assertEqual(current_contract.status, RunContractStatus.PREPARED)
+                deliveries = services.api_runs.list_operator_deliveries(limit=10)["deliveries"]
+                self.assertEqual(len(deliveries), 1)
+                self.assertEqual(deliveries[0]["event"]["kind"], "clarification_required")
+            finally:
+                services.close()
+
+    def test_execute_run_continues_normally_when_guardian_allows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                services.api_runs.execution_policy.daily_budget_limit_eur = 5.0
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.PATCH_PLAN,
+                    objective="Verifier le guardian laisse passer.",
+                    branch_name="codex/test-guardian-allowed",
+                    skill_tags=["patch_plan", "guardian"],
+                )
+                payload = services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
+                    response_runner=lambda request, prompt, context: {
+                        "model": "gpt-5.4",
+                        "output_text": json.dumps(
+                            {
+                                "decision": "Le guardian a laisse passer le lot.",
+                                "why": "Le budget et la boucle sont dans les limites.",
+                                "alternatives": [],
+                                "files_to_change": ["src/project_os_core/api_runs/service.py"],
+                                "interfaces": ["ApiRunRequest"],
+                                "patch_outline": ["Passer le guard.", "Produire le plan."],
+                                "tests": ["Verifier la garde avant appel API."],
+                                "risks": ["Aucun risque supplementaire."],
+                                "acceptance_criteria": ["Le run passe le guardian puis produit son resultat."],
+                                "open_questions": [],
+                            }
+                        ),
+                        "usage": {"input_tokens": 40, "output_tokens": 20},
+                    },
+                )
+
+                self.assertEqual(payload["result"].status, ApiRunStatus.COMPLETED)
+                self.assertNotIn("guardian_blocked", payload["result"].metadata)
+            finally:
+                services.close()
+
+    def test_call_reviewer_parses_claude_json_and_persists_review(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                class _FakeUsage:
+                    input_tokens = 240
+                    output_tokens = 60
+
+                    def model_dump(self):
+                        return {"input_tokens": self.input_tokens, "output_tokens": self.output_tokens}
+
+                class _FakeBlock:
+                    type = "text"
+                    text = json.dumps(
+                        {
+                            "verdict": "accepted_with_reserves",
+                            "issues_found": 2,
+                            "critical": 0,
+                            "high": 1,
+                            "summary": "One interface mismatch remains in the generated plan.",
+                            "recommendation": "Tighten the interface contract before integration.",
+                        }
+                    )
+
+                class _FakeResponse:
+                    model = "claude-sonnet-4-20250514"
+                    content = [_FakeBlock()]
+                    usage = _FakeUsage()
+
+                    def model_dump(self):
+                        return {
+                            "model": self.model,
+                            "content": [{"type": "text", "text": self.content[0].text}],
+                            "usage": self.usage.model_dump(),
+                        }
+
+                captured: dict[str, object] = {}
+
+                class _FakeMessages:
+                    def create(self, **kwargs):
+                        captured.update(kwargs)
+                        return _FakeResponse()
+
+                class _FakeAnthropic:
+                    def __init__(self, *, api_key):
+                        captured["api_key"] = api_key
+                        self.messages = _FakeMessages()
+
+                services.api_runs._call_reviewer = services.api_runs.__class__._call_reviewer.__get__(
+                    services.api_runs,
+                    services.api_runs.__class__,
+                )
+                context_pack = services.api_runs.build_context_pack(
+                    mode=ApiRunMode.PATCH_PLAN,
+                    objective="Audit the generated patch plan.",
+                    branch_name="codex/test-claude-review",
+                    skill_tags=["patch_plan", "review"],
+                    source_paths=["src/project_os_core/api_runs/service.py"],
+                )
+                result = ApiRunResult(
+                    run_id=new_id("api_run"),
+                    run_request_id=new_id("run_request"),
+                    model="gpt-5.4",
+                    mode=ApiRunMode.PATCH_PLAN,
+                    status=ApiRunStatus.COMPLETED,
+                    structured_output={
+                        "decision": "Add the reviewer bridge.",
+                        "why": "Cross-model review is now mandatory.",
+                        "files_to_change": ["src/project_os_core/api_runs/service.py"],
+                        "patch_outline": ["Add Claude call.", "Persist review artifacts."],
+                        "tests": ["Unit-test reviewer parsing."],
+                        "risks": ["Prompt drift."],
+                    },
+                    usage={"input_tokens": 100, "output_tokens": 50},
+                )
+                with patch("project_os_core.api_runs.service.Anthropic", _FakeAnthropic):
+                    review = services.api_runs._call_reviewer(result=result, context_pack=context_pack)
+
+                self.assertEqual(review.verdict.value, "accepted_with_reserves")
+                self.assertEqual(review.metadata["issues_found"], 2)
+                self.assertEqual(review.metadata["high"], 1)
+                self.assertTrue(Path(str(review.metadata["artifact_path"])).exists())
+                review_rows = services.database.fetchall("SELECT * FROM api_run_reviews WHERE run_id = ?", (result.run_id,))
+                self.assertEqual(len(review_rows), 1)
+                self.assertEqual(captured["api_key"], "anthropic-test-secret")
+                self.assertEqual(captured["model"], "claude-sonnet-4-20250514")
+                self.assertIn("Quality gates:", str(captured["messages"][0]["content"]))
+                self.assertIn("Return exactly one JSON object", str(captured["system"]))
+            finally:
+                services.close()
+
+    def test_review_verdict_parser_accepts_needs_revision(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                verdict = services.api_runs._review_verdict({"verdict": "needs_revision"})
+                self.assertEqual(verdict, ApiRunReviewVerdict.NEEDS_REVISION)
+            finally:
+                services.close()
+
+    def test_completion_report_handles_needs_revision_verdict(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                request = ApiRunRequest(
+                    run_request_id=new_id("run_request"),
+                    context_pack_id=new_id("context_pack"),
+                    prompt_template_id=new_id("mega_prompt"),
+                    mode=ApiRunMode.PATCH_PLAN,
+                    objective="Revise the patch plan.",
+                    branch_name="codex/test-needs-revision",
+                )
+                result = ApiRunResult(
+                    run_id=new_id("api_run"),
+                    run_request_id=request.run_request_id,
+                    model="gpt-5.4",
+                    mode=request.mode,
+                    status=ApiRunStatus.COMPLETED,
+                    structured_output={"patch_outline": ["Revise the interface contract."]},
+                )
+                review = ApiRunReview(
+                    review_id=new_id("run_review"),
+                    run_id=result.run_id,
+                    verdict=ApiRunReviewVerdict.NEEDS_REVISION,
+                    reviewer="claude-sonnet-4-20250514",
+                    findings=["The contract still needs revision."],
+                )
+
+                report = services.api_runs._build_completion_report(review=review, result=result, request=request)
+
+                self.assertEqual(report.verdict, "needs_revision")
+                self.assertIn("revise", report.summary.lower())
+                self.assertIn("relancer la revue", str(report.next_action).lower())
+            finally:
+                services.close()
+
+    def test_call_translator_filters_run_started_without_api_call(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                event = RunLifecycleEvent(
+                    lifecycle_event_id=new_id("lifecycle_event"),
+                    run_id=new_id("api_run"),
+                    run_request_id=new_id("run_request"),
+                    kind=RunLifecycleEventKind.RUN_STARTED,
+                    title="Run demarre",
+                    summary="Le lot a commence.",
+                    branch_name="codex/test-translator-filter",
+                    mode=ApiRunMode.AUDIT,
+                    channel_hint=OperatorChannelHint.RUNS_LIVE,
+                    status=ApiRunStatus.RUNNING,
+                    phase="demarrage",
+                )
+
+                class _ShouldNotBeCalled:
+                    def __init__(self, *args, **kwargs):
+                        raise AssertionError("Anthropic should not be instantiated for filtered events")
+
+                services.api_runs._call_translator = services.api_runs.__class__._call_translator.__get__(
+                    services.api_runs,
+                    services.api_runs.__class__,
+                )
+                with patch("project_os_core.api_runs.service.Anthropic", _ShouldNotBeCalled):
+                    translated = services.api_runs._call_translator(event=event)
+
+                self.assertIsNone(translated)
+            finally:
+                services.close()
+
+    def test_call_translator_returns_french_message_trimmed_to_three_lines(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                class _FakeUsage:
+                    input_tokens = 220
+                    output_tokens = 50
+
+                    def model_dump(self):
+                        return {"input_tokens": self.input_tokens, "output_tokens": self.output_tokens}
+
+                class _FakeBlock:
+                    type = "text"
+                    text = "codex/test-translate termine — Le lot est pret.\n3 fichiers, 0.12EUR. Review dispo au retour.\nAucune action requise.\nLigne de trop."
+
+                class _FakeResponse:
+                    content = [_FakeBlock()]
+                    usage = _FakeUsage()
+
+                captured: dict[str, object] = {}
+
+                class _FakeMessages:
+                    def create(self, **kwargs):
+                        captured.update(kwargs)
+                        return _FakeResponse()
+
+                class _FakeAnthropic:
+                    def __init__(self, *, api_key):
+                        captured["api_key"] = api_key
+                        self.messages = _FakeMessages()
+
+                services.api_runs._call_translator = services.api_runs.__class__._call_translator.__get__(
+                    services.api_runs,
+                    services.api_runs.__class__,
+                )
+                event = RunLifecycleEvent(
+                    lifecycle_event_id=new_id("lifecycle_event"),
+                    run_id=new_id("api_run"),
+                    run_request_id=new_id("run_request"),
+                    kind=RunLifecycleEventKind.RUN_COMPLETED,
+                    title="Run termine",
+                    summary="Le run est termine et la review Claude est disponible pour decision.",
+                    branch_name="codex/test-translate",
+                    mode=ApiRunMode.PATCH_PLAN,
+                    channel_hint=OperatorChannelHint.RUNS_LIVE,
+                    status=ApiRunStatus.COMPLETED,
+                    phase="termine",
+                )
+                result = ApiRunResult(
+                    run_id=event.run_id,
+                    run_request_id=event.run_request_id,
+                    model="gpt-5.4",
+                    mode=ApiRunMode.PATCH_PLAN,
+                    status=ApiRunStatus.COMPLETED,
+                    structured_output={"files_to_change": ["a.py", "b.py", "c.py"]},
+                    estimated_cost_eur=0.12,
+                    usage={"input_tokens": 100, "output_tokens": 60},
+                )
+                with patch("project_os_core.api_runs.service.Anthropic", _FakeAnthropic):
+                    translated = services.api_runs._call_translator(event=event, result=result)
+
+                self.assertIsNotNone(translated)
+                self.assertLessEqual(len(str(translated).splitlines()), 3)
+                self.assertIn("termine", str(translated))
+                self.assertEqual(captured["api_key"], "anthropic-test-secret")
+                self.assertEqual(captured["model"], "claude-haiku-4-5-20251001")
+                self.assertEqual(captured["max_tokens"], 256)
+            finally:
+                services.close()
+
+    def test_call_translator_falls_back_when_claude_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                class _RaisingMessages:
+                    def create(self, **kwargs):
+                        raise RuntimeError("haiku_down")
+
+                class _RaisingAnthropic:
+                    def __init__(self, *, api_key):
+                        self.messages = _RaisingMessages()
+
+                services.api_runs._call_translator = services.api_runs.__class__._call_translator.__get__(
+                    services.api_runs,
+                    services.api_runs.__class__,
+                )
+                event = RunLifecycleEvent(
+                    lifecycle_event_id=new_id("lifecycle_event"),
+                    run_id=new_id("api_run"),
+                    run_request_id=new_id("run_request"),
+                    kind=RunLifecycleEventKind.RUN_FAILED,
+                    title="Run bloque",
+                    summary="Le run a echoue.",
+                    branch_name="codex/test-translate-fallback",
+                    mode=ApiRunMode.GENERATE_PATCH,
+                    channel_hint=OperatorChannelHint.INCIDENTS,
+                    status=ApiRunStatus.FAILED,
+                    phase="bloque",
+                    recommended_action="Aucune action requise.",
+                )
+                with patch("project_os_core.api_runs.service.Anthropic", _RaisingAnthropic):
+                    translated = services.api_runs._call_translator(event=event)
+
+                self.assertEqual(translated, "codex/test-translate-fallback echoue.\nAucune action requise.")
+            finally:
+                services.close()
+
+    def test_translator_cost_estimate_stays_below_two_milli_eur(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                estimated = services.api_runs._estimate_cost_eur(
+                    model="claude-haiku-4-5-20251001",
+                    usage={"input_tokens": 220, "output_tokens": 50},
+                )
+                self.assertLess(estimated, 0.002)
             finally:
                 services.close()
 

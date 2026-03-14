@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+
 from ..database import CanonicalDatabase, dump_json
 from ..memory.store import MemoryStore
 from ..models import (
@@ -19,6 +22,7 @@ from ..models import (
 )
 from ..router.service import MissionRouter
 from ..runtime.journal import LocalJournal
+from ..session.state import PersistentSessionState, ResolvedIntent
 from .promotion import SelectiveSyncPromoter
 
 
@@ -32,12 +36,14 @@ class GatewayService:
         journal: LocalJournal,
         router: MissionRouter,
         memory: MemoryStore,
+        session_state: PersistentSessionState,
         selective_sync: SelectiveSyncPromoter | None = None,
     ) -> None:
         self.database = database
         self.journal = journal
         self.router = router
         self.memory = memory
+        self.session_state = session_state
         self.selective_sync = selective_sync or SelectiveSyncPromoter()
 
     def dispatch_event(
@@ -76,6 +82,39 @@ class GatewayService:
                 **(metadata or {}),
             },
         )
+        snapshot = self.session_state.load()
+        resolved = self.session_state.resolve_intent(event.message.text, snapshot=snapshot)
+        if resolved is not None:
+            self._persist_channel_event(event, candidate)
+            self._persist_promotion(candidate, promotion)
+            action_result = self._execute_resolved_intent(resolved)
+            promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
+            reply = self._build_session_reply(event, envelope.envelope_id, resolved, action_result)
+            dispatch = self._build_session_dispatch(
+                event=event,
+                envelope=envelope,
+                resolved=resolved,
+                action_result=action_result,
+                promoted_memory_ids=promoted_memory_ids,
+                candidate_id=candidate.candidate_id,
+                promotion_decision_id=promotion.promotion_decision_id,
+                reply=reply,
+                channel_class=channel_class,
+                human_artifacts=human_artifacts,
+            )
+            self._persist_dispatch(dispatch)
+            self.journal.append(
+                "gateway_session_dispatch_completed",
+                "gateway",
+                {
+                    "dispatch_id": dispatch.dispatch_id,
+                    "channel_event_id": event.event_id,
+                    "resolved_action": resolved.action,
+                    "target_id": resolved.target_id,
+                    "promoted_memory_count": len(promoted_memory_ids),
+                },
+            )
+            return dispatch
         intent = self.router.envelope_to_intent(envelope)
         decision, trace, mission_run = self.router.route_intent(intent, persist=True)
         promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
@@ -123,6 +162,371 @@ class GatewayService:
             },
         )
         return dispatch
+
+    def _execute_resolved_intent(self, resolved: ResolvedIntent) -> dict:
+        if resolved.action == "approve_contract":
+            return self._approve_contract(resolved.target_id)
+        if resolved.action == "reject_contract":
+            return self._reject_contract(resolved.target_id)
+        if resolved.action == "answer_clarification":
+            return self._answer_clarification(resolved.target_id, resolved.metadata.get("answer"))
+        if resolved.action == "reject_clarification":
+            return self._reject_clarification(resolved.target_id)
+        if resolved.action == "guardian_override":
+            return self._guardian_override(resolved.target_id)
+        if resolved.action == "status_request":
+            snapshot = self.session_state.load()
+            return {"action": "status_request", "status": "ok", "snapshot": to_jsonable(snapshot)}
+        return {"action": resolved.action, "status": "unhandled"}
+
+    def _approve_contract(self, contract_id: str | None) -> dict[str, object]:
+        if not contract_id:
+            return {"action": "approve_contract", "status": "missing_target"}
+        contract = self.session_state.api_runs.approve_run_contract(
+            contract_id=contract_id,
+            founder_decision="go",
+            notes="Approved from Discord persistent session state.",
+        )
+        self.journal.append(
+            "session_contract_approved",
+            "gateway",
+            {"contract_id": contract.contract_id, "branch_name": contract.branch_name},
+        )
+        run_result: dict[str, object] = {}
+        try:
+            payload = self.session_state.api_runs.execute_run(contract_id=contract.contract_id)
+            result = payload.get("result")
+            run_result = {
+                "run_launched": True,
+                "run_id": getattr(result, "run_id", None),
+                "run_status": getattr(result, "status", None),
+                "estimated_cost_eur": getattr(result, "estimated_cost_eur", None),
+            }
+            self.journal.append(
+                "session_contract_run_launched",
+                "gateway",
+                {
+                    "contract_id": contract.contract_id,
+                    "run_id": getattr(result, "run_id", None),
+                },
+            )
+        except Exception as exc:
+            run_result = {"run_launched": False, "run_error": str(exc)}
+            self.journal.append(
+                "session_contract_run_failed",
+                "gateway",
+                {"contract_id": contract.contract_id, "error": str(exc)},
+            )
+        return {
+            "action": "approve_contract",
+            "status": "approved_and_launched" if run_result.get("run_launched") else "approved",
+            "contract_id": contract.contract_id,
+            "branch_name": contract.branch_name,
+            "estimated_cost_eur": contract.estimated_cost_eur,
+            "run_id": run_result.get("run_id"),
+            **run_result,
+        }
+
+    def _reject_contract(self, contract_id: str | None) -> dict[str, object]:
+        if not contract_id:
+            return {"action": "reject_contract", "status": "missing_target"}
+        contract = self.session_state.api_runs.approve_run_contract(
+            contract_id=contract_id,
+            founder_decision="stop",
+            notes="Rejected from Discord persistent session state.",
+        )
+        self.journal.append(
+            "session_contract_rejected",
+            "gateway",
+            {"contract_id": contract.contract_id, "branch_name": contract.branch_name},
+        )
+        return {
+            "action": "reject_contract",
+            "status": "rejected",
+            "contract_id": contract.contract_id,
+            "branch_name": contract.branch_name,
+        }
+
+    def _answer_clarification(self, report_id: str | None, answer: str | None) -> dict[str, object]:
+        context = self._load_clarification_context(report_id)
+        resolution = answer or "approved"
+        report_metadata = self._update_clarification_resolution(
+            report_id=str(context["report_id"]),
+            resolution="approved",
+            extra_metadata={"answer": resolution, "resolution_source": "discord"},
+        )
+        contract_id = str(context["contract_id"]) if context["contract_id"] else None
+        if contract_id:
+            self.session_state.api_runs.approve_run_contract(
+                contract_id=contract_id,
+                founder_decision="go_avec_correction",
+                notes=f"Clarification resolved from Discord: {resolution}",
+            )
+        self.journal.append(
+            "session_clarification_answered",
+            "gateway",
+            {"report_id": context["report_id"], "run_id": context["run_id"], "answer": resolution},
+        )
+        return {
+            "action": "answer_clarification",
+            "status": "recorded",
+            "report_id": str(context["report_id"]),
+            "run_id": str(context["run_id"]),
+            "branch_name": str(context["branch_name"]),
+            "metadata": report_metadata,
+        }
+
+    def _reject_clarification(self, report_id: str | None) -> dict[str, object]:
+        context = self._load_clarification_context(report_id)
+        report_metadata = self._update_clarification_resolution(
+            report_id=str(context["report_id"]),
+            resolution="rejected",
+            extra_metadata={"answer": "rejected", "resolution_source": "discord"},
+        )
+        contract_id = str(context["contract_id"]) if context["contract_id"] else None
+        if contract_id:
+            self.session_state.api_runs.approve_run_contract(
+                contract_id=contract_id,
+                founder_decision="stop",
+                notes="Clarification rejected from Discord.",
+            )
+        self.journal.append(
+            "session_clarification_rejected",
+            "gateway",
+            {"report_id": context["report_id"], "run_id": context["run_id"]},
+        )
+        return {
+            "action": "reject_clarification",
+            "status": "recorded",
+            "report_id": str(context["report_id"]),
+            "run_id": str(context["run_id"]),
+            "branch_name": str(context["branch_name"]),
+            "metadata": report_metadata,
+        }
+
+    def _guardian_override(self, report_id: str | None) -> dict[str, object]:
+        context = self._load_clarification_context(report_id)
+        existing_metadata = dict(context["metadata"])
+        if not existing_metadata.get("guardian_blocking_reason"):
+            return {
+                "action": "guardian_override",
+                "status": "not_guardian_clarification",
+                "report_id": str(context["report_id"]),
+            }
+        report_metadata = self._update_clarification_resolution(
+            report_id=str(context["report_id"]),
+            resolution="guardian_override",
+            extra_metadata={
+                "answer": "override",
+                "resolution_source": "discord",
+                "guardian_override": True,
+            },
+        )
+        request = self.session_state.api_runs.get_run_request(str(context["run_request_id"]))
+        contract_id = str(context["contract_id"]) if context["contract_id"] else None
+        relaunch_metadata = {
+            **request.metadata,
+            "guardian_override": True,
+            "guardian_override_source_report_id": str(context["report_id"]),
+            "guardian_blocking_reason": str(existing_metadata["guardian_blocking_reason"]),
+            "relaunch_of_run_id": str(context["run_id"]),
+        }
+        if contract_id:
+            self.session_state.api_runs.approve_run_contract(
+                contract_id=contract_id,
+                founder_decision="go_avec_correction",
+                notes="Guardian override approved from Discord.",
+            )
+            payload = self.session_state.api_runs.execute_run(contract_id=contract_id, metadata=relaunch_metadata)
+        else:
+            payload = self.session_state.api_runs.execute_run(
+                mode=request.mode,
+                objective=request.objective,
+                branch_name=request.branch_name,
+                skill_tags=request.skill_tags,
+                target_profile=request.target_profile,
+                expected_outputs=request.expected_outputs,
+                metadata=relaunch_metadata,
+            )
+        result = payload.get("result")
+        self.journal.append(
+            "session_guardian_override_applied",
+            "gateway",
+            {
+                "report_id": context["report_id"],
+                "run_id": context["run_id"],
+                "relaunch_run_id": getattr(result, "run_id", None),
+            },
+        )
+        return {
+            "action": "guardian_override",
+            "status": "relaunch_started",
+            "report_id": str(context["report_id"]),
+            "previous_run_id": str(context["run_id"]),
+            "run_id": getattr(result, "run_id", None),
+            "branch_name": str(context["branch_name"]),
+            "metadata": report_metadata,
+        }
+
+    def _load_clarification_context(self, report_id: str | None) -> dict[str, object]:
+        if not report_id:
+            raise KeyError("clarification report id is required")
+        row = self.database.fetchone(
+            """
+            SELECT
+                c.report_id,
+                c.run_id,
+                c.requires_reapproval,
+                c.metadata_json,
+                r.run_request_id,
+                q.contract_id,
+                q.branch_name
+            FROM clarification_reports c
+            JOIN api_run_results r ON r.run_id = c.run_id
+            JOIN api_run_requests q ON q.run_request_id = r.run_request_id
+            WHERE c.report_id = ?
+            """,
+            (report_id,),
+        )
+        if row is None:
+            raise KeyError(f"Unknown clarification report: {report_id}")
+        return {
+            "report_id": str(row["report_id"]),
+            "run_id": str(row["run_id"]),
+            "run_request_id": str(row["run_request_id"]),
+            "contract_id": str(row["contract_id"]) if row["contract_id"] else None,
+            "branch_name": str(row["branch_name"]),
+            "requires_reapproval": bool(row["requires_reapproval"]),
+            "metadata": json.loads(row["metadata_json"]) if row["metadata_json"] else {},
+        }
+
+    def _update_clarification_resolution(
+        self,
+        *,
+        report_id: str,
+        resolution: str,
+        extra_metadata: dict[str, object] | None = None,
+    ) -> dict[str, object]:
+        row = self.database.fetchone(
+            "SELECT metadata_json FROM clarification_reports WHERE report_id = ?",
+            (report_id,),
+        )
+        if row is None:
+            raise KeyError(f"Unknown clarification report: {report_id}")
+        metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+        metadata["resolved_at"] = datetime.now(timezone.utc).isoformat()
+        metadata["resolution"] = resolution
+        metadata.update(extra_metadata or {})
+        self.database.execute(
+            "UPDATE clarification_reports SET metadata_json = ? WHERE report_id = ?",
+            (dump_json(metadata), report_id),
+        )
+        return metadata
+
+    def _build_session_reply(
+        self,
+        event: ChannelEvent,
+        envelope_id: str,
+        resolved: ResolvedIntent,
+        action_result: dict,
+    ) -> OperatorReply:
+        reply_kind = "ack" if str(action_result.get("status")) not in {"missing_target", "unhandled"} else "blocked"
+        communication_mode = (
+            CommunicationMode.GUARDIAN
+            if resolved.action in {
+                "approve_contract",
+                "reject_contract",
+                "answer_clarification",
+                "reject_clarification",
+                "guardian_override",
+            }
+            else CommunicationMode.DISCUSSION
+        )
+        return OperatorReply(
+            reply_id=new_id("reply"),
+            channel=event.message.channel,
+            envelope_id=envelope_id,
+            thread_ref=event.message.thread_ref,
+            summary=self._session_reply_summary(resolved, action_result),
+            mission_run_id=str(action_result.get("run_id") or "") or None,
+            decision_id=None,
+            reply_kind=reply_kind,
+            communication_mode=communication_mode,
+            operator_language="fr",
+            audience=OperatorAudience.NON_DEVELOPER,
+            metadata={"surface": event.surface, "resolved_action": resolved.action},
+        )
+
+    def _build_session_dispatch(
+        self,
+        *,
+        event: ChannelEvent,
+        envelope: OperatorEnvelope,
+        resolved: ResolvedIntent,
+        action_result: dict,
+        promoted_memory_ids: list[str],
+        candidate_id: str,
+        promotion_decision_id: str,
+        reply: OperatorReply,
+        channel_class: DiscordChannelClass,
+        human_artifacts: list,
+    ) -> GatewayDispatchResult:
+        return GatewayDispatchResult(
+            dispatch_id=new_id("dispatch"),
+            channel_event_id=event.event_id,
+            envelope_id=envelope.envelope_id,
+            intent_id=new_id("session_intent"),
+            decision_id=None,
+            mission_run_id=str(action_result.get("run_id") or "") or None,
+            operator_reply=reply,
+            promoted_memory_ids=promoted_memory_ids,
+            memory_candidate_id=candidate_id,
+            promotion_decision_id=promotion_decision_id,
+            discord_run_card=None,
+            metadata={
+                "classification": "session_resolved",
+                "reply_kind": reply.reply_kind,
+                "channel_class": channel_class.value,
+                "communication_mode": reply.communication_mode.value,
+                "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                "resolved_action": resolved.action,
+                "resolved_target_id": resolved.target_id,
+                "resolved_confidence": resolved.confidence,
+                "action_result": to_jsonable(action_result),
+            },
+        )
+
+    @staticmethod
+    def _session_reply_summary(resolved: ResolvedIntent, action_result: dict) -> str:
+        if resolved.action == "approve_contract":
+            branch = str(action_result.get("branch_name") or "ce lot")
+            if action_result.get("run_launched"):
+                return f"{branch}: contrat approuve. Run lance."
+            return f"{branch}: contrat approuve. Lancement en attente."
+        if resolved.action == "reject_contract":
+            branch = str(action_result.get("branch_name") or "ce lot")
+            return f"{branch}: contrat refuse. Rien n'est lance."
+        if resolved.action == "answer_clarification":
+            branch = str(action_result.get("branch_name") or "ce lot")
+            return f"{branch}: clarification enregistree. J'applique la decision."
+        if resolved.action == "reject_clarification":
+            branch = str(action_result.get("branch_name") or "ce lot")
+            return f"{branch}: clarification refusee. Le lot reste stoppe."
+        if resolved.action == "guardian_override":
+            branch = str(action_result.get("branch_name") or "ce lot")
+            return f"{branch}: override guardian applique. Run relance."
+        if resolved.action == "status_request":
+            snapshot = action_result.get("snapshot") or {}
+            active_runs = len(snapshot.get("active_runs") or [])
+            pending_clarifications = len(snapshot.get("pending_clarifications") or [])
+            pending_contracts = len(snapshot.get("pending_contracts") or [])
+            daily_spend = float(snapshot.get("daily_spend_eur") or 0.0)
+            daily_limit = float(snapshot.get("daily_budget_limit_eur") or 0.0)
+            return (
+                f"Status: {active_runs} run actif, {pending_clarifications} clarification, "
+                f"{pending_contracts} contrat. Budget {daily_spend:.2f}/{daily_limit:.2f} EUR."
+            )
+        return f"Action {resolved.action}: {action_result.get('status', 'ok')}"
 
     def _apply_selective_sync(self, candidate, promotion) -> list[str]:
         if promotion.action is not PromotionAction.PROMOTE or promotion.memory_type is None or promotion.tier is None:
@@ -223,7 +627,7 @@ class GatewayService:
             return CommunicationMode.INCIDENT
         if channel_class is DiscordChannelClass.APPROVALS:
             return CommunicationMode.GUARDIAN
-        if message_kind in {None, }:
+        if message_kind is None:
             return CommunicationMode.DISCUSSION
         if str(message_kind.value) in {"decision", "note", "idea"}:
             return CommunicationMode.ARCHITECT
@@ -260,92 +664,79 @@ class GatewayService:
         return ", ".join(mapping.get(item, item) for item in reasons)
 
     def _persist_channel_event(self, event: ChannelEvent, candidate) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO channel_events(
-                event_id, surface, event_type, actor_id, channel, message_kind,
-                thread_ref_json, message_json, raw_payload_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event.event_id,
-                event.surface,
-                event.event_type,
-                event.message.actor_id,
-                event.message.channel,
-                candidate.classification.value,
-                dump_json(to_jsonable(event.message.thread_ref)),
-                dump_json(to_jsonable(event.message)),
-                dump_json(event.raw_payload),
-                event.created_at,
-            ),
+        self.database.upsert(
+            "channel_events",
+            {
+                "event_id": event.event_id,
+                "surface": event.surface,
+                "event_type": event.event_type,
+                "actor_id": event.message.actor_id,
+                "channel": event.message.channel,
+                "message_kind": candidate.classification.value,
+                "thread_ref_json": dump_json(to_jsonable(event.message.thread_ref)),
+                "message_json": dump_json(to_jsonable(event.message)),
+                "raw_payload_json": dump_json(event.raw_payload),
+                "created_at": event.created_at,
+            },
+            conflict_columns="event_id",
+            immutable_columns=["created_at"],
         )
 
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO conversation_memory_candidates(
-                candidate_id, source_event_id, actor_id, classification, thread_ref_json, summary,
-                content, tags_json, tier, should_promote, payload_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                candidate.candidate_id,
-                candidate.source_event_id,
-                candidate.actor_id,
-                candidate.classification.value,
-                dump_json(to_jsonable(candidate.thread_ref)),
-                candidate.summary,
-                candidate.content,
-                dump_json(candidate.tags),
-                candidate.tier.value,
-                1 if candidate.should_promote else 0,
-                dump_json(candidate.metadata),
-                candidate.created_at,
-            ),
+        self.database.upsert(
+            "conversation_memory_candidates",
+            {
+                "candidate_id": candidate.candidate_id,
+                "source_event_id": candidate.source_event_id,
+                "actor_id": candidate.actor_id,
+                "classification": candidate.classification.value,
+                "thread_ref_json": dump_json(to_jsonable(candidate.thread_ref)),
+                "summary": candidate.summary,
+                "content": candidate.content,
+                "tags_json": dump_json(candidate.tags),
+                "tier": candidate.tier.value,
+                "should_promote": 1 if candidate.should_promote else 0,
+                "payload_json": dump_json(candidate.metadata),
+                "created_at": candidate.created_at,
+            },
+            conflict_columns="candidate_id",
+            immutable_columns=["created_at"],
         )
 
     def _persist_promotion(self, candidate, promotion) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO promotion_decisions(
-                promotion_decision_id, candidate_id, action, reason, memory_type, tier,
-                memory_id, payload_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                promotion.promotion_decision_id,
-                candidate.candidate_id,
-                promotion.action.value,
-                promotion.reason,
-                promotion.memory_type.value if promotion.memory_type else None,
-                promotion.tier.value if promotion.tier else None,
-                promotion.memory_id,
-                dump_json(promotion.metadata),
-                promotion.created_at,
-            ),
+        self.database.upsert(
+            "promotion_decisions",
+            {
+                "promotion_decision_id": promotion.promotion_decision_id,
+                "candidate_id": candidate.candidate_id,
+                "action": promotion.action.value,
+                "reason": promotion.reason,
+                "memory_type": promotion.memory_type.value if promotion.memory_type else None,
+                "tier": promotion.tier.value if promotion.tier else None,
+                "memory_id": promotion.memory_id,
+                "payload_json": dump_json(promotion.metadata),
+                "created_at": promotion.created_at,
+            },
+            conflict_columns="promotion_decision_id",
+            immutable_columns=["created_at"],
         )
 
     def _persist_dispatch(self, dispatch: GatewayDispatchResult) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO gateway_dispatch_results(
-                dispatch_id, channel_event_id, envelope_id, intent_id, decision_id, mission_run_id,
-                memory_candidate_id, promotion_decision_id, promoted_memory_ids_json, reply_json,
-                metadata_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                dispatch.dispatch_id,
-                dispatch.channel_event_id,
-                dispatch.envelope_id,
-                dispatch.intent_id,
-                dispatch.decision_id,
-                dispatch.mission_run_id,
-                dispatch.memory_candidate_id,
-                dispatch.promotion_decision_id,
-                dump_json(dispatch.promoted_memory_ids),
-                dump_json(to_jsonable(dispatch.operator_reply)),
-                dump_json(dispatch.metadata),
-                dispatch.created_at,
-            ),
+        self.database.upsert(
+            "gateway_dispatch_results",
+            {
+                "dispatch_id": dispatch.dispatch_id,
+                "channel_event_id": dispatch.channel_event_id,
+                "envelope_id": dispatch.envelope_id,
+                "intent_id": dispatch.intent_id,
+                "decision_id": dispatch.decision_id,
+                "mission_run_id": dispatch.mission_run_id,
+                "memory_candidate_id": dispatch.memory_candidate_id,
+                "promotion_decision_id": dispatch.promotion_decision_id,
+                "promoted_memory_ids_json": dump_json(dispatch.promoted_memory_ids),
+                "reply_json": dump_json(to_jsonable(dispatch.operator_reply)),
+                "metadata_json": dump_json(dispatch.metadata),
+                "created_at": dispatch.created_at,
+            },
+            conflict_columns="dispatch_id",
+            immutable_columns=["created_at"],
         )

@@ -129,6 +129,9 @@ class MissionRouter:
                 intent_id=intent.intent_id,
                 objective=intent.objective,
                 profile_name=profile.profile_name if profile else None,
+                parent_mission_id=None,
+                step_index=0,
+                total_steps=1,
                 status=MissionStatus.QUEUED if allowed else MissionStatus.FAILED,
                 execution_class=execution_class,
             )
@@ -172,6 +175,9 @@ class MissionRouter:
                 intent_id=mission_run.intent_id,
                 objective=mission_run.objective,
                 profile_name=mission_run.profile_name,
+                parent_mission_id=mission_run.parent_mission_id,
+                step_index=mission_run.step_index,
+                total_steps=mission_run.total_steps,
                 status=MissionStatus.QUEUED if allowed else MissionStatus.FAILED,
                 execution_class=execution_class,
                 routing_decision_id=decision.decision_id,
@@ -434,88 +440,79 @@ class MissionRouter:
         return []
 
     def _persist_intent(self, intent: MissionIntent) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO mission_intents(
-                intent_id, source, actor_id, channel, objective, target_profile,
-                requested_worker, requested_risk_class, metadata_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                intent.intent_id,
-                intent.source,
-                intent.actor_id,
-                intent.channel,
-                intent.objective,
-                intent.target_profile,
-                intent.requested_worker,
-                intent.requested_risk_class.value if intent.requested_risk_class else None,
-                dump_json(intent.metadata),
-                intent.created_at,
-            ),
+        self.database.upsert(
+            "mission_intents",
+            {
+                "intent_id": intent.intent_id,
+                "source": intent.source,
+                "actor_id": intent.actor_id,
+                "channel": intent.channel,
+                "objective": intent.objective,
+                "target_profile": intent.target_profile,
+                "requested_worker": intent.requested_worker,
+                "requested_risk_class": intent.requested_risk_class.value if intent.requested_risk_class else None,
+                "metadata_json": dump_json(intent.metadata),
+                "created_at": intent.created_at,
+            },
+            conflict_columns="intent_id",
+            immutable_columns=["created_at"],
         )
 
     def _persist_mission_run(self, mission_run: MissionRun) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO mission_runs(
-                mission_run_id, intent_id, objective, profile_name, status,
-                execution_class, routing_decision_id, metadata_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                mission_run.mission_run_id,
-                mission_run.intent_id,
-                mission_run.objective,
-                mission_run.profile_name,
-                mission_run.status.value,
-                mission_run.execution_class.value if mission_run.execution_class else None,
-                mission_run.routing_decision_id,
-                dump_json(mission_run.metadata),
-                mission_run.created_at,
-                mission_run.updated_at,
-            ),
+        self.database.upsert(
+            "mission_runs",
+            {
+                "mission_run_id": mission_run.mission_run_id,
+                "intent_id": mission_run.intent_id,
+                "objective": mission_run.objective,
+                "profile_name": mission_run.profile_name,
+                "parent_mission_id": mission_run.parent_mission_id,
+                "step_index": mission_run.step_index,
+                "total_steps": mission_run.total_steps,
+                "status": mission_run.status.value,
+                "execution_class": mission_run.execution_class.value if mission_run.execution_class else None,
+                "routing_decision_id": mission_run.routing_decision_id,
+                "metadata_json": dump_json(mission_run.metadata),
+                "created_at": mission_run.created_at,
+                "updated_at": mission_run.updated_at,
+            },
+            conflict_columns="mission_run_id",
+            immutable_columns=["created_at"],
         )
 
     def _persist_decision(self, decision: RoutingDecision) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO routing_decisions(
-                decision_id, intent_id, mission_run_id, execution_class, risk_class, allowed,
-                chosen_worker, model_route_json, approval_gate_json, budget_state_json,
-                route_reason, blocked_reasons_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                decision.decision_id,
-                decision.intent_id,
-                decision.mission_run_id,
-                decision.execution_class.value,
-                decision.risk_class.value,
-                1 if decision.allowed else 0,
-                decision.chosen_worker,
-                dump_json(to_jsonable(decision.model_route)),
-                dump_json(to_jsonable(decision.approval_gate)),
-                dump_json(to_jsonable(decision.budget_state)),
-                decision.route_reason,
-                dump_json(decision.blocked_reasons),
-                decision.created_at,
-            ),
+        self.database.upsert(
+            "routing_decisions",
+            {
+                "decision_id": decision.decision_id,
+                "intent_id": decision.intent_id,
+                "mission_run_id": decision.mission_run_id,
+                "execution_class": decision.execution_class.value,
+                "risk_class": decision.risk_class.value,
+                "allowed": 1 if decision.allowed else 0,
+                "chosen_worker": decision.chosen_worker,
+                "model_route_json": dump_json(to_jsonable(decision.model_route)),
+                "approval_gate_json": dump_json(to_jsonable(decision.approval_gate)),
+                "budget_state_json": dump_json(to_jsonable(decision.budget_state)),
+                "route_reason": decision.route_reason,
+                "blocked_reasons_json": dump_json(decision.blocked_reasons),
+                "created_at": decision.created_at,
+            },
+            conflict_columns="decision_id",
+            immutable_columns=["created_at"],
         )
 
     def _persist_trace(self, trace: RoutingDecisionTrace) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO routing_decision_traces(
-                trace_id, decision_id, runtime_state_id, inputs_json, outputs_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                trace.trace_id,
-                trace.decision_id,
-                trace.runtime_state_id,
-                dump_json(trace.inputs),
-                dump_json(trace.outputs),
-                trace.created_at,
-            ),
+        self.database.upsert(
+            "routing_decision_traces",
+            {
+                "trace_id": trace.trace_id,
+                "decision_id": trace.decision_id,
+                "runtime_state_id": trace.runtime_state_id,
+                "inputs_json": dump_json(trace.inputs),
+                "outputs_json": dump_json(trace.outputs),
+                "created_at": trace.created_at,
+            },
+            conflict_columns="trace_id",
+            immutable_columns=["created_at"],
         )

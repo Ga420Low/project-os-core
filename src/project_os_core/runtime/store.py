@@ -49,21 +49,19 @@ class RuntimeStore:
             status=status,
             metadata=metadata or {},
         )
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO session_states(
-                session_id, profile_name, owner, status, payload_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                session.session_id,
-                session.profile_name,
-                session.owner,
-                session.status,
-                dump_json(session.metadata),
-                session.created_at,
-                session.updated_at,
-            ),
+        self.database.upsert(
+            "session_states",
+            {
+                "session_id": session.session_id,
+                "profile_name": session.profile_name,
+                "owner": session.owner,
+                "status": session.status,
+                "payload_json": dump_json(session.metadata),
+                "created_at": session.created_at,
+                "updated_at": session.updated_at,
+            },
+            conflict_columns="session_id",
+            immutable_columns=["created_at"],
         )
         self.journal.append(
             "session_opened",
@@ -160,25 +158,22 @@ class RuntimeStore:
             expires_at=expires_at,
             metadata=metadata or {},
         )
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO approval_records(
-                approval_id, mission_run_id, requested_by, risk_tier, reason, status,
-                expires_at, payload_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                approval.approval_id,
-                approval.mission_run_id,
-                approval.requested_by,
-                approval.risk_tier,
-                approval.reason,
-                approval.status.value,
-                approval.expires_at,
-                dump_json(approval.metadata),
-                approval.created_at,
-                approval.updated_at,
-            ),
+        self.database.upsert(
+            "approval_records",
+            {
+                "approval_id": approval.approval_id,
+                "mission_run_id": approval.mission_run_id,
+                "requested_by": approval.requested_by,
+                "risk_tier": approval.risk_tier,
+                "reason": approval.reason,
+                "status": approval.status.value,
+                "expires_at": approval.expires_at,
+                "payload_json": dump_json(approval.metadata),
+                "created_at": approval.created_at,
+                "updated_at": approval.updated_at,
+            },
+            conflict_columns="approval_id",
+            immutable_columns=["created_at"],
         )
         self.journal.append(
             "approval_created",

@@ -1,0 +1,35 @@
+name: Audit Finding
+description: Capture a concrete audit finding with structured resolution sections.
+title: "[BUG] "
+labels:
+  - bug
+  - audit-finding
+body:
+  - type: markdown
+    attributes:
+      value: "Use this form for code or workflow issues discovered during an audit."
+  - type: textarea
+    id: structured_body
+    attributes:
+      label: Structured body
+      description: Keep the reserved headings. Fill every section or use N/A when truly not applicable.
+      value: |
+        ## Description
+
+        ## Impact
+
+        ## Root Cause
+
+        ## Resolution
+
+        ## Regression Coverage
+
+        ## Durable Lesson
+
+        ## Reusable Pattern
+
+        ## Repeated Pattern
+
+        ## Eval Scenario
+    validations:
+      required: true

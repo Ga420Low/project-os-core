@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from project_os_core.models import DecisionStatus
+from project_os_core.models import DecisionStatus, LearningSignalKind
 from project_os_core.services import build_app_services
 
 
@@ -92,6 +92,61 @@ class LearningServiceTests(unittest.TestCase):
                 self.assertEqual(len(loop_rows), 1)
                 self.assertEqual(len(refresh_rows), 1)
                 self.assertEqual(refresh.cause, "Capability drift detected")
+            finally:
+                services.close()
+
+    def test_gather_learning_context_returns_recent_lessons(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                branch_name = "codex/learning-branch"
+                services.learning.record_decision(
+                    status=DecisionStatus.CONFIRMED,
+                    scope=f"api_run:audit:{branch_name}",
+                    summary="Keep the gateway boundary narrow.",
+                    metadata={"branch_name": branch_name},
+                )
+                services.learning.record_signal(
+                    kind=LearningSignalKind.PATCH_REJECTED,
+                    severity="high",
+                    summary=f"Rejected audit run for {branch_name}.",
+                    metadata={"branch_name": branch_name},
+                )
+                services.learning.record_loop_signal(
+                    repeated_pattern="Repeated review rejection",
+                    impacted_area=branch_name,
+                    recommended_reset="Reload docs before another patch.",
+                )
+                services.learning.recommend_refresh(
+                    cause="Context is stale",
+                    context_to_reload=["docs/architecture/QUALITY_STANDARDS.md"],
+                    next_step="Refresh the context pack before rerunning.",
+                )
+
+                learning_context = services.learning.gather_learning_context(
+                    mode="audit",
+                    branch_name=branch_name,
+                    objective="Audit the branch.",
+                )
+
+                self.assertEqual(len(learning_context["decisions"]), 1)
+                self.assertEqual(len(learning_context["high_severity_signals"]), 1)
+                self.assertEqual(len(learning_context["detected_loops"]), 1)
+                self.assertEqual(len(learning_context["refresh_recommendations"]), 1)
+                self.assertIn("1 decisions", learning_context["summary"])
+            finally:
+                services.close()
+
+    def test_gather_learning_context_returns_empty_dict_without_lessons(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                learning_context = services.learning.gather_learning_context(
+                    mode="audit",
+                    branch_name="codex/no-learning",
+                    objective="Audit the branch.",
+                )
+                self.assertEqual(learning_context, {})
             finally:
                 services.close()
 

@@ -1,0 +1,32 @@
+[
+  {
+    "title": "[BUG] Fix ApiRunReviewVerdict enum collision for needs_revision",
+    "labels": ["bug", "P1-critical", "module:models", "audit-finding"],
+    "body_file": ".github/issue-seeds/issue-01-needs-revision-enum.md"
+  },
+  {
+    "title": "[BUG] Simplify Gateway None handling in _communication_mode_for",
+    "labels": ["bug", "P3-minor", "module:gateway", "audit-finding"],
+    "body_file": ".github/issue-seeds/issue-02-gateway-none-check.md"
+  },
+  {
+    "title": "[BUG] Prevent mission chain auto-approval before Guardian pre-spend check",
+    "labels": ["bug", "P2-important", "module:mission", "audit-finding"],
+    "body_file": ".github/issue-seeds/issue-03-mission-guardian.md"
+  },
+  {
+    "title": "[TASK] Replace INSERT OR REPLACE with ON CONFLICT upserts in canonical writes",
+    "labels": ["task", "P2-important", "module:database", "audit-finding"],
+    "body_file": ".github/issue-seeds/issue-04-upserts.md"
+  },
+  {
+    "title": "[FEATURE] GitHub Issues templates + resolution learning ingestion",
+    "labels": ["task", "module:github", "module:learning"],
+    "body_file": ".github/issue-seeds/issue-05-github-learning.md"
+  },
+  {
+    "title": "[TASK] Move scheduled_tasks schema into canonical database migrations",
+    "labels": ["task", "P2-important", "module:database"],
+    "body_file": ".github/issue-seeds/issue-06-scheduler-migration.md"
+  }
+]

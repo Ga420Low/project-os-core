@@ -9,6 +9,7 @@ description = "Local-first autonomous PC copilot core for Project OS."
 readme = "PROJECT_OS_MASTER_MACHINE.md"
 requires-python = ">=3.12"
 dependencies = [
+  "anthropic>=0.84.0",
   "openai>=1.0.0",
   "openmemory-py>=1.3.2",
   "PyYAML>=6.0.3",

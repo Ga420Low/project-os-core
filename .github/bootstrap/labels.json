@@ -1,0 +1,14 @@
+[
+  {"name": "bug", "color": "d73a4a", "description": "Confirmed defect or regression"},
+  {"name": "task", "color": "0e8a16", "description": "Planned engineering task or debt reduction"},
+  {"name": "audit-finding", "color": "5319e7", "description": "Issue discovered during a structured audit"},
+  {"name": "P1-critical", "color": "b60205", "description": "Critical issue requiring rapid correction"},
+  {"name": "P2-important", "color": "d93f0b", "description": "Important issue with meaningful product or architecture impact"},
+  {"name": "P3-minor", "color": "fbca04", "description": "Minor issue or cleanup item"},
+  {"name": "module:models", "color": "1d76db", "description": "Touches the shared data models"},
+  {"name": "module:gateway", "color": "0052cc", "description": "Touches gateway or Discord ingestion code"},
+  {"name": "module:mission", "color": "006b75", "description": "Touches mission or chain orchestration"},
+  {"name": "module:database", "color": "5319e7", "description": "Touches canonical database or migrations"},
+  {"name": "module:github", "color": "24292f", "description": "Touches GitHub integration or automation"},
+  {"name": "module:learning", "color": "006b75", "description": "Touches learning capture or promotion"}
+]

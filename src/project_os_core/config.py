@@ -26,6 +26,7 @@ class RuntimeConfig:
     secret_config: SecretConfig
     embedding_policy: EmbeddingPolicy
     execution_policy: ExecutionPolicy
+    github_config: GitHubConfig
     openclaw_config: OpenClawConfig
     api_dashboard_config: ApiDashboardConfig
     tier_manager_config: TierManagerConfig
@@ -52,6 +53,15 @@ class EmbeddingPolicy:
     max_openai_model: str = "text-embedding-3-large"
     local_model: str = "local-hash-v1"
     local_dimensions: int = 64
+
+
+@dataclass(slots=True)
+class GitHubConfig:
+    repo: str = "Ga420Low/project-os-core"
+    cli_command: str = "gh"
+    sync_enabled: bool = True
+    sync_interval_hours: int = 6
+    learning_label_filter: list[str] = field(default_factory=lambda: ["bug", "task", "audit-finding"])
 
 
 @dataclass(slots=True)
@@ -122,6 +132,9 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "exceptional_model": "gpt-5.4-pro",
             "daily_soft_limit_eur": 1.5,
             "monthly_limit_eur": 50.0,
+            "daily_budget_limit_eur": 5.0,
+            "loop_detection_window_hours": 2,
+            "loop_detection_threshold": 3,
             "deterministic_first": True,
             "allow_pro_default": False,
             "secret_mode": "infisical_first",
@@ -134,6 +147,13 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "operator_delivery_retry_base_seconds": 30,
             "operator_delivery_retry_max_seconds": 900,
             "operator_delivery_max_pending": 64,
+        },
+        "github_config": {
+            "repo": "Ga420Low/project-os-core",
+            "cli_command": "gh",
+            "sync_enabled": True,
+            "sync_interval_hours": 6,
+            "learning_label_filter": ["bug", "task", "audit-finding"],
         },
         "openclaw_config": {
             "binary_command": "openclaw",
@@ -171,7 +191,7 @@ def _runtime_policy_defaults() -> dict[str, object]:
 def _load_runtime_policy(
     root: Path,
     policy_path: str | Path | None = None,
-) -> tuple[SecretConfig, EmbeddingPolicy, ExecutionPolicy, OpenClawConfig, ApiDashboardConfig, TierManagerConfig]:
+) -> tuple[SecretConfig, EmbeddingPolicy, ExecutionPolicy, GitHubConfig, OpenClawConfig, ApiDashboardConfig, TierManagerConfig]:
     env_override = os.getenv("PROJECT_OS_RUNTIME_POLICY")
     chosen = Path(policy_path) if policy_path else (Path(env_override) if env_override else None)
     if chosen is None:
@@ -186,6 +206,7 @@ def _load_runtime_policy(
             "secret_config",
             "embedding_policy",
             "execution_policy",
+            "github_config",
             "openclaw_config",
             "api_dashboard_config",
             "tier_manager_config",
@@ -201,6 +222,7 @@ def _load_runtime_policy(
     execution_payload["operator_audience"] = OperatorAudience(str(execution_payload["operator_audience"]))
     execution_payload["default_run_speech_policy"] = RunSpeechPolicy(str(execution_payload["default_run_speech_policy"]))
     execution_policy = ExecutionPolicy(**execution_payload)
+    github_config = GitHubConfig(**payload["github_config"])
     openclaw_payload = dict(payload["openclaw_config"])
     openclaw_payload["runtime_root"] = _expand_path(str(openclaw_payload["runtime_root"]))
     openclaw_payload["state_root"] = _expand_path(str(openclaw_payload["state_root"]))
@@ -210,7 +232,7 @@ def _load_runtime_policy(
     openclaw_config = OpenClawConfig(**openclaw_payload)
     api_dashboard_config = ApiDashboardConfig(**payload["api_dashboard_config"])
     tier_manager_config = TierManagerConfig(**payload["tier_manager_config"])
-    return secret_config, embedding_policy, execution_policy, openclaw_config, api_dashboard_config, tier_manager_config
+    return secret_config, embedding_policy, execution_policy, github_config, openclaw_config, api_dashboard_config, tier_manager_config
 
 
 def load_runtime_config(config_path: str | Path | None = None, policy_path: str | Path | None = None) -> RuntimeConfig:
@@ -230,7 +252,7 @@ def load_runtime_config(config_path: str | Path | None = None, policy_path: str 
     ).resolve(strict=False)
     storage_roots = _storage_from_dict(payload)
     policy = ForbiddenZonePolicy(roots=[storage_roots.archive_do_not_touch_root])
-    secret_config, embedding_policy, execution_policy, openclaw_config, api_dashboard_config, tier_manager_config = _load_runtime_policy(root, policy_path)
+    secret_config, embedding_policy, execution_policy, github_config, openclaw_config, api_dashboard_config, tier_manager_config = _load_runtime_policy(root, policy_path)
     return RuntimeConfig(
         repo_root=root,
         storage_config_path=chosen_storage_path,
@@ -240,6 +262,7 @@ def load_runtime_config(config_path: str | Path | None = None, policy_path: str 
         secret_config=secret_config,
         embedding_policy=embedding_policy,
         execution_policy=execution_policy,
+        github_config=github_config,
         openclaw_config=openclaw_config,
         api_dashboard_config=api_dashboard_config,
         tier_manager_config=tier_manager_config,

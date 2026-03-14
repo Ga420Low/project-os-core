@@ -456,7 +456,8 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
     .status-failed, .status-stopped {{ background: rgba(255,125,154,0.18); color: #ffd5df; }}
     .status-paused {{ background: rgba(255,203,107,0.16); color: #ffe5b8; }}
     .review-accepted {{ background: rgba(123,255,158,0.14); color: #d5ffe1; }}
-    .review-needs_revision {{ background: rgba(255,203,107,0.16); color: #ffe5b8; }}
+    .review-accepted_with_reserves, .review-needs_revision {{ background: rgba(255,203,107,0.16); color: #ffe5b8; }}
+    .review-needs_clarification {{ background: rgba(255,215,130,0.18); color: #ffe9c5; }}
     .review-rejected {{ background: rgba(255,125,154,0.18); color: #ffd5df; }}
     .review-pending {{ background: rgba(255,255,255,0.04); color: var(--muted); }}
     .grid {{ display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.95fr); gap: 16px; align-items: start; }}

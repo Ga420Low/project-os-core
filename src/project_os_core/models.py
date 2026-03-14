@@ -120,7 +120,9 @@ class ApiRunStatus(str, Enum):
 
 class ApiRunReviewVerdict(str, Enum):
     ACCEPTED = "accepted"
+    ACCEPTED_WITH_RESERVES = "accepted_with_reserves"
     NEEDS_REVISION = "needs_revision"
+    NEEDS_CLARIFICATION = "needs_clarification"
     REJECTED = "rejected"
 
 
@@ -132,6 +134,7 @@ class DecisionStatus(str, Enum):
 class LearningSignalKind(str, Enum):
     PATCH_REJECTED = "patch_rejected"
     PATCH_ACCEPTED = "patch_accepted"
+    ISSUE_RESOLVED = "issue_resolved"
     LOOP_DETECTED = "loop_detected"
     CAPABILITY_DRIFT = "capability_drift"
     REFRESH_NEEDED = "refresh_needed"
@@ -181,6 +184,10 @@ class RunLifecycleEventKind(str, Enum):
     RUN_COMPLETED = "run_completed"
     RUN_FAILED = "run_failed"
     RUN_REVIEWED = "run_reviewed"
+    CONTRACT_PROPOSED = "contract_proposed"
+    CONTRACT_APPROVED = "contract_approved"
+    CONTRACT_REJECTED = "contract_rejected"
+    BUDGET_ALERT = "budget_alert"
     RUN_RELAUNCHED = "run_relaunched"
 
 
@@ -195,6 +202,7 @@ class OperatorDeliveryStatus(str, Enum):
     DELIVERED = "delivered"
     FAILED = "failed"
     SKIPPED = "skipped"
+    EXPIRED = "expired"
 
 
 def to_jsonable(value: Any) -> Any:
@@ -384,6 +392,9 @@ class MissionRun:
     intent_id: str
     objective: str
     profile_name: str | None
+    parent_mission_id: str | None = None
+    step_index: int = 0
+    total_steps: int = 1
     status: MissionStatus = MissionStatus.QUEUED
     execution_class: MissionExecutionClass | None = None
     routing_decision_id: str | None = None
@@ -578,6 +589,9 @@ class ExecutionPolicy:
     exceptional_model: str
     daily_soft_limit_eur: float
     monthly_limit_eur: float
+    daily_budget_limit_eur: float = 5.0
+    loop_detection_window_hours: int = 2
+    loop_detection_threshold: int = 3
     deterministic_first: bool = True
     allow_pro_default: bool = False
     secret_mode: str = "infisical_first"
@@ -874,6 +888,8 @@ class ApiRunRequest:
     objective: str
     branch_name: str
     target_profile: str | None = None
+    mission_chain_id: str | None = None
+    mission_step_index: int | None = None
     skill_tags: list[str] = field(default_factory=list)
     expected_outputs: list[str] = field(default_factory=list)
     coding_lane: str = "repo_cli"

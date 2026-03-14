@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import shutil
 import subprocess
@@ -9,6 +10,10 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+try:
+    from anthropic import Anthropic
+except ImportError:  # pragma: no cover - dependency is declared in pyproject but may be absent in local dev until installed
+    Anthropic = None
 from openai import OpenAI
 
 from ..database import CanonicalDatabase, dump_json
@@ -52,10 +57,14 @@ from ..secrets import SecretResolver
 PRICING_PER_MILLION_USD: dict[str, dict[str, float]] = {
     "gpt-5.4": {"input": 2.5, "output": 15.0},
     "gpt-5.4-pro": {"input": 30.0, "output": 180.0},
+    "claude-haiku-4-5-20251001": {"input": 0.8, "output": 4.0},
+    "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
 }
 USD_TO_EUR = 0.92
 DEFAULT_CONTEXT_SOURCE_LIMIT = 12_000
 DEFAULT_CONTEXT_FILE_COUNT = 10
+REVIEWER_MODEL = "claude-sonnet-4-20250514"
+TRANSLATOR_MODEL = "claude-haiku-4-5-20251001"
 
 
 class ApiRunService:
@@ -117,6 +126,43 @@ class ApiRunService:
             skill_tags=normalized_skills,
             metadata=dict(metadata or {}),
         )
+        previous_chain_output = context_pack.metadata.get("mission_chain_previous_output")
+        if previous_chain_output is not None:
+            context_pack.runtime_facts["previous_chain_output"] = previous_chain_output
+        try:
+            learning_context = self.learning.gather_learning_context(
+                mode=mode.value,
+                branch_name=resolved_branch,
+                objective=context_pack.objective,
+            )
+            context_pack.runtime_facts["learning_context"] = learning_context
+            self.logger.log(
+                "INFO",
+                "learning_context_injected",
+                context_pack_id=context_pack.context_pack_id,
+                mode=mode.value,
+                branch_name=resolved_branch,
+                decisions=len(learning_context.get("decisions", [])),
+                high_severity_signals=len(learning_context.get("high_severity_signals", [])),
+                detected_loops=len(learning_context.get("detected_loops", [])),
+                refresh_recommendations=len(learning_context.get("refresh_recommendations", [])),
+            )
+        except Exception as exc:
+            self.logger.log(
+                "WARNING",
+                "learning_injection_failed",
+                mode=mode.value,
+                branch_name=resolved_branch,
+                error=str(exc),
+            )
+            context_pack.runtime_facts["learning_context"] = {
+                "error": str(exc),
+                "decisions": [],
+                "high_severity_signals": [],
+                "detected_loops": [],
+                "refresh_recommendations": [],
+                "summary": "Learning context unavailable for this run.",
+            }
         artifact_path = self._write_runtime_json(
             self.paths.api_runs_root / "context_packs",
             context_pack.context_pack_id,
@@ -356,6 +402,8 @@ class ApiRunService:
         metadata: dict[str, Any] | None = None,
         response_runner: Callable[[ApiRunRequest, MegaPromptTemplate, ContextPack], Any] | None = None,
         contract_id: str | None = None,
+        mission_chain_id: str | None = None,
+        mission_step_index: int | None = None,
     ) -> dict[str, Any]:
         contract = self.get_run_contract(contract_id) if contract_id else None
         if contract is not None:
@@ -412,6 +460,16 @@ class ApiRunService:
             objective=context_pack.objective,
             branch_name=context_pack.branch_name,
             target_profile=resolved_target_profile,
+            mission_chain_id=mission_chain_id or str(request_metadata.get("mission_chain_id") or "") or None,
+            mission_step_index=(
+                mission_step_index
+                if mission_step_index is not None
+                else (
+                    int(request_metadata["mission_step_index"])
+                    if request_metadata.get("mission_step_index") is not None
+                    else None
+                )
+            ),
             skill_tags=context_pack.skill_tags,
             expected_outputs=resolved_expected_outputs,
             communication_mode=CommunicationMode.BUILDER,
@@ -507,6 +565,113 @@ class ApiRunService:
             },
         )
         self._refresh_live_snapshot()
+        review: ApiRunReview | None = None
+        completion_report: CompletionReport | None = None
+        can_proceed, blocking_reason = self._guardian_pre_spend_check(
+            request=request,
+            prompt_template=prompt_template,
+        )
+        if not can_proceed and blocking_reason is not None:
+            self.logger.log(
+                "WARNING",
+                "guardian_blocked_run",
+                run_request_id=request.run_request_id,
+                run_id=run_id,
+                reason=blocking_reason,
+            )
+            self._record_run_event(
+                run_id=run_id,
+                phase="guardian_blocked",
+                severity="warning",
+                machine_summary=f"Guardian a bloque le run: {blocking_reason}",
+                human_summary="Le systeme a detecte un probleme et demande confirmation.",
+                payload={"blocking_reason": blocking_reason},
+            )
+            cause = "Budget journalier depasse" if "budget_exceeded" in blocking_reason else "Boucle detectee sur cette branche"
+            question = (
+                "Le budget du jour est presque atteint. Tu veux quand meme lancer ce run ?"
+                if "budget_exceeded" in blocking_reason
+                else "Ce meme type de run a deja tourne plusieurs fois sur cette branche. Tu veux forcer ?"
+            )
+            recommendation = (
+                "Attendre demain ou augmenter la limite."
+                if "budget_exceeded" in blocking_reason
+                else "Verifier les runs precedents et changer de strategie si necessaire."
+            )
+            clarification = ClarificationReport(
+                report_id=new_id("clarification_report"),
+                run_id=run_id,
+                cause=cause,
+                impact="Le run ne peut pas demarrer sans confirmation.",
+                question_for_founder=question,
+                recommended_contract_change=recommendation,
+                requires_reapproval=True,
+                metadata={"guardian_blocking_reason": blocking_reason},
+            )
+            result = ApiRunResult(
+                run_id=run_id,
+                run_request_id=request.run_request_id,
+                model=prompt_template.model,
+                mode=request.mode,
+                status=ApiRunStatus.CLARIFICATION_REQUIRED,
+                structured_output={},
+                raw_output_path=None,
+                prompt_artifact_path=prompt_template.artifact_path,
+                result_artifact_path=None,
+                estimated_cost_eur=0.0,
+                usage={},
+                metadata={"guardian_blocked": True, "blocking_reason": blocking_reason},
+            )
+            request_blocked_at = datetime.now(timezone.utc).isoformat()
+            request.status = ApiRunStatus.CLARIFICATION_REQUIRED
+            request.updated_at = request_blocked_at
+            result.updated_at = request_blocked_at
+            with self.database.transaction() as connection:
+                self._persist_clarification_report(clarification, connection=connection)
+                result.metadata["clarification_report_path"] = str(clarification.metadata.get("artifact_path") or "")
+                self._persist_run_result(result, connection=connection)
+                self._update_request_status(
+                    request.run_request_id,
+                    ApiRunStatus.CLARIFICATION_REQUIRED,
+                    updated_at=request_blocked_at,
+                    connection=connection,
+                )
+                if contract is not None:
+                    self._mark_contract_clarification_pending(
+                        contract=contract,
+                        clarification=clarification,
+                        connection=connection,
+                        expected_updated_at=contract.updated_at,
+                    )
+                self._emit_run_lifecycle_event(
+                    run_id=run_id,
+                    run_request_id=request.run_request_id,
+                    contract_id=request.contract_id,
+                    kind=RunLifecycleEventKind.CLARIFICATION_REQUIRED,
+                    mode=request.mode,
+                    branch_name=request.branch_name,
+                    status=ApiRunStatus.CLARIFICATION_REQUIRED,
+                    phase="guardian_blocked",
+                    title="Guardian a bloque le run",
+                    summary=cause,
+                    blocking_question=question,
+                    recommended_action=recommendation,
+                    metadata={"guardian_blocking_reason": blocking_reason},
+                    connection=connection,
+                    refresh_snapshot=False,
+                )
+            self._refresh_live_snapshot()
+            snapshot = self.monitor_snapshot()
+            return {
+                "contract": contract,
+                "context_pack": context_pack,
+                "prompt_template": prompt_template,
+                "request": request,
+                "result": result,
+                "review": None,
+                "completion_report": None,
+                "monitor_snapshot": snapshot,
+            }
         try:
             self._record_run_event(
                 run_id=run_id,
@@ -650,9 +815,35 @@ class ApiRunService:
                     usage=usage,
                     metadata={"review_package_path": str(review_package_path)},
                 )
+                self._record_run_event(
+                    run_id=run_id,
+                    phase="review",
+                    severity="info",
+                    machine_summary="Cross-model review in progress via Claude API.",
+                    human_summary=None,
+                    payload={"reviewer_model": REVIEWER_MODEL},
+                )
+                review = self._call_reviewer(result=result, context_pack=context_pack)
+                review_cost = float(review.metadata.get("estimated_cost_eur") or 0.0)
+                review_usage = dict(review.metadata.get("usage") or {})
+                generation_usage = dict(result.usage)
+                result.estimated_cost_eur = round(result.estimated_cost_eur + review_cost, 6)
+                result.usage = self._merge_usage(generation_usage, review_usage)
+                result.metadata.update(
+                    {
+                        "review_id": review.review_id,
+                        "review_artifact_path": review.metadata.get("artifact_path"),
+                        "review_estimated_cost_eur": review_cost,
+                        "generation_estimated_cost_eur": estimated_cost,
+                    }
+                )
+                completion_report = self._build_completion_report(review=review, result=result, request=request)
                 request_finalized_at = datetime.now(timezone.utc).isoformat()
                 result.updated_at = request_finalized_at
                 with self.database.transaction() as connection:
+                    self._persist_completion_report(completion_report, connection=connection)
+                    result.metadata["completion_report_id"] = completion_report.report_id
+                    result.metadata["completion_report_path"] = str(completion_report.metadata.get("artifact_path") or "")
                     self._persist_run_result(result, connection=connection)
                     self._update_request_status(
                         request.run_request_id,
@@ -664,12 +855,15 @@ class ApiRunService:
                         run_id=run_id,
                         phase="termine",
                         severity="info",
-                        machine_summary="Le run est termine et pret pour revue.",
-                        human_summary=None,
+                        machine_summary="Le run est termine et la review Claude est disponible.",
+                        human_summary=completion_report.summary,
                         payload={
                             "estimated_cost_eur": result.estimated_cost_eur,
                             "result_artifact_path": result.result_artifact_path,
                             "review_package_path": str(review_package_path),
+                            "review_id": review.review_id,
+                            "review_verdict": review.verdict.value,
+                            "completion_report_id": completion_report.report_id,
                         },
                         connection=connection,
                         refresh_snapshot=False,
@@ -684,11 +878,17 @@ class ApiRunService:
                         status=ApiRunStatus.COMPLETED,
                         phase="termine",
                         title="Run termine",
-                        summary="Le run est termine et attend maintenant la revue locale.",
+                        summary="Le run est termine et la review Claude est disponible pour decision.",
+                        recommended_action=completion_report.next_action,
+                        result=result,
+                        review=review,
                         metadata={
                             "objective": request.objective,
                             "review_package_path": str(review_package_path),
                             "estimated_cost_eur": result.estimated_cost_eur,
+                            "review_id": review.review_id,
+                            "review_verdict": review.verdict.value,
+                            "completion_report_id": completion_report.report_id,
                         },
                         connection=connection,
                         refresh_snapshot=False,
@@ -700,6 +900,8 @@ class ApiRunService:
                     run_id=result.run_id,
                     mode=result.mode.value,
                     estimated_cost_eur=result.estimated_cost_eur,
+                    review_verdict=review.verdict.value,
+                    review_id=review.review_id,
                 )
                 self.journal.append(
                     "api_run_completed",
@@ -710,6 +912,8 @@ class ApiRunService:
                         "mode": result.mode.value,
                         "branch_name": request.branch_name,
                         "estimated_cost_eur": result.estimated_cost_eur,
+                        "review_id": review.review_id,
+                        "review_verdict": review.verdict.value,
                     },
                 )
                 self._refresh_live_snapshot()
@@ -800,6 +1004,8 @@ class ApiRunService:
             "prompt_template": prompt_template,
             "request": request,
             "result": result,
+            "review": review,
+            "completion_report": completion_report,
             "monitor_snapshot": snapshot,
         }
 
@@ -1105,13 +1311,7 @@ class ApiRunService:
             followup_actions=list(followup_actions or []),
             metadata=dict(metadata or {}),
         )
-        review_artifact_path = self._write_runtime_json(
-            self.paths.api_runs_root / "reviews",
-            review.review_id,
-            to_jsonable(review),
-        )
-        review.metadata["artifact_path"] = str(review_artifact_path)
-        self._persist_run_review(review)
+        self._store_run_review(review)
         self._update_result_status(run_id, ApiRunStatus.REVIEWED)
         self._update_request_status(request.run_request_id, ApiRunStatus.REVIEWED)
         self._apply_learning(review=review, result=run_result, request=request)
@@ -1137,6 +1337,8 @@ class ApiRunService:
             title="Run relu",
             summary=f"Verdict local: {review.verdict.value}.",
             recommended_action=completion_report.next_action,
+            result=run_result,
+            review=review,
             metadata={
                 "review_id": review.review_id,
                 "review_verdict": review.verdict.value,
@@ -1399,21 +1601,40 @@ class ApiRunService:
             """,
             (limit,),
         )
-        review_rows = self.database.fetchall(
-            "SELECT * FROM api_run_reviews ORDER BY created_at DESC",
-        )
-        event_rows = self.database.fetchall(
-            "SELECT * FROM api_run_events ORDER BY created_at DESC",
-        )
-        clarification_rows = self.database.fetchall(
-            "SELECT * FROM clarification_reports ORDER BY created_at DESC",
-        )
-        lifecycle_rows = self.database.fetchall(
-            "SELECT * FROM api_run_lifecycle_events ORDER BY created_at DESC",
-        )
-        delivery_rows = self.database.fetchall(
-            "SELECT * FROM api_run_operator_deliveries ORDER BY created_at DESC",
-        )
+        run_ids = [str(row["run_id"]) for row in rows if row["run_id"]]
+        placeholders = ",".join("?" for _ in run_ids)
+        review_rows: list[Any] = []
+        event_rows: list[Any] = []
+        clarification_rows: list[Any] = []
+        lifecycle_rows: list[Any] = []
+        delivery_rows: list[Any] = []
+        if run_ids:
+            review_rows = self.database.fetchall(
+                f"SELECT * FROM api_run_reviews WHERE run_id IN ({placeholders}) ORDER BY created_at DESC",
+                tuple(run_ids),
+            )
+            event_rows = self.database.fetchall(
+                f"SELECT * FROM api_run_events WHERE run_id IN ({placeholders}) ORDER BY created_at DESC",
+                tuple(run_ids),
+            )
+            clarification_rows = self.database.fetchall(
+                f"SELECT * FROM clarification_reports WHERE run_id IN ({placeholders}) ORDER BY created_at DESC",
+                tuple(run_ids),
+            )
+            lifecycle_rows = self.database.fetchall(
+                f"SELECT * FROM api_run_lifecycle_events WHERE run_id IN ({placeholders}) ORDER BY created_at DESC",
+                tuple(run_ids),
+            )
+            lifecycle_event_ids = [str(row["lifecycle_event_id"]) for row in lifecycle_rows]
+            if lifecycle_event_ids:
+                lifecycle_placeholders = ",".join("?" for _ in lifecycle_event_ids)
+                delivery_rows = self.database.fetchall(
+                    (
+                        "SELECT * FROM api_run_operator_deliveries "
+                        f"WHERE lifecycle_event_id IN ({lifecycle_placeholders}) ORDER BY created_at DESC"
+                    ),
+                    tuple(lifecycle_event_ids),
+                )
         cost_rows = self.database.fetchall(
             "SELECT estimated_cost_eur, created_at FROM api_run_results ORDER BY created_at DESC",
         )
@@ -1760,6 +1981,8 @@ class ApiRunService:
             objective=str(row["objective"]),
             branch_name=str(row["branch_name"]),
             target_profile=row["target_profile"],
+            mission_chain_id=str(row["mission_chain_id"]) if row["mission_chain_id"] else None,
+            mission_step_index=int(row["mission_step_index"]) if row["mission_step_index"] is not None else None,
             skill_tags=json.loads(row["skill_tags_json"]),
             expected_outputs=json.loads(row["expected_outputs_json"]),
             coding_lane=str(row["coding_lane"]),
@@ -1853,6 +2076,261 @@ class ApiRunService:
             },
         )
 
+    def _call_reviewer(self, result: ApiRunResult, context_pack: ContextPack) -> ApiRunReview:
+        if Anthropic is None:
+            raise RuntimeError("anthropic package is not installed")
+        self.logger.log(
+            "INFO",
+            "api_run_review_started",
+            run_id=result.run_id,
+            mode=result.mode.value,
+            reviewer_model=REVIEWER_MODEL,
+        )
+        api_key = self.secret_resolver.get_required("ANTHROPIC_API_KEY")
+        client = Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=REVIEWER_MODEL,
+            max_tokens=700,
+            temperature=0,
+            system=self._reviewer_system_prompt(),
+            messages=[
+                {
+                    "role": "user",
+                    "content": self._reviewer_user_prompt(result=result, context_pack=context_pack),
+                }
+            ],
+        )
+        raw_payload = response.model_dump() if hasattr(response, "model_dump") else {"repr": repr(response)}
+        review_payload = self._parse_structured_output_text(self._extract_text_blocks(response))
+        verdict = self._review_verdict(review_payload)
+        usage = self._extract_anthropic_usage(response)
+        summary = str(review_payload.get("summary") or "").strip()
+        recommendation = str(review_payload.get("recommendation") or "").strip()
+        issues_found = self._coerce_non_negative_int(review_payload.get("issues_found"), field_name="issues_found")
+        critical = self._coerce_non_negative_int(review_payload.get("critical"), field_name="critical")
+        high = self._coerce_non_negative_int(review_payload.get("high"), field_name="high")
+        estimated_cost = self._estimate_cost_eur(
+            model=str(raw_payload.get("model") or REVIEWER_MODEL),
+            usage=usage,
+        )
+        review = ApiRunReview(
+            review_id=new_id("run_review"),
+            run_id=result.run_id,
+            verdict=verdict,
+            reviewer=str(raw_payload.get("model") or REVIEWER_MODEL),
+            findings=self._review_findings(
+                verdict=verdict,
+                summary=summary,
+                issues_found=issues_found,
+                critical=critical,
+                high=high,
+            ),
+            accepted_changes=[],
+            followup_actions=[recommendation] if recommendation else [],
+            metadata={
+                "type": "review_result",
+                "source": "claude_api",
+                "context_pack_id": context_pack.context_pack_id,
+                "mode": context_pack.mode.value,
+                "branch_name": context_pack.branch_name,
+                "objective": context_pack.objective,
+                "files_included": [item.path for item in context_pack.source_refs],
+                "acceptance_criteria": self._review_acceptance_criteria(context_pack),
+                "issues_found": issues_found,
+                "critical": critical,
+                "high": high,
+                "summary": summary,
+                "recommendation": recommendation,
+                "usage": usage,
+                "estimated_cost_eur": estimated_cost,
+            },
+        )
+        self._store_run_review(review)
+        self.logger.log(
+            "INFO",
+            "api_run_review_completed",
+            run_id=result.run_id,
+            review_id=review.review_id,
+            verdict=review.verdict.value,
+            reviewer=review.reviewer,
+            estimated_cost_eur=estimated_cost,
+            issues_found=issues_found,
+            critical=critical,
+            high=high,
+        )
+        return review
+
+    def _call_translator(
+        self,
+        *,
+        event: RunLifecycleEvent,
+        result: ApiRunResult | None = None,
+        review: ApiRunReview | None = None,
+    ) -> str | None:
+        """Traduit un lifecycle event en message Discord francais simple.
+
+        Retourne None si l'evenement doit etre filtre (bruit).
+        Retourne le message traduit sinon (max 3 lignes, francais simple, pas de code).
+        """
+        filter_reason = self._translator_filter_reason(event)
+        if filter_reason is not None:
+            self.logger.log(
+                "INFO",
+                "translator_filtered",
+                event_id=event.lifecycle_event_id,
+                kind=event.kind.value,
+                reason=filter_reason,
+            )
+            return None
+
+        fallback_message = self._translator_fallback_message(event=event, review=review)
+        try:
+            if Anthropic is None:
+                raise RuntimeError("anthropic package is not installed")
+            api_key = self.secret_resolver.get_required("ANTHROPIC_API_KEY")
+            client = Anthropic(api_key=api_key)
+            message = client.messages.create(
+                model=TRANSLATOR_MODEL,
+                max_tokens=256,
+                messages=[{"role": "user", "content": self._translator_prompt(event=event, result=result, review=review)}],
+            )
+            translated_text = self._extract_text_blocks(message)
+            final_message = self._finalize_translated_message(translated_text, fallback_message=fallback_message)
+            usage = self._extract_anthropic_usage(message)
+            estimated_cost_eur = self._estimate_cost_eur(model=TRANSLATOR_MODEL, usage=usage)
+            self.logger.log(
+                "INFO",
+                "translator_completed",
+                event_id=event.lifecycle_event_id,
+                kind=event.kind.value,
+                model=TRANSLATOR_MODEL,
+                estimated_cost_eur=estimated_cost_eur,
+                line_count=len(final_message.splitlines()),
+            )
+            return final_message
+        except Exception as exc:
+            self.logger.log(
+                "WARNING",
+                "translator_fallback_used",
+                event_id=event.lifecycle_event_id,
+                kind=event.kind.value,
+                error=str(exc),
+            )
+            return fallback_message
+
+    def _guardian_pre_spend_check(
+        self,
+        *,
+        request: ApiRunRequest,
+        prompt_template: MegaPromptTemplate,
+    ) -> tuple[bool, str | None]:
+        """Verifie budget et boucles AVANT un appel API couteux.
+
+        Returns:
+            (True, None) si le run peut continuer.
+            (False, reason) si le run doit etre bloque.
+        """
+        if request.metadata.get("guardian_override") is True:
+            self.logger.log(
+                "WARNING",
+                "guardian_override_active",
+                run_request_id=request.run_request_id,
+                branch_name=request.branch_name,
+                mode=request.mode.value,
+            )
+            return True, None
+
+        estimated_cost = self._estimate_cost_hint(prompt_template.model, prompt_template.reasoning_effort, request.mode)
+        self.logger.log(
+            "INFO",
+            "guardian_pre_spend_check_started",
+            run_request_id=request.run_request_id,
+            branch_name=request.branch_name,
+            mode=request.mode.value,
+            estimated_cost_eur=estimated_cost,
+        )
+
+        try:
+            daily_limit = float(getattr(self.execution_policy, "daily_budget_limit_eur", 5.0))
+            today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+            budget_row = self.database.fetchone(
+                (
+                    "SELECT COALESCE(SUM(estimated_cost_eur), 0.0) as daily_spend "
+                    "FROM api_run_results WHERE created_at >= ? AND status != 'failed'"
+                ),
+                (today_start,),
+            )
+            daily_spend = float(budget_row["daily_spend"]) if budget_row else 0.0
+            self.logger.log(
+                "INFO",
+                "guardian_budget_checked",
+                run_request_id=request.run_request_id,
+                daily_spend_eur=daily_spend,
+                estimated_cost_eur=estimated_cost,
+                daily_limit_eur=daily_limit,
+            )
+            if daily_spend + estimated_cost > daily_limit:
+                reason = (
+                    f"budget_exceeded:daily_spend={daily_spend:.2f}"
+                    f"+estimated={estimated_cost:.2f}>limit={daily_limit:.2f}"
+                )
+                self.logger.log(
+                    "WARNING",
+                    "guardian_blocked_budget",
+                    run_request_id=request.run_request_id,
+                    reason=reason,
+                )
+                return False, reason
+
+            window_hours = int(getattr(self.execution_policy, "loop_detection_window_hours", 2))
+            threshold = int(getattr(self.execution_policy, "loop_detection_threshold", 3))
+            window_start = (datetime.now(timezone.utc) - timedelta(hours=window_hours)).isoformat()
+            loop_row = self.database.fetchone(
+                "SELECT COUNT(*) as loop_count FROM api_run_requests WHERE branch_name = ? AND mode = ? AND created_at >= ?",
+                (request.branch_name, request.mode.value, window_start),
+            )
+            loop_count = int(loop_row["loop_count"]) if loop_row else 0
+            self.logger.log(
+                "INFO",
+                "guardian_loop_checked",
+                run_request_id=request.run_request_id,
+                branch_name=request.branch_name,
+                mode=request.mode.value,
+                loop_count=loop_count,
+                window_hours=window_hours,
+                threshold=threshold,
+            )
+            if loop_count >= threshold:
+                reason = (
+                    f"loop_detected:branch={request.branch_name},mode={request.mode.value},"
+                    f"count={loop_count},window={window_hours}h"
+                )
+                self.logger.log(
+                    "WARNING",
+                    "guardian_blocked_loop",
+                    run_request_id=request.run_request_id,
+                    reason=reason,
+                )
+                return False, reason
+        except Exception as exc:
+            self.logger.log(
+                "WARNING",
+                "guardian_pre_spend_fail_open",
+                run_request_id=request.run_request_id,
+                error=str(exc),
+            )
+            return True, None
+
+        self.logger.log(
+            "INFO",
+            "guardian_pre_spend_allowed",
+            run_request_id=request.run_request_id,
+            branch_name=request.branch_name,
+            mode=request.mode.value,
+            estimated_cost_eur=estimated_cost,
+        )
+        return True, None
+
     def _normalize_response_payload(self, response_payload: Any) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         if isinstance(response_payload, dict):
             raw_payload = dict(response_payload)
@@ -1900,6 +2378,336 @@ class ApiRunService:
 
         raise RuntimeError("Responses API returned an invalid structured payload")
 
+    def _reviewer_system_prompt(self) -> str:
+        return textwrap.dedent(
+            """
+            You are the cross-model reviewer for Project OS.
+            Audit a GPT-produced structured result against the current architecture, interfaces, risks, and acceptance criteria.
+            Be strict, technical, and terse.
+            Return exactly one JSON object and nothing else.
+            Allowed verdicts: "accepted", "accepted_with_reserves", "needs_revision", "rejected", "needs_clarification".
+            Use "critical" for P0 blockers and "high" for P1 blockers.
+            Use "needs_revision" when the result is directionally correct but must be revised before integration.
+            If the provided context is insufficient for a reliable verdict, use "needs_clarification".
+            """
+        ).strip()
+
+    def _reviewer_user_prompt(self, *, result: ApiRunResult, context_pack: ContextPack) -> str:
+        source_paths = [item.path for item in context_pack.source_refs]
+        context_summary = {
+            "run_id": result.run_id,
+            "mode": context_pack.mode.value,
+            "objective": context_pack.objective,
+            "branch": context_pack.branch_name,
+            "included_files_count": len(source_paths),
+            "included_files": source_paths,
+        }
+        return textwrap.dedent(
+            f"""
+            Review the following Project OS run result.
+
+            Quality gates:
+            {self._render_list(self._review_quality_gates())}
+
+            Mode-specific acceptance criteria:
+            {self._render_list(self._review_acceptance_criteria(context_pack))}
+
+            Context pack summary:
+            {json.dumps(context_summary, ensure_ascii=True, indent=2, sort_keys=True)}
+
+            Structured output under review:
+            {json.dumps(result.structured_output, ensure_ascii=True, indent=2, sort_keys=True)}
+
+            Return JSON with this exact schema:
+            {{
+              "verdict": "accepted" | "accepted_with_reserves" | "needs_revision" | "rejected" | "needs_clarification",
+              "issues_found": <int>,
+              "critical": <int>,
+              "high": <int>,
+              "summary": "<1-2 technical sentences>",
+              "recommendation": "<next action>"
+            }}
+            """
+        ).strip()
+
+    def _review_quality_gates(self) -> list[str]:
+        return [
+            "Coherence: the result must fit the current architecture and repository conventions.",
+            "Interfaces: declared inputs, outputs, and contracts must stay internally consistent.",
+            "Risks: flag security, regression, data-loss, and state-corruption risks.",
+            "Tests: expected tests must cover the primary behavior and failure paths.",
+            "Loops: reject unbounded loops, recursion hazards, or retry storms.",
+            "Degradation: reject outcomes that reduce quality versus the existing implementation.",
+        ]
+
+    def _review_acceptance_criteria(self, context_pack: ContextPack) -> list[str]:
+        mode_specific: dict[ApiRunMode, list[str]] = {
+            ApiRunMode.AUDIT: [
+                "All identified zones are covered.",
+                "Severity assignments remain coherent across P0, P1, and P2.",
+                "Recommendations are actionable.",
+            ],
+            ApiRunMode.DESIGN: [
+                "Interfaces define inputs, outputs, and error paths.",
+                "Dependencies are explicit.",
+                "Alternatives are documented.",
+            ],
+            ApiRunMode.PATCH_PLAN: [
+                "Every target file is identified.",
+                "The modification order is explicit.",
+                "Regression risks are evaluated.",
+            ],
+            ApiRunMode.GENERATE_PATCH: [
+                "The code should compile and tests should pass.",
+                "Project conventions must be respected.",
+                "No dead code or unresolved TODOs remain.",
+            ],
+        }
+        combined = list(mode_specific.get(context_pack.mode, []))
+        for item in context_pack.acceptance_criteria:
+            candidate = str(item).strip()
+            if candidate and candidate not in combined:
+                combined.append(candidate)
+        return combined
+
+    def _render_list(self, items: list[str]) -> str:
+        return "\n".join(f"- {item}" for item in items) if items else "- None"
+
+    def _extract_text_blocks(self, response_payload: Any) -> str:
+        content = getattr(response_payload, "content", None)
+        if content is None and isinstance(response_payload, dict):
+            content = response_payload.get("content")
+        blocks: list[str] = []
+        for item in content or []:
+            if isinstance(item, dict):
+                if item.get("type") == "text" and item.get("text"):
+                    blocks.append(str(item["text"]))
+                continue
+            if getattr(item, "type", None) == "text" and getattr(item, "text", None):
+                blocks.append(str(item.text))
+        if not blocks:
+            raise RuntimeError("Anthropic Messages API returned no text content")
+        return "\n".join(blocks).strip()
+
+    def _extract_anthropic_usage(self, response_payload: Any) -> dict[str, Any]:
+        usage_obj = getattr(response_payload, "usage", None)
+        if usage_obj is None and isinstance(response_payload, dict):
+            usage_obj = response_payload.get("usage")
+        if usage_obj is None:
+            return {}
+        if hasattr(usage_obj, "model_dump"):
+            dumped = usage_obj.model_dump()
+            if isinstance(dumped, dict):
+                return dumped
+        if isinstance(usage_obj, dict):
+            return dict(usage_obj)
+        usage: dict[str, Any] = {}
+        for field in ("input_tokens", "output_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"):
+            value = getattr(usage_obj, field, None)
+            if value is not None:
+                usage[field] = value
+        return usage
+
+    def _review_verdict(self, review_payload: dict[str, Any]) -> ApiRunReviewVerdict:
+        raw_verdict = str(review_payload.get("verdict") or "").strip().lower()
+        mapping = {
+            ApiRunReviewVerdict.ACCEPTED.value: ApiRunReviewVerdict.ACCEPTED,
+            ApiRunReviewVerdict.ACCEPTED_WITH_RESERVES.value: ApiRunReviewVerdict.ACCEPTED_WITH_RESERVES,
+            ApiRunReviewVerdict.NEEDS_REVISION.value: ApiRunReviewVerdict.NEEDS_REVISION,
+            ApiRunReviewVerdict.REJECTED.value: ApiRunReviewVerdict.REJECTED,
+            ApiRunReviewVerdict.NEEDS_CLARIFICATION.value: ApiRunReviewVerdict.NEEDS_CLARIFICATION,
+        }
+        verdict = mapping.get(raw_verdict)
+        if verdict is None:
+            raise RuntimeError(f"Anthropic review returned an unsupported verdict: {raw_verdict or 'missing'}")
+        return verdict
+
+    def _review_findings(
+        self,
+        *,
+        verdict: ApiRunReviewVerdict,
+        summary: str,
+        issues_found: int,
+        critical: int,
+        high: int,
+    ) -> list[str]:
+        findings: list[str] = []
+        if summary and (issues_found > 0 or verdict is not ApiRunReviewVerdict.ACCEPTED):
+            findings.append(summary)
+        if critical > 0:
+            findings.append(f"Critical blockers reported: {critical}.")
+        if high > 0:
+            findings.append(f"High-severity blockers reported: {high}.")
+        return findings
+
+    def _coerce_non_negative_int(self, value: Any, *, field_name: str) -> int:
+        try:
+            coerced = int(value)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"Anthropic review returned an invalid integer for {field_name}") from exc
+        if coerced < 0:
+            raise RuntimeError(f"Anthropic review returned a negative integer for {field_name}")
+        return coerced
+
+    def _merge_usage(self, generation_usage: dict[str, Any], review_usage: dict[str, Any]) -> dict[str, Any]:
+        merged = {
+            "input_tokens": int(generation_usage.get("input_tokens") or 0) + int(review_usage.get("input_tokens") or 0),
+            "output_tokens": int(generation_usage.get("output_tokens") or 0) + int(review_usage.get("output_tokens") or 0),
+            "generation": dict(generation_usage),
+            "review": dict(review_usage),
+        }
+        for key in ("cache_creation_input_tokens", "cache_read_input_tokens"):
+            total = int(generation_usage.get(key) or 0) + int(review_usage.get(key) or 0)
+            if total:
+                merged[key] = total
+        return merged
+
+    def _translator_filter_reason(self, event: RunLifecycleEvent) -> str | None:
+        if event.kind is RunLifecycleEventKind.RUN_STARTED:
+            return "run_started_noise"
+        if event.kind is RunLifecycleEventKind.CONTRACT_APPROVED:
+            return "contract_approved_noise"
+        if event.kind is RunLifecycleEventKind.CONTRACT_REJECTED:
+            return "contract_rejected_already_handled"
+        auto_retry_in_progress = str(event.metadata.get("auto_retry_in_progress") or "").strip().lower() in {"1", "true", "yes"}
+        if event.kind is RunLifecycleEventKind.RUN_FAILED and auto_retry_in_progress:
+            return "run_failed_retry_in_progress"
+        if event.kind is RunLifecycleEventKind.BUDGET_ALERT:
+            percent = float(event.metadata.get("budget_percent") or event.metadata.get("budget_usage_percent") or 0.0)
+            if percent < 80.0:
+                return "budget_below_notification_threshold"
+        return None
+
+    def _translator_prompt(
+        self,
+        *,
+        event: RunLifecycleEvent,
+        result: ApiRunResult | None = None,
+        review: ApiRunReview | None = None,
+    ) -> str:
+        files_changed = 0
+        if result is not None:
+            files_changed = len(result.structured_output.get("files_to_change") or [])
+        review_metadata = dict(review.metadata) if review is not None else {}
+        prompt_payload = {
+            "event_kind": event.kind.value,
+            "title": event.title,
+            "machine_summary": event.summary,
+            "branch_name": event.branch_name,
+            "mode": event.mode.value if event.mode else None,
+            "estimated_cost_eur": result.estimated_cost_eur if result is not None else event.metadata.get("estimated_cost_eur"),
+            "files_changed": files_changed or event.metadata.get("files_changed"),
+            "blocking_question": event.blocking_question,
+            "recommended_action": event.recommended_action,
+            "review_verdict": review.verdict.value if review is not None else event.metadata.get("review_verdict"),
+            "review_summary": review_metadata.get("summary") if review_metadata else None,
+            "review_recommendation": review_metadata.get("recommendation") if review_metadata else None,
+            "issues_found": review_metadata.get("issues_found") if review_metadata else None,
+            "critical": review_metadata.get("critical") if review_metadata else None,
+            "high": review_metadata.get("high") if review_metadata else None,
+            "requires_reapproval": event.requires_reapproval,
+        }
+        return textwrap.dedent(
+            f"""
+            Traduis ce signal machine Project OS en message Discord pour le fondateur.
+
+            Regles absolues:
+            - Francais simple, max 3 lignes
+            - Pas de code, pas de chemin de fichier, pas de JSON
+            - Pas de jargon technique
+            - Le fondateur ne code pas
+            - Si une information manque, n'invente pas
+
+            Signal:
+            {json.dumps(prompt_payload, ensure_ascii=True, indent=2, sort_keys=True)}
+
+            Templates Discord a imiter:
+            1. Run complete
+            [branche] termine — [decision en 1 phrase].
+            [nb fichiers] fichiers, [cout]EUR. Review dispo au retour.
+
+            2. Clarification requise
+            Question sur [branche] —
+            [question en francais simple].
+            A) [option A] B) [option B]
+            [urgence]. Si tu reponds pas je fais [fallback].
+
+            3. Run echoue
+            [branche] echoue — [raison simple].
+            [action requise ou "Aucune action requise"].
+
+            4. Contrat propose
+            Nouveau lot propose — [objectif en 1 phrase].
+            Cout estime: [montant]EUR. On lance ?
+
+            5. Budget alert
+            Budget jour a [pourcentage]% — [depense]EUR sur [limite]EUR.
+            [consequence simple].
+
+            6. Review terminee
+            Review de [branche] — [verdict en 1 phrase].
+            [detail principal si pertinent].
+            [prochaine action].
+
+            Traduis en francais simple, max 3 lignes, pas de code, pas de chemin de fichier, pas de JSON.
+            """
+        ).strip()
+
+    def _finalize_translated_message(self, translated_text: str, *, fallback_message: str) -> str:
+        cleaned = translated_text.replace("```", "").replace("`", "").strip()
+        lines = [line.strip(" -") for line in cleaned.splitlines() if line.strip()]
+        message = "\n".join(lines[:3]).strip()
+        if not message:
+            return fallback_message
+        if self._translated_message_looks_unsafe(message):
+            return fallback_message
+        return message
+
+    def _translated_message_looks_unsafe(self, message: str) -> bool:
+        lowered = message.lower()
+        if any(marker in lowered for marker in ("src/", "project_os_core", "```")):
+            return True
+        if "{" in message or "}" in message:
+            return True
+        if re.search(r"[a-zA-Z]:\\\\", message):
+            return True
+        if re.search(r"\b\S+\.(py|json|md|sql|js|ts|tsx)\b", lowered):
+            return True
+        return False
+
+    def _translator_fallback_message(
+        self,
+        *,
+        event: RunLifecycleEvent,
+        review: ApiRunReview | None = None,
+    ) -> str:
+        branch = event.branch_name or "Le lot"
+        if event.kind is RunLifecycleEventKind.RUN_COMPLETED:
+            return f"{branch} termine."
+        if event.kind is RunLifecycleEventKind.CLARIFICATION_REQUIRED:
+            question = event.blocking_question or "J'ai besoin d'une decision avant de continuer."
+            return f"Question sur {branch}.\n{question}"
+        if event.kind is RunLifecycleEventKind.RUN_FAILED:
+            action = event.recommended_action or "Aucune action requise."
+            return f"{branch} echoue.\n{action}"
+        if event.kind is RunLifecycleEventKind.RUN_REVIEWED:
+            if review is not None and review.verdict is ApiRunReviewVerdict.REJECTED:
+                return f"Review de {branch}.\nLe lot doit etre corrige avant integration."
+            if review is not None and review.verdict is ApiRunReviewVerdict.NEEDS_REVISION:
+                return f"Review de {branch}.\nLe lot demande une revision avant integration."
+            if review is not None and review.verdict is ApiRunReviewVerdict.ACCEPTED_WITH_RESERVES:
+                return f"Review de {branch}.\nLe lot est presque bon mais demande une correction."
+            if review is not None and review.verdict is ApiRunReviewVerdict.NEEDS_CLARIFICATION:
+                return f"Review de {branch}.\nJ'ai besoin d'une clarification avant la suite."
+            return f"Review de {branch}."
+        if event.kind is RunLifecycleEventKind.CONTRACT_PROPOSED:
+            return "Nouveau lot propose."
+        if event.kind is RunLifecycleEventKind.BUDGET_ALERT:
+            return "Budget jour en alerte."
+        if event.kind is RunLifecycleEventKind.RUN_RELAUNCHED:
+            return f"{branch} relance."
+        return event.title or branch
+
     def _apply_learning(self, *, review: ApiRunReview, result: ApiRunResult, request: ApiRunRequest) -> None:
         source_ids = [result.run_id, review.review_id]
         if review.verdict is ApiRunReviewVerdict.ACCEPTED:
@@ -1942,19 +2750,51 @@ class ApiRunService:
                     source_ids=source_ids,
                     metadata={"objective": request.objective},
                 )
+        elif review.verdict is ApiRunReviewVerdict.NEEDS_REVISION:
+            context_pack = self.get_context_pack(request.context_pack_id)
+            self.learning.record_signal(
+                kind=LearningSignalKind.CAPABILITY_DRIFT,
+                severity="high",
+                summary=f"{request.mode.value} run needs revision before integration.",
+                source_ids=source_ids,
+                metadata={"findings": review.findings, "objective": request.objective},
+            )
+            self.learning.recommend_refresh(
+                cause=f"{request.mode.value} run needs revision",
+                context_to_reload=[item.path for item in context_pack.source_refs],
+                next_step="Revise the lot against the review findings, rerun the narrow scope, and only integrate after a clean review.",
+                source_ids=source_ids,
+                metadata={"branch_name": request.branch_name},
+            )
+        elif review.verdict is ApiRunReviewVerdict.NEEDS_CLARIFICATION:
+            context_pack = self.get_context_pack(request.context_pack_id)
+            self.learning.record_signal(
+                kind=LearningSignalKind.CAPABILITY_DRIFT,
+                severity="medium",
+                summary=f"{request.mode.value} run needs founder clarification.",
+                source_ids=source_ids,
+                metadata={"findings": review.findings, "objective": request.objective},
+            )
+            self.learning.recommend_refresh(
+                cause=f"{request.mode.value} run needs clarification",
+                context_to_reload=[item.path for item in context_pack.source_refs],
+                next_step="Capture the missing founder decision, refresh the context pack, and rerun with the clarified contract.",
+                source_ids=source_ids,
+                metadata={"branch_name": request.branch_name},
+            )
         else:
             context_pack = self.get_context_pack(request.context_pack_id)
             self.learning.record_signal(
                 kind=LearningSignalKind.CAPABILITY_DRIFT,
                 severity="medium",
-                summary=f"{request.mode.value} run needs revision.",
+                summary=f"{request.mode.value} run was accepted with reserves.",
                 source_ids=source_ids,
                 metadata={"findings": review.findings},
             )
             self.learning.recommend_refresh(
-                cause=f"{request.mode.value} run required revision",
+                cause=f"{request.mode.value} run was accepted with reserves",
                 context_to_reload=[item.path for item in context_pack.source_refs],
-                next_step="Refresh the context pack, inspect the rejected findings, and rerun with clarified acceptance criteria.",
+                next_step="Apply the review recommendations, refresh the context pack if needed, and rerun the narrow follow-up lot.",
                 source_ids=source_ids,
                 metadata={"branch_name": request.branch_name},
             )
@@ -1969,12 +2809,16 @@ class ApiRunService:
         output = result.structured_output
         summary_map = {
             ApiRunReviewVerdict.ACCEPTED: "Le lot est valide apres revue et peut passer a l'integration locale.",
-            ApiRunReviewVerdict.NEEDS_REVISION: "Le lot a une bonne base mais doit etre corrige avant integration.",
+            ApiRunReviewVerdict.ACCEPTED_WITH_RESERVES: "Le lot est globalement valide mais comporte des reserves a corriger avant integration.",
+            ApiRunReviewVerdict.NEEDS_REVISION: "Le lot doit etre revise avant toute integration locale.",
+            ApiRunReviewVerdict.NEEDS_CLARIFICATION: "Le lot ne peut pas etre integre sans clarification supplementaire du fondateur.",
             ApiRunReviewVerdict.REJECTED: "Le lot est rejete apres revue et ne doit pas etre integre tel quel.",
         }
         next_action_map = {
             ApiRunReviewVerdict.ACCEPTED: "Integrer localement, retester, puis preparer le lot suivant.",
-            ApiRunReviewVerdict.NEEDS_REVISION: "Corriger les points remontes, puis relancer un run ou un patch local cible.",
+            ApiRunReviewVerdict.ACCEPTED_WITH_RESERVES: "Appliquer les corrections mineures demandees, retester, puis integrer.",
+            ApiRunReviewVerdict.NEEDS_REVISION: "Reviser le lot sur le scope minimal, retester, puis relancer la revue avant integration.",
+            ApiRunReviewVerdict.NEEDS_CLARIFICATION: "Formuler la question de clarification, attendre la decision fondatrice, puis relancer le lot cible.",
             ApiRunReviewVerdict.REJECTED: "Recharger le contexte, revisiter le plan, puis relancer un patch-plan propre.",
         }
         return CompletionReport(
@@ -2094,7 +2938,7 @@ class ApiRunService:
             SELECT v.verdict
             FROM api_run_reviews v
             JOIN api_run_results r ON r.run_id = v.run_id
-            WHERE r.mode = ? AND v.verdict IN (?, ?)
+            WHERE r.mode = ? AND v.verdict IN (?, ?, ?, ?)
             ORDER BY v.created_at DESC
             LIMIT 3
             """,
@@ -2102,60 +2946,54 @@ class ApiRunService:
                 mode.value,
                 ApiRunReviewVerdict.REJECTED.value,
                 ApiRunReviewVerdict.NEEDS_REVISION.value,
+                ApiRunReviewVerdict.ACCEPTED_WITH_RESERVES.value,
+                ApiRunReviewVerdict.NEEDS_CLARIFICATION.value,
             ),
         )
         return len(rows)
 
     def _persist_context_pack(self, context_pack: ContextPack) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO context_packs(
-                context_pack_id, mode, objective, branch_name, target_profile, source_refs_json,
-                repo_state_json, runtime_facts_json, constraints_json, acceptance_criteria_json,
-                skill_tags_json, artifact_path, metadata_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                context_pack.context_pack_id,
-                context_pack.mode.value,
-                context_pack.objective,
-                context_pack.branch_name,
-                context_pack.target_profile,
-                dump_json([to_jsonable(item) for item in context_pack.source_refs]),
-                dump_json(context_pack.repo_state),
-                dump_json(context_pack.runtime_facts),
-                dump_json(context_pack.constraints),
-                dump_json(context_pack.acceptance_criteria),
-                dump_json(context_pack.skill_tags),
-                context_pack.artifact_path,
-                dump_json(context_pack.metadata),
-                context_pack.created_at,
-            ),
+        self.database.upsert(
+            "context_packs",
+            {
+                "context_pack_id": context_pack.context_pack_id,
+                "mode": context_pack.mode.value,
+                "objective": context_pack.objective,
+                "branch_name": context_pack.branch_name,
+                "target_profile": context_pack.target_profile,
+                "source_refs_json": dump_json([to_jsonable(item) for item in context_pack.source_refs]),
+                "repo_state_json": dump_json(context_pack.repo_state),
+                "runtime_facts_json": dump_json(context_pack.runtime_facts),
+                "constraints_json": dump_json(context_pack.constraints),
+                "acceptance_criteria_json": dump_json(context_pack.acceptance_criteria),
+                "skill_tags_json": dump_json(context_pack.skill_tags),
+                "artifact_path": context_pack.artifact_path,
+                "metadata_json": dump_json(context_pack.metadata),
+                "created_at": context_pack.created_at,
+            },
+            conflict_columns="context_pack_id",
+            immutable_columns=["created_at"],
         )
 
     def _persist_prompt_template(self, prompt_template: MegaPromptTemplate) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO mega_prompt_templates(
-                prompt_template_id, context_pack_id, mode, agent_identity, skill_tags_json,
-                output_contract_json, rendered_prompt, model, reasoning_effort, artifact_path,
-                metadata_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                prompt_template.prompt_template_id,
-                prompt_template.context_pack_id,
-                prompt_template.mode.value,
-                prompt_template.agent_identity,
-                dump_json(prompt_template.skill_tags),
-                dump_json(prompt_template.output_contract),
-                prompt_template.rendered_prompt,
-                prompt_template.model,
-                prompt_template.reasoning_effort,
-                prompt_template.artifact_path,
-                dump_json(prompt_template.metadata),
-                prompt_template.created_at,
-            ),
+        self.database.upsert(
+            "mega_prompt_templates",
+            {
+                "prompt_template_id": prompt_template.prompt_template_id,
+                "context_pack_id": prompt_template.context_pack_id,
+                "mode": prompt_template.mode.value,
+                "agent_identity": prompt_template.agent_identity,
+                "skill_tags_json": dump_json(prompt_template.skill_tags),
+                "output_contract_json": dump_json(prompt_template.output_contract),
+                "rendered_prompt": prompt_template.rendered_prompt,
+                "model": prompt_template.model,
+                "reasoning_effort": prompt_template.reasoning_effort,
+                "artifact_path": prompt_template.artifact_path,
+                "metadata_json": dump_json(prompt_template.metadata),
+                "created_at": prompt_template.created_at,
+            },
+            conflict_columns="prompt_template_id",
+            immutable_columns=["created_at"],
         )
 
     def _persist_run_contract(
@@ -2254,88 +3092,87 @@ class ApiRunService:
         )
 
     def _persist_run_request(self, request: ApiRunRequest, *, connection: sqlite3.Connection | None = None) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO api_run_requests(
-                run_request_id, context_pack_id, prompt_template_id, mode, objective, branch_name,
-                target_profile, skill_tags_json, expected_outputs_json, coding_lane, desktop_lane,
-                communication_mode, speech_policy, operator_language, audience, run_contract_required,
-                contract_id, status, metadata_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                request.run_request_id,
-                request.context_pack_id,
-                request.prompt_template_id,
-                request.mode.value,
-                request.objective,
-                request.branch_name,
-                request.target_profile,
-                dump_json(request.skill_tags),
-                dump_json(request.expected_outputs),
-                request.coding_lane,
-                request.desktop_lane,
-                request.communication_mode.value,
-                request.speech_policy.value,
-                request.operator_language,
-                request.audience.value,
-                1 if request.run_contract_required else 0,
-                request.contract_id,
-                request.status.value,
-                dump_json(request.metadata),
-                request.created_at,
-                request.updated_at,
-            ),
+        self.database.upsert(
+            "api_run_requests",
+            {
+                "run_request_id": request.run_request_id,
+                "context_pack_id": request.context_pack_id,
+                "prompt_template_id": request.prompt_template_id,
+                "mode": request.mode.value,
+                "objective": request.objective,
+                "branch_name": request.branch_name,
+                "target_profile": request.target_profile,
+                "mission_chain_id": request.mission_chain_id,
+                "mission_step_index": request.mission_step_index,
+                "skill_tags_json": dump_json(request.skill_tags),
+                "expected_outputs_json": dump_json(request.expected_outputs),
+                "coding_lane": request.coding_lane,
+                "desktop_lane": request.desktop_lane,
+                "communication_mode": request.communication_mode.value,
+                "speech_policy": request.speech_policy.value,
+                "operator_language": request.operator_language,
+                "audience": request.audience.value,
+                "run_contract_required": 1 if request.run_contract_required else 0,
+                "contract_id": request.contract_id,
+                "status": request.status.value,
+                "metadata_json": dump_json(request.metadata),
+                "created_at": request.created_at,
+                "updated_at": request.updated_at,
+            },
+            conflict_columns="run_request_id",
+            immutable_columns=["created_at"],
             connection=connection,
         )
 
     def _persist_run_result(self, result: ApiRunResult, *, connection: sqlite3.Connection | None = None) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO api_run_results(
-                run_id, run_request_id, model, mode, status, raw_output_path, prompt_artifact_path,
-                result_artifact_path, structured_output_json, estimated_cost_eur, usage_json,
-                metadata_json, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                result.run_id,
-                result.run_request_id,
-                result.model,
-                result.mode.value,
-                result.status.value,
-                result.raw_output_path,
-                result.prompt_artifact_path,
-                result.result_artifact_path,
-                dump_json(result.structured_output),
-                result.estimated_cost_eur,
-                dump_json(result.usage),
-                dump_json(result.metadata),
-                result.created_at,
-                result.updated_at,
-            ),
+        self.database.upsert(
+            "api_run_results",
+            {
+                "run_id": result.run_id,
+                "run_request_id": result.run_request_id,
+                "model": result.model,
+                "mode": result.mode.value,
+                "status": result.status.value,
+                "raw_output_path": result.raw_output_path,
+                "prompt_artifact_path": result.prompt_artifact_path,
+                "result_artifact_path": result.result_artifact_path,
+                "structured_output_json": dump_json(result.structured_output),
+                "estimated_cost_eur": result.estimated_cost_eur,
+                "usage_json": dump_json(result.usage),
+                "metadata_json": dump_json(result.metadata),
+                "created_at": result.created_at,
+                "updated_at": result.updated_at,
+            },
+            conflict_columns="run_id",
+            immutable_columns=["created_at"],
             connection=connection,
         )
 
+    def _store_run_review(self, review: ApiRunReview) -> Path:
+        folder = self.paths.api_runs_root / "reviews"
+        folder.mkdir(parents=True, exist_ok=True)
+        artifact_path = self.path_policy.ensure_allowed_write(folder / f"{review.review_id}.json")
+        review.metadata["artifact_path"] = str(artifact_path)
+        artifact_path.write_text(json.dumps(to_jsonable(review), ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
+        self._persist_run_review(review)
+        return artifact_path
+
     def _persist_run_review(self, review: ApiRunReview) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO api_run_reviews(
-                review_id, run_id, verdict, reviewer, findings_json, accepted_changes_json,
-                followup_actions_json, metadata_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                review.review_id,
-                review.run_id,
-                review.verdict.value,
-                review.reviewer,
-                dump_json(review.findings),
-                dump_json(review.accepted_changes),
-                dump_json(review.followup_actions),
-                dump_json(review.metadata),
-                review.created_at,
-            ),
+        self.database.upsert(
+            "api_run_reviews",
+            {
+                "review_id": review.review_id,
+                "run_id": review.run_id,
+                "verdict": review.verdict.value,
+                "reviewer": review.reviewer,
+                "findings_json": dump_json(review.findings),
+                "accepted_changes_json": dump_json(review.accepted_changes),
+                "followup_actions_json": dump_json(review.followup_actions),
+                "metadata_json": dump_json(review.metadata),
+                "created_at": review.created_at,
+            },
+            conflict_columns="review_id",
+            immutable_columns=["created_at"],
         )
 
     def _persist_run_event(
@@ -2351,22 +3188,20 @@ class ApiRunService:
         created_at: str,
         connection: sqlite3.Connection | None = None,
     ) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO api_run_events(
-                event_id, run_id, phase, severity, machine_summary, human_summary, payload_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                event_id,
-                run_id,
-                phase,
-                severity,
-                machine_summary,
-                human_summary,
-                dump_json(payload),
-                created_at,
-            ),
+        self.database.upsert(
+            "api_run_events",
+            {
+                "event_id": event_id,
+                "run_id": run_id,
+                "phase": phase,
+                "severity": severity,
+                "machine_summary": machine_summary,
+                "human_summary": human_summary,
+                "payload_json": dump_json(payload),
+                "created_at": created_at,
+            },
+            conflict_columns="event_id",
+            immutable_columns=["created_at"],
             connection=connection,
         )
 
@@ -2425,6 +3260,8 @@ class ApiRunService:
         blocking_question: str | None = None,
         recommended_action: str | None = None,
         requires_reapproval: bool = False,
+        result: ApiRunResult | None = None,
+        review: ApiRunReview | None = None,
         metadata: dict[str, Any] | None = None,
         connection: sqlite3.Connection | None = None,
         refresh_snapshot: bool = True,
@@ -2448,9 +3285,35 @@ class ApiRunService:
             metadata=dict(metadata or {}),
         )
         self._persist_lifecycle_event(event, connection=connection)
-        self._prune_pending_operator_deliveries(incoming_channel_hint=event.channel_hint, connection=connection)
         delivery: OperatorDelivery | None = None
-        if self._should_enqueue_operator_delivery(incoming_channel_hint=event.channel_hint, connection=connection):
+        translated_message: str | None = None
+        filter_reason = "noise_filtered"
+        try:
+            translated_message = self._call_translator(event=event, result=result, review=review)
+        except Exception as translate_exc:
+            filter_reason = "translator_failed"
+            self.logger.log(
+                "WARNING",
+                "translator_failed",
+                event_id=event.lifecycle_event_id,
+                kind=kind.value,
+                error=str(translate_exc),
+            )
+        if translated_message is None:
+            self.journal.append(
+                "api_run_operator_delivery_filtered",
+                "api_runs",
+                {
+                    "lifecycle_event_id": event.lifecycle_event_id,
+                    "run_id": run_id,
+                    "kind": kind.value,
+                    "reason": filter_reason,
+                },
+            )
+        else:
+            self._prune_pending_operator_deliveries(incoming_channel_hint=event.channel_hint, connection=connection)
+        if translated_message is not None and self._should_enqueue_operator_delivery(incoming_channel_hint=event.channel_hint, connection=connection):
+            delivery_payload = self._build_operator_delivery_payload(event, translated_message=translated_message)
             delivery = OperatorDelivery(
                 delivery_id=new_id("operator_delivery"),
                 lifecycle_event_id=event.lifecycle_event_id,
@@ -2458,12 +3321,12 @@ class ApiRunService:
                 surface="discord",
                 channel_hint=event.channel_hint,
                 status=OperatorDeliveryStatus.PENDING,
-                payload=self._build_operator_delivery_payload(event),
+                payload=delivery_payload,
                 metadata={"run_id": run_id, "kind": kind.value},
                 next_attempt_at=event.created_at,
             )
             self._persist_operator_delivery(delivery, connection=connection)
-        else:
+        elif translated_message is not None:
             self.journal.append(
                 "api_run_operator_delivery_skipped",
                 "api_runs",
@@ -2493,16 +3356,26 @@ class ApiRunService:
     def _channel_hint_for_lifecycle(self, kind: RunLifecycleEventKind) -> OperatorChannelHint:
         if kind is RunLifecycleEventKind.CLARIFICATION_REQUIRED:
             return OperatorChannelHint.APPROVALS
+        if kind in {
+            RunLifecycleEventKind.CONTRACT_PROPOSED,
+            RunLifecycleEventKind.CONTRACT_APPROVED,
+            RunLifecycleEventKind.CONTRACT_REJECTED,
+        }:
+            return OperatorChannelHint.APPROVALS
+        if kind is RunLifecycleEventKind.BUDGET_ALERT:
+            return OperatorChannelHint.INCIDENTS
         if kind is RunLifecycleEventKind.RUN_FAILED:
             return OperatorChannelHint.INCIDENTS
         return OperatorChannelHint.RUNS_LIVE
 
-    def _build_operator_delivery_payload(self, event: RunLifecycleEvent) -> dict[str, Any]:
+    def _build_operator_delivery_payload(self, event: RunLifecycleEvent, *, translated_message: str | None = None) -> dict[str, Any]:
+        text = translated_message or self._render_operator_delivery_text(event)
         return {
             "version": "v1",
             "surface": "discord",
             "channel_hint": event.channel_hint.value,
-            "text": self._render_operator_delivery_text(event),
+            "text": text,
+            "translated_message": text,
             "card": {
                 "title": event.title,
                 "summary": event.summary,
@@ -2681,25 +3554,22 @@ class ApiRunService:
             to_jsonable(report),
         )
         report.metadata["artifact_path"] = str(artifact_path)
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO completion_reports(
-                report_id, run_id, verdict, summary, done_items_json, test_summary_json,
-                risks_json, next_action, metadata_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                report.report_id,
-                report.run_id,
-                report.verdict,
-                report.summary,
-                dump_json(report.done_items),
-                dump_json(report.test_summary),
-                dump_json(report.risks),
-                report.next_action,
-                dump_json(report.metadata),
-                report.created_at,
-            ),
+        self.database.upsert(
+            "completion_reports",
+            {
+                "report_id": report.report_id,
+                "run_id": report.run_id,
+                "verdict": report.verdict,
+                "summary": report.summary,
+                "done_items_json": dump_json(report.done_items),
+                "test_summary_json": dump_json(report.test_summary),
+                "risks_json": dump_json(report.risks),
+                "next_action": report.next_action,
+                "metadata_json": dump_json(report.metadata),
+                "created_at": report.created_at,
+            },
+            conflict_columns="report_id",
+            immutable_columns=["created_at"],
             connection=connection,
         )
 
@@ -2710,22 +3580,20 @@ class ApiRunService:
             to_jsonable(report),
         )
         report.metadata["artifact_path"] = str(artifact_path)
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO blockage_reports(
-                report_id, run_id, cause, impact, choices_json, recommendation, metadata_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                report.report_id,
-                report.run_id,
-                report.cause,
-                report.impact,
-                dump_json(report.choices),
-                report.recommendation,
-                dump_json(report.metadata),
-                report.created_at,
-            ),
+        self.database.upsert(
+            "blockage_reports",
+            {
+                "report_id": report.report_id,
+                "run_id": report.run_id,
+                "cause": report.cause,
+                "impact": report.impact,
+                "choices_json": dump_json(report.choices),
+                "recommendation": report.recommendation,
+                "metadata_json": dump_json(report.metadata),
+                "created_at": report.created_at,
+            },
+            conflict_columns="report_id",
+            immutable_columns=["created_at"],
             connection=connection,
         )
 
@@ -2736,24 +3604,21 @@ class ApiRunService:
             to_jsonable(report),
         )
         report.metadata["artifact_path"] = str(artifact_path)
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO clarification_reports(
-                report_id, run_id, cause, impact, question_for_founder, recommended_contract_change,
-                requires_reapproval, metadata_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                report.report_id,
-                report.run_id,
-                report.cause,
-                report.impact,
-                report.question_for_founder,
-                report.recommended_contract_change,
-                1 if report.requires_reapproval else 0,
-                dump_json(report.metadata),
-                report.created_at,
-            ),
+        self.database.upsert(
+            "clarification_reports",
+            {
+                "report_id": report.report_id,
+                "run_id": report.run_id,
+                "cause": report.cause,
+                "impact": report.impact,
+                "question_for_founder": report.question_for_founder,
+                "recommended_contract_change": report.recommended_contract_change,
+                "requires_reapproval": 1 if report.requires_reapproval else 0,
+                "metadata_json": dump_json(report.metadata),
+                "created_at": report.created_at,
+            },
+            conflict_columns="report_id",
+            immutable_columns=["created_at"],
             connection=connection,
         )
 
@@ -2861,10 +3726,19 @@ class ApiRunService:
             "# Criteres de reussite\n" + "\n".join(f"- {item}" for item in context_pack.acceptance_criteria),
             "# Etat du repo\n" + json.dumps(context_pack.repo_state, ensure_ascii=True, indent=2, sort_keys=True),
             "# Faits runtime\n" + json.dumps(context_pack.runtime_facts, ensure_ascii=True, indent=2, sort_keys=True),
-            "# Contrat de sortie\n" + "\n".join(f"- {item}" for item in template_config["output_contract"]),
-            "# Regles de mode\n" + "\n".join(f"- {item}" for item in template_config.get("instructions", [])),
-            "# Sources de contexte",
         ]
+        learning_section = self._render_learning_context_section(
+            context_pack.runtime_facts.get("learning_context", {})
+        )
+        if learning_section:
+            sections.append(learning_section)
+        sections.extend(
+            [
+                "# Contrat de sortie\n" + "\n".join(f"- {item}" for item in template_config["output_contract"]),
+                "# Regles de mode\n" + "\n".join(f"- {item}" for item in template_config.get("instructions", [])),
+                "# Sources de contexte",
+            ]
+        )
         for source in context_pack.source_refs:
             sections.append(
                 "\n".join(
@@ -2886,6 +3760,39 @@ class ApiRunService:
             "et n'invente pas une implementation finale."
         )
         return "\n\n".join(sections)
+
+    def _render_learning_context_section(self, learning_context: dict[str, Any]) -> str | None:
+        if not any(
+            learning_context.get(key)
+            for key in ("decisions", "high_severity_signals", "detected_loops", "refresh_recommendations")
+        ):
+            return None
+        lines = ["## Learning Context (lessons from recent runs)"]
+        if learning_context.get("summary"):
+            lines.append(str(learning_context["summary"]))
+        if learning_context.get("detected_loops"):
+            lines.append("")
+            lines.append("DETECTED LOOPS (do NOT repeat these patterns):")
+            for loop in learning_context["detected_loops"]:
+                lines.append(f"  - Pattern: {loop['pattern']}")
+                lines.append(f"    Reset: {loop['recommended_reset']}")
+        if learning_context.get("high_severity_signals"):
+            lines.append("")
+            lines.append("High-severity signals from recent runs:")
+            for signal in learning_context["high_severity_signals"]:
+                lines.append(f"  - [{signal['kind']}] {signal['summary']}")
+        if learning_context.get("decisions"):
+            lines.append("")
+            lines.append("Recent confirmed decisions:")
+            for decision in learning_context["decisions"]:
+                lines.append(f"  - [{decision['status']}] {decision['scope']}: {decision['summary']}")
+        if learning_context.get("refresh_recommendations"):
+            lines.append("")
+            lines.append("Refresh recommendations:")
+            for recommendation in learning_context["refresh_recommendations"]:
+                lines.append(f"  - Cause: {recommendation['cause']}")
+                lines.append(f"    Next step: {recommendation['next_step']}")
+        return "\n".join(lines)
 
     def _output_schema(self) -> dict[str, Any]:
         array_of_strings = {"type": "array", "items": {"type": "string"}}

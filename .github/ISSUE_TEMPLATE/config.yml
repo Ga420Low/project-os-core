@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Project OS Discussion
+    url: https://github.com/Ga420Low/project-os-core/discussions
+    about: Use discussions for open-ended strategy or product questions instead of tracking issues.

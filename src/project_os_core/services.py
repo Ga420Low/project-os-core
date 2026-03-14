@@ -6,18 +6,22 @@ from .api_runs.service import ApiRunService
 from .config import RuntimeConfig, load_runtime_config
 from .database import CanonicalDatabase
 from .gateway.openclaw_live import OpenClawLiveService
+from .github.service import GitHubLearningService
 from .embedding import EmbeddingStrategy, choose_embedding_strategy
 from .gateway.service import GatewayService
 from .learning.service import LearningService
 from .memory.store import MemoryStore
 from .memory.tiering import TierManagerService
+from .mission.chain import MissionChainService
 from .observability import StructuredLogger
 from .orchestration.graph import CanonicalMissionGraph
 from .paths import PathPolicy, ProjectPaths, build_project_paths, ensure_project_roots
 from .router.service import MissionRouter
+from .scheduler.service import SchedulerService
 from .runtime.journal import LocalJournal
 from .runtime.store import RuntimeStore
 from .secrets import SecretResolver
+from .session.state import PersistentSessionState
 
 
 @dataclass(slots=True)
@@ -32,12 +36,16 @@ class AppServices:
     memory: MemoryStore
     tier_manager: TierManagerService
     learning: LearningService
+    github: GitHubLearningService
     runtime: RuntimeStore
     router: MissionRouter
+    session_state: PersistentSessionState
     gateway: GatewayService
     openclaw: OpenClawLiveService
     orchestration: CanonicalMissionGraph
     api_runs: ApiRunService
+    chain: MissionChainService
+    scheduler: SchedulerService
     logger: StructuredLogger
 
     def close(self) -> None:
@@ -71,6 +79,14 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         journal=journal,
         memory=memory,
     )
+    github = GitHubLearningService(
+        config=config.github_config,
+        database=database,
+        learning=learning,
+        journal=journal,
+        logger=logger,
+        repo_root=config.repo_root,
+    )
     runtime = RuntimeStore(database, paths, path_policy, journal)
     router = MissionRouter(
         database=database,
@@ -79,11 +95,31 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         secret_resolver=secret_resolver,
         execution_policy=config.execution_policy,
     )
+    api_runs = ApiRunService(
+        database=database,
+        journal=journal,
+        paths=paths,
+        path_policy=path_policy,
+        secret_resolver=secret_resolver,
+        logger=logger,
+        execution_policy=config.execution_policy,
+        dashboard_config=config.api_dashboard_config,
+        learning=learning,
+    )
+    chain = MissionChainService(database=database, api_runs=api_runs, journal=journal)
+    scheduler = SchedulerService(
+        database=database,
+        journal=journal,
+        logger=logger,
+        github_config=config.github_config,
+    )
+    session_state = PersistentSessionState(database=database, api_runs=api_runs)
     gateway = GatewayService(
         database=database,
         journal=journal,
         router=router,
         memory=memory,
+        session_state=session_state,
     )
     openclaw = OpenClawLiveService(
         config=config,
@@ -97,17 +133,6 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         database=database,
         journal=journal,
     )
-    api_runs = ApiRunService(
-        database=database,
-        journal=journal,
-        paths=paths,
-        path_policy=path_policy,
-        secret_resolver=secret_resolver,
-        logger=logger,
-        execution_policy=config.execution_policy,
-        dashboard_config=config.api_dashboard_config,
-        learning=learning,
-    )
     return AppServices(
         config=config,
         paths=paths,
@@ -119,11 +144,15 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         memory=memory,
         tier_manager=tier_manager,
         learning=learning,
+        github=github,
         runtime=runtime,
         router=router,
+        session_state=session_state,
         gateway=gateway,
         openclaw=openclaw,
         orchestration=orchestration,
         api_runs=api_runs,
+        chain=chain,
+        scheduler=scheduler,
         logger=logger,
     )

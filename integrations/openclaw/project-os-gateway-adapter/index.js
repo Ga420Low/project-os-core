@@ -3,6 +3,12 @@ const DEFAULT_PYTHON_COMMAND = process.platform === "win32" ? "py" : "python3";
 const DEFAULT_CHANNELS = new Set(["discord", "webchat"]);
 const DEFAULT_OPERATOR_POLLING_INTERVAL_MS = 8000;
 
+function detachTimer(handle) {
+  if (handle && typeof handle.unref === "function") {
+    handle.unref();
+  }
+}
+
 function resolveConfig(api) {
   const raw = api.pluginConfig && typeof api.pluginConfig === "object" ? api.pluginConfig : {};
   const projectOsRepoRoot =
@@ -59,6 +65,7 @@ function resolveConfig(api) {
     raw.operatorPollingIntervalMs > 0
       ? Math.floor(raw.operatorPollingIntervalMs)
       : DEFAULT_OPERATOR_POLLING_INTERVAL_MS;
+  const enablePolling = raw.enablePolling !== false;
   return {
     projectOsRepoRoot,
     configPath,
@@ -73,6 +80,7 @@ function resolveConfig(api) {
     discordAccountId,
     operatorTargets,
     operatorPollingIntervalMs,
+    enablePolling,
   };
 }
 
@@ -282,12 +290,51 @@ function startOperatorDeliveryPolling(api) {
     api.logger.info("[project-os-gateway-adapter] operator delivery polling disabled (missing discordAccountId/operatorTargets)");
     return;
   }
-  setTimeout(() => {
+  const initialTick = setTimeout(() => {
     void tick();
   }, 1500);
-  setInterval(() => {
+  const recurringTick = setInterval(() => {
     void tick();
   }, config.operatorPollingIntervalMs);
+  if (!api._projectOsIntervals) {
+    api._projectOsIntervals = [];
+  }
+  api._projectOsIntervals.push(initialTick, recurringTick);
+  detachTimer(initialTick);
+  detachTimer(recurringTick);
+}
+
+function startSchedulerPolling(api) {
+  let busy = false;
+  const tick = async () => {
+    if (busy) {
+      return;
+    }
+    busy = true;
+    try {
+      const config = resolveConfig(api);
+      const { result } = await runProjectOsJsonCommand(api, config, ["scheduler", "tick"], undefined);
+      if (result.code !== 0) {
+        api.logger.warn(`[project-os-gateway-adapter] scheduler tick failed: ${result.stderr || "no stderr"}`);
+      }
+    } catch (error) {
+      api.logger.warn(`[project-os-gateway-adapter] scheduler tick error: ${String(error)}`);
+    } finally {
+      busy = false;
+    }
+  };
+  const initialTick = setTimeout(() => {
+    void tick();
+  }, 2500);
+  const recurringTick = setInterval(() => {
+    void tick();
+  }, 60000);
+  if (!api._projectOsIntervals) {
+    api._projectOsIntervals = [];
+  }
+  api._projectOsIntervals.push(initialTick, recurringTick);
+  detachTimer(initialTick);
+  detachTimer(recurringTick);
 }
 
 const plugin = {
@@ -295,15 +342,21 @@ const plugin = {
   name: "Project OS Gateway Adapter",
   description: "Forward operator channel events from OpenClaw into Project OS",
   register(api) {
-    startOperatorDeliveryPolling(api);
+    const config = resolveConfig(api);
+    if (config.enablePolling) {
+      startOperatorDeliveryPolling(api);
+      startSchedulerPolling(api);
+    } else {
+      api.logger.info("[project-os-gateway-adapter] polling disabled (enablePolling=false)");
+    }
     api.registerHook("message_received", async (event, ctx) => {
-      const config = resolveConfig(api);
-      if (!config.enabledChannels.has(String(ctx.channelId || "").toLowerCase())) {
+      const runtimeConfig = resolveConfig(api);
+      if (!runtimeConfig.enabledChannels.has(String(ctx.channelId || "").toLowerCase())) {
         return;
       }
-      const payload = buildPayload(event, ctx, config);
+      const payload = buildPayload(event, ctx, runtimeConfig);
       try {
-        const { result, parsed } = await dispatchToProjectOs(api, payload, config);
+        const { result, parsed } = await dispatchToProjectOs(api, payload, runtimeConfig);
         if (result.code !== 0 && !parsed) {
           api.logger.warn(
             `[project-os-gateway-adapter] Project OS dispatch failed with code ${String(result.code)}: ${result.stderr || "no stderr"}`
@@ -316,7 +369,7 @@ const plugin = {
         api.logger.info(
           `[project-os-gateway-adapter] forwarded ${ctx.channelId}:${ctx.conversationId || "no-conversation"} to Project OS`
         );
-        if (config.sendAckReplies && String(ctx.channelId).toLowerCase() === "discord") {
+        if (runtimeConfig.sendAckReplies && String(ctx.channelId).toLowerCase() === "discord") {
           await maybeSendDiscordAck(api, event, ctx, parsed);
         }
       } catch (error) {

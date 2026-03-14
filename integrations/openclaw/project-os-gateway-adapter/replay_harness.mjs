@@ -96,6 +96,7 @@ async function main() {
     defaultRiskClass: fixture.pluginConfig?.defaultRiskClass,
     enabledChannels: fixture.pluginConfig?.enabledChannels || ["discord", "webchat"],
     sendAckReplies: fixture.pluginConfig?.sendAckReplies === true,
+    enablePolling: fixture.pluginConfig?.enablePolling === true,
     timeoutMs: Number(args["timeout-ms"] || 45000),
   };
 

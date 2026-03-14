@@ -7,7 +7,11 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-CURRENT_SCHEMA_VERSION = "8"
+CURRENT_SCHEMA_VERSION = "11"
+
+
+def _quote_identifier(name: str) -> str:
+    return '"' + name.replace('"', '""') + '"'
 
 
 class CanonicalDatabase:
@@ -164,10 +168,44 @@ class CanonicalDatabase:
                     intent_id TEXT NOT NULL,
                     objective TEXT NOT NULL,
                     profile_name TEXT,
+                    parent_mission_id TEXT,
+                    step_index INTEGER NOT NULL DEFAULT 0,
+                    total_steps INTEGER NOT NULL DEFAULT 1,
                     status TEXT NOT NULL,
                     execution_class TEXT,
                     routing_decision_id TEXT,
                     metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS mission_chains (
+                    chain_id TEXT PRIMARY KEY,
+                    objective TEXT NOT NULL,
+                    steps_json TEXT NOT NULL,
+                    current_step_index INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'running',
+                    total_cost_eur REAL NOT NULL DEFAULT 0.0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    schedule_kind TEXT NOT NULL,
+                    interval_seconds INTEGER,
+                    daily_at_hour INTEGER,
+                    daily_at_minute INTEGER,
+                    command TEXT NOT NULL,
+                    command_args_json TEXT NOT NULL DEFAULT '{}',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    last_run_at TEXT,
+                    next_run_at TEXT,
+                    last_status TEXT,
+                    last_error TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -268,6 +306,19 @@ class CanonicalDatabase:
                     promoted_memory_ids_json TEXT NOT NULL,
                     reply_json TEXT NOT NULL,
                     metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS session_snapshots (
+                    snapshot_id TEXT PRIMARY KEY,
+                    active_runs_json TEXT NOT NULL DEFAULT '[]',
+                    pending_clarifications_json TEXT NOT NULL DEFAULT '[]',
+                    pending_contracts_json TEXT NOT NULL DEFAULT '[]',
+                    pending_approvals_json TEXT NOT NULL DEFAULT '[]',
+                    pending_deliveries INTEGER NOT NULL DEFAULT 0,
+                    daily_spend_eur REAL NOT NULL DEFAULT 0.0,
+                    active_missions_json TEXT NOT NULL DEFAULT '[]',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL
                 );
 
@@ -393,6 +444,8 @@ class CanonicalDatabase:
                     objective TEXT NOT NULL,
                     branch_name TEXT NOT NULL,
                     target_profile TEXT,
+                    mission_chain_id TEXT,
+                    mission_step_index INTEGER,
                     skill_tags_json TEXT NOT NULL,
                     expected_outputs_json TEXT NOT NULL,
                     coding_lane TEXT NOT NULL,
@@ -617,6 +670,22 @@ class CanonicalDatabase:
                     metadata_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS github_issue_ingestions (
+                    repo TEXT NOT NULL,
+                    issue_number INTEGER NOT NULL,
+                    issue_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    labels_json TEXT NOT NULL DEFAULT '[]',
+                    payload_sha256 TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    closed_at TEXT,
+                    ingested_at TEXT NOT NULL,
+                    learning_refs_json TEXT NOT NULL DEFAULT '[]',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    PRIMARY KEY (repo, issue_number)
+                );
                 """
             )
 
@@ -625,12 +694,17 @@ class CanonicalDatabase:
                 ("action_evidences", "failure_reason TEXT"),
                 ("action_evidences", "policy_verdict TEXT"),
                 ("action_evidences", "artifact_count INTEGER NOT NULL DEFAULT 0"),
+                ("mission_runs", "parent_mission_id TEXT"),
+                ("mission_runs", "step_index INTEGER NOT NULL DEFAULT 0"),
+                ("mission_runs", "total_steps INTEGER NOT NULL DEFAULT 1"),
                 ("api_run_requests", "communication_mode TEXT"),
                 ("api_run_requests", "speech_policy TEXT"),
                 ("api_run_requests", "operator_language TEXT"),
                 ("api_run_requests", "audience TEXT"),
                 ("api_run_requests", "run_contract_required INTEGER"),
                 ("api_run_requests", "contract_id TEXT"),
+                ("api_run_requests", "mission_chain_id TEXT"),
+                ("api_run_requests", "mission_step_index INTEGER"),
                 ("api_run_contracts", "founder_decision_at TEXT"),
                 ("api_run_operator_deliveries", "next_attempt_at TEXT"),
             ):
@@ -665,6 +739,14 @@ class CanonicalDatabase:
                 ON memory_records(openmemory_id);
             CREATE INDEX IF NOT EXISTS idx_mission_runs_intent
                 ON mission_runs(intent_id);
+            CREATE INDEX IF NOT EXISTS idx_mission_runs_parent_step
+                ON mission_runs(parent_mission_id, step_index, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_mission_chains_status_updated
+                ON mission_chains(status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_name_enabled
+                ON scheduled_tasks(name, enabled);
+            CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_next_run
+                ON scheduled_tasks(enabled, next_run_at ASC);
             CREATE INDEX IF NOT EXISTS idx_routing_decisions_intent
                 ON routing_decisions(intent_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_channel_events_channel_created
@@ -675,6 +757,8 @@ class CanonicalDatabase:
                 ON promotion_decisions(candidate_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_gateway_dispatch_event
                 ON gateway_dispatch_results(channel_event_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_session_snapshots_created
+                ON session_snapshots(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_graph_states_mission
                 ON graph_states(mission_run_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_role_handoffs_mission
@@ -685,6 +769,8 @@ class CanonicalDatabase:
                 ON context_packs(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_api_run_requests_branch_status
                 ON api_run_requests(branch_name, status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_api_run_requests_chain_step
+                ON api_run_requests(mission_chain_id, mission_step_index, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_api_run_requests_contract
                 ON api_run_requests(contract_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_api_run_results_request_created
@@ -725,6 +811,10 @@ class CanonicalDatabase:
                 ON dataset_candidates(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_eval_candidates_created
                 ON eval_candidates(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_github_issue_ingestions_ingested
+                ON github_issue_ingestions(ingested_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_github_issue_ingestions_updated
+                ON github_issue_ingestions(updated_at DESC);
             """
         )
 
@@ -787,6 +877,51 @@ class CanonicalDatabase:
     ) -> list[sqlite3.Row]:
         return (connection or self.connection).execute(sql, params).fetchall()
 
+    def upsert(
+        self,
+        table: str,
+        values: dict[str, Any],
+        *,
+        conflict_columns: str | list[str] | tuple[str, ...],
+        immutable_columns: list[str] | tuple[str, ...] = (),
+        update_columns: list[str] | tuple[str, ...] | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> sqlite3.Cursor:
+        if isinstance(conflict_columns, str):
+            conflict_names = [conflict_columns]
+        else:
+            conflict_names = list(conflict_columns)
+        if not conflict_names:
+            raise ValueError("conflict_columns must not be empty")
+
+        column_names = list(values.keys())
+        if not column_names:
+            raise ValueError("values must not be empty")
+
+        if update_columns is None:
+            blocked = set(conflict_names) | set(immutable_columns)
+            update_names = [name for name in column_names if name not in blocked]
+        else:
+            update_names = list(update_columns)
+
+        columns_sql = ", ".join(_quote_identifier(name) for name in column_names)
+        placeholders = ", ".join("?" for _ in column_names)
+        conflict_sql = ", ".join(_quote_identifier(name) for name in conflict_names)
+        sql = (
+            f"INSERT INTO {_quote_identifier(table)} ({columns_sql}) "
+            f"VALUES ({placeholders}) "
+        )
+        if update_names:
+            assignments = ", ".join(
+                f"{_quote_identifier(name)} = excluded.{_quote_identifier(name)}"
+                for name in update_names
+            )
+            sql += f"ON CONFLICT({conflict_sql}) DO UPDATE SET {assignments}"
+        else:
+            sql += f"ON CONFLICT({conflict_sql}) DO NOTHING"
+        params = tuple(values[name] for name in column_names)
+        return self.execute(sql, params, connection=connection)
+
     def next_vector_rowid(self, connection: sqlite3.Connection | None = None) -> int:
         row = (connection or self.connection).execute(
             "SELECT COALESCE(MAX(vector_rowid), 0) + 1 AS next_id FROM memory_embedding_map"
@@ -812,9 +947,11 @@ class CanonicalDatabase:
             target.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (rowid,))
         else:
             rowid = self.next_vector_rowid(connection=target)
-            target.execute(
-                "INSERT OR REPLACE INTO memory_embedding_map(memory_id, vector_rowid) VALUES (?, ?)",
-                (memory_id, rowid),
+            self.upsert(
+                "memory_embedding_map",
+                {"memory_id": memory_id, "vector_rowid": rowid},
+                conflict_columns="memory_id",
+                connection=target,
             )
         target.execute(
             "INSERT INTO memory_embeddings(rowid, embedding) VALUES (?, ?)",
@@ -859,13 +996,12 @@ class CanonicalDatabase:
         return str(row["value"]) if row else None
 
     def set_meta(self, key: str, value: str, connection: sqlite3.Connection | None = None) -> None:
-        target = connection or self.connection
-        target.execute(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES (?, ?)",
-            (key, value),
+        self.upsert(
+            "meta",
+            {"key": key, "value": value},
+            conflict_columns="key",
+            connection=connection,
         )
-        if connection is None:
-            self.connection.commit()
 
 
 def dump_json(payload: Any) -> str:

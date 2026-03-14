@@ -1,0 +1,34 @@
+name: Bug Report
+description: Report a production or workflow bug with the same learning-ready structure.
+title: "[BUG] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: "Use this for runtime, workflow, or product bugs that need a durable fix."
+  - type: textarea
+    id: structured_body
+    attributes:
+      label: Structured body
+      description: Keep the reserved headings. Fill every section or use N/A when truly not applicable.
+      value: |
+        ## Description
+
+        ## Impact
+
+        ## Root Cause
+
+        ## Resolution
+
+        ## Regression Coverage
+
+        ## Durable Lesson
+
+        ## Reusable Pattern
+
+        ## Repeated Pattern
+
+        ## Eval Scenario
+    validations:
+      required: true

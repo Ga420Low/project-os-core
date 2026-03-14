@@ -8,8 +8,36 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from project_os_core.models import ApiRunMode, ApiRunReviewVerdict
+from project_os_core.models import ApiRunMode, ApiRunReview, ApiRunReviewVerdict, new_id
 from project_os_core.services import build_app_services
+
+
+def _install_stub_reviewer(services):
+    def _stub(result, context_pack):
+        review = ApiRunReview(
+            review_id=new_id("run_review"),
+            run_id=result.run_id,
+            verdict=ApiRunReviewVerdict.ACCEPTED,
+            reviewer="claude-sonnet-4-20250514",
+            findings=[],
+            followup_actions=["Proceed to founder decision."],
+            metadata={
+                "type": "review_result",
+                "source": "test_stub",
+                "summary": "Claude review accepted the run.",
+                "recommendation": "Proceed to founder decision.",
+                "issues_found": 0,
+                "critical": 0,
+                "high": 0,
+                "usage": {"input_tokens": 120, "output_tokens": 40},
+                "estimated_cost_eur": 0.0012,
+                "context_pack_id": context_pack.context_pack_id,
+            },
+        )
+        services.api_runs._store_run_review(review)
+        return review
+
+    services.api_runs._call_reviewer = _stub
 
 
 def _build_services(tmp_path: Path):
@@ -56,6 +84,8 @@ def _build_services(tmp_path: Path):
 
     services = build_app_services(config_path=str(config_path), policy_path=str(policy_path))
     services.secret_resolver.write_local_fallback("OPENAI_API_KEY", "sk-test-secret")
+    services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "anthropic-test-secret")
+    _install_stub_reviewer(services)
     return services
 
 
@@ -103,13 +133,8 @@ class ApiRunContractTests(unittest.TestCase):
                         "usage": {"input_tokens": 1400, "output_tokens": 700},
                     },
                 )
-                review = services.api_runs.review_result(
-                    run_id=payload["result"].run_id,
-                    verdict=ApiRunReviewVerdict.ACCEPTED,
-                    reviewer="codex",
-                    findings=[],
-                )
-                self.assertEqual(review.verdict.value, "accepted")
+                self.assertEqual(payload["review"].verdict.value, "accepted")
+                self.assertIsNotNone(payload["completion_report"])
                 completion_rows = services.database.fetchall("SELECT * FROM completion_reports")
                 self.assertEqual(len(completion_rows), 1)
                 event_rows = services.database.fetchall("SELECT * FROM api_run_events WHERE run_id = ?", (payload["result"].run_id,))

@@ -141,112 +141,97 @@ class CanonicalMissionGraph:
         return handoffs
 
     def _persist_graph_state(self, graph_state: GraphState) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO graph_states(
-                graph_state_id, mission_run_id, objective, active_role, status, role_sequence_json,
-                payload_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                graph_state.graph_state_id,
-                graph_state.mission_run_id,
-                graph_state.objective,
-                graph_state.active_role.value,
-                graph_state.status,
-                dump_json(graph_state.role_sequence),
-                dump_json(graph_state.metadata),
-                graph_state.created_at,
-            ),
+        self.database.upsert(
+            "graph_states",
+            {
+                "graph_state_id": graph_state.graph_state_id,
+                "mission_run_id": graph_state.mission_run_id,
+                "objective": graph_state.objective,
+                "active_role": graph_state.active_role.value,
+                "status": graph_state.status,
+                "role_sequence_json": dump_json(graph_state.role_sequence),
+                "payload_json": dump_json(graph_state.metadata),
+                "created_at": graph_state.created_at,
+            },
+            conflict_columns="graph_state_id",
+            immutable_columns=["created_at"],
         )
 
     def _persist_handoff(self, handoff: RoleHandoff) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO role_handoffs(
-                handoff_id, mission_run_id, from_role, to_role, reason, payload_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                handoff.handoff_id,
-                handoff.mission_run_id,
-                handoff.from_role.value if handoff.from_role else None,
-                handoff.to_role.value,
-                handoff.reason,
-                dump_json(handoff.payload),
-                handoff.created_at,
-            ),
+        self.database.upsert(
+            "role_handoffs",
+            {
+                "handoff_id": handoff.handoff_id,
+                "mission_run_id": handoff.mission_run_id,
+                "from_role": handoff.from_role.value if handoff.from_role else None,
+                "to_role": handoff.to_role.value,
+                "reason": handoff.reason,
+                "payload_json": dump_json(handoff.payload),
+                "created_at": handoff.created_at,
+            },
+            conflict_columns="handoff_id",
+            immutable_columns=["created_at"],
         )
 
     def _persist_checkpoint(self, checkpoint: ExecutionCheckpoint) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO execution_checkpoints(
-                execution_checkpoint_id, mission_run_id, role, label, payload_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                checkpoint.execution_checkpoint_id,
-                checkpoint.mission_run_id,
-                checkpoint.role.value,
-                checkpoint.label,
-                dump_json(checkpoint.payload),
-                checkpoint.created_at,
-            ),
+        self.database.upsert(
+            "execution_checkpoints",
+            {
+                "execution_checkpoint_id": checkpoint.execution_checkpoint_id,
+                "mission_run_id": checkpoint.mission_run_id,
+                "role": checkpoint.role.value,
+                "label": checkpoint.label,
+                "payload_json": dump_json(checkpoint.payload),
+                "created_at": checkpoint.created_at,
+            },
+            conflict_columns="execution_checkpoint_id",
+            immutable_columns=["created_at"],
         )
 
     def _persist_assignment(self, assignment: RoutingAssignment) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO routing_assignments(
-                assignment_id, mission_run_id, decision_id, worker_kind, execution_class,
-                model_route_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                assignment.assignment_id,
-                assignment.mission_run_id,
-                assignment.decision_id,
-                assignment.worker_kind,
-                assignment.execution_class.value,
-                dump_json(to_jsonable(assignment.model_route)),
-                assignment.created_at,
-            ),
+        self.database.upsert(
+            "routing_assignments",
+            {
+                "assignment_id": assignment.assignment_id,
+                "mission_run_id": assignment.mission_run_id,
+                "decision_id": assignment.decision_id,
+                "worker_kind": assignment.worker_kind,
+                "execution_class": assignment.execution_class.value,
+                "model_route_json": dump_json(to_jsonable(assignment.model_route)),
+                "created_at": assignment.created_at,
+            },
+            conflict_columns="assignment_id",
+            immutable_columns=["created_at"],
         )
 
     def _persist_ticket(self, ticket: ExecutionTicket) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO execution_tickets(
-                ticket_id, mission_run_id, assignment_id, worker_kind, action_name,
-                payload_json, policy_verdict, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                ticket.ticket_id,
-                ticket.mission_run_id,
-                ticket.assignment_id,
-                ticket.worker_kind,
-                ticket.action_name,
-                dump_json(ticket.payload),
-                ticket.policy_verdict,
-                ticket.status,
-                ticket.created_at,
-            ),
+        self.database.upsert(
+            "execution_tickets",
+            {
+                "ticket_id": ticket.ticket_id,
+                "mission_run_id": ticket.mission_run_id,
+                "assignment_id": ticket.assignment_id,
+                "worker_kind": ticket.worker_kind,
+                "action_name": ticket.action_name,
+                "payload_json": dump_json(ticket.payload),
+                "policy_verdict": ticket.policy_verdict,
+                "status": ticket.status,
+                "created_at": ticket.created_at,
+            },
+            conflict_columns="ticket_id",
+            immutable_columns=["created_at"],
         )
 
     def _persist_dispatch(self, envelope: WorkerDispatchEnvelope) -> None:
-        self.database.execute(
-            """
-            INSERT OR REPLACE INTO worker_dispatch_envelopes(
-                dispatch_id, ticket_id, worker_request_json, payload_json, created_at
-            ) VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                envelope.dispatch_id,
-                envelope.ticket.ticket_id,
-                dump_json(to_jsonable(envelope.worker_request)),
-                dump_json(envelope.metadata),
-                envelope.created_at,
-            ),
+        self.database.upsert(
+            "worker_dispatch_envelopes",
+            {
+                "dispatch_id": envelope.dispatch_id,
+                "ticket_id": envelope.ticket.ticket_id,
+                "worker_request_json": dump_json(to_jsonable(envelope.worker_request)),
+                "payload_json": dump_json(envelope.metadata),
+                "created_at": envelope.created_at,
+            },
+            conflict_columns="dispatch_id",
+            immutable_columns=["created_at"],
         )

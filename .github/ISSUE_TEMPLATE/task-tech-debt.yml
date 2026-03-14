@@ -1,0 +1,34 @@
+name: Task / Tech Debt
+description: Track technical debt or infrastructure work with explicit resolution learning.
+title: "[TASK] "
+labels:
+  - task
+body:
+  - type: markdown
+    attributes:
+      value: "Use this for debt reduction, migration work, or engineering-quality improvements."
+  - type: textarea
+    id: structured_body
+    attributes:
+      label: Structured body
+      description: Keep the reserved headings. Fill every section or use N/A when truly not applicable.
+      value: |
+        ## Description
+
+        ## Impact
+
+        ## Root Cause
+
+        ## Resolution
+
+        ## Regression Coverage
+
+        ## Durable Lesson
+
+        ## Reusable Pattern
+
+        ## Repeated Pattern
+
+        ## Eval Scenario
+    validations:
+      required: true
