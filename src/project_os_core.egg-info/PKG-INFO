@@ -52,7 +52,7 @@ Le workflow officiel repose sur un duo de modeles complementaires (ADR 0013):
 - `GPT API` (gpt-5.4, 1M contexte) = Le Cerveau / Le Dev (code, planifie, brainstorme)
 - `Claude API` (opus/sonnet, 1M contexte) = L'Auditeur / Le Traducteur (review cross-model, traduit pour l'humain, filtre le bruit)
 - `Project OS` runtime = verite machine, memoire canonique, tests et evidence
-- `Codex` (l'app) = outil de conversation directe avec le fondateur, hors pipeline autonome
+- `Discord` = surface operateur prioritaire ; terminal + dashboard = supervision locale et preuve
 
 Regles:
 
@@ -272,7 +272,7 @@ Les branches majeures sont:
 - `OpenClaw`: shell operateur, Discord, inbox, acces distant
 - `LangGraph`: orchestration durable
 - `OpenMemory`: logique de memoire long terme locale
-- `OpenAI API`: cerveau generaliste (GPT API, le dev)
+- `GPT API`: cerveau generaliste (lane code et planification)
 - `Claude API` (Anthropic): auditeur cross-model et traducteur operateur
 - `UFO` style worker: execution Windows
 - `Stagehand`: execution web
@@ -349,7 +349,7 @@ Base minimale:
 - `OPS`
 
 Ces skills de run servent a borner le mega prompt.
-Ils ne remplacent pas les skills locaux Codex.
+Ils ne remplacent pas les skills locaux de l'agent.
 
 ## Etat operationnel actuel
 
@@ -483,7 +483,7 @@ Cela impose:
 - des overlays de canal sans changer la personnalite
 - une memoire partagee
 - un handoff explicite entre GPT API, Claude API et Discord
-- `Codex` (l'app) reste disponible pour la conversation directe mais n'est pas dans le pipeline
+- une supervision locale via terminal + dashboard reste disponible pour l'inspection et la preuve
 
 References:
 
@@ -499,7 +499,7 @@ Le systeme doit y rester:
 - compact
 - operateur
 - rigoureux
-- coherent avec `Codex`
+- coherent avec l'identite agent
 
 `Discord` n'est jamais:
 
@@ -566,7 +566,7 @@ La politique modele retenue est:
 
 Pour le canal `Discord`, la policy adaptative est:
 
-- banal / check rapide / accuse de reception -> `gpt-5.4` avec `reasoning.effort=medium` si un LLM est necessaire
+- banal / check rapide / accuse de reception -> `Claude API` si un LLM est necessaire
 - operateur standard -> `gpt-5.4 high`
 - complexe / critique / ambigu -> `gpt-5.4 xhigh`
 - exceptionnel -> `gpt-5.4-pro` seulement avec approval explicite

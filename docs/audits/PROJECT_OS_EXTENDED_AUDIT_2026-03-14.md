@@ -1,5 +1,7 @@
 # Project OS Extended Audit - 2026-03-14
 
+Historical note: this audit captures the repository state before lot 1 identity cleanup. References to `Codex` below are preserved intentionally as audit evidence.
+
 ## Scope
 
 This audit covers:
@@ -126,12 +128,12 @@ Local evidence:
 - `README.md:10` says `Codex`, `OpenAI API`, `Discord`, and later `WebChat` are surfaces of the same agent
 - `README.md:30-31` still says the human talks in `Codex` or `Discord`, then `Codex` prepares and launches
 - `AGENTS.md:42-43` still keeps `Codex` as the direct conversation app
-- `AGENTS.md:365` still requires work on `codex/*`
+- `AGENTS.md:365` still requires work on `project-os/*`
 - `docs/decisions/0013-dual-model-operating-model.md:12-17` still defines `Codex` as a named operating component
 - `docs/decisions/0013-dual-model-operating-model.md:53-58` still reserves a dedicated product lane for `Codex`
-- `docs/decisions/0011-api-lead-agent-v1.md:38` still says large runs must target `codex/*`
-- `src/project_os_core/api_runs/service.py:3655-3656` hard-rejects non-`codex/*` branches
-- `src/project_os_core/api_runs/service.py:3848` and `:3862` still hardcode `codex/*` and `Codex review`
+- `docs/decisions/0011-api-lead-agent-v1.md:38` still says large runs must target `project-os/*`
+- `src/project_os_core/api_runs/service.py:3655-3656` hard-rejects non-`project-os/*` branches
+- `src/project_os_core/api_runs/service.py:3848` and `:3862` still hardcode `project-os/*` and `Codex review`
 
 Impact:
 
@@ -489,7 +491,7 @@ Anthropic's MCP and security documentation reinforce the same direction as brick
 Scope:
 
 - remove Codex as an active product lane from docs, prompts, ADR examples, and run messages
-- replace `codex/*` branch enforcement with a neutral convention
+- replace `project-os/*` branch enforcement with a neutral convention
 - align `README`, `AGENTS`, ADRs, prompts, and runtime messages with:
   - `Claude API` for Discord discussion and translation
   - `GPT API` for code-heavy runs

@@ -7,7 +7,7 @@ Pour la vue globale machine et workflow humain, commencer par [../README.md](../
 Le point important pour un humain comme pour une IA qui arrive sur le projet est simple:
 
 - il n'y a qu'un seul agent systeme
-- `Codex`, les runs `OpenAI API`, `Discord` et plus tard `WebChat` sont des surfaces du meme agent
+- la discussion operateur passe par `Discord`, les gros runs de code par `GPT API`, et la revue/traduction humaine par `Claude API`
 - le runtime local est la verite machine
 - les fichiers runtime sont des preuves, pas l'interface humaine
 
@@ -20,6 +20,7 @@ Si tu arrives sur le projet:
 3. si tu travailles sur les gros runs API, lis [API_LEAD_AGENT_V1.md](./docs/integrations/API_LEAD_AGENT_V1.md)
 4. si tu travailles sur la surface humaine, lis [DISCORD_OPERATING_MODEL.md](./docs/integrations/DISCORD_OPERATING_MODEL.md)
 5. si tu travailles sur la communication de run, lis [RUN_COMMUNICATION_POLICY.md](./docs/architecture/RUN_COMMUNICATION_POLICY.md)
+6. si tu travailles sur un arbitrage important, une review avant codage ou une deliberation multi-angles, lis [docs/analysis-angles/README.md](./docs/analysis-angles/README.md) puis [DISCORD_MEETING_SYSTEM_V1.md](./docs/integrations/DISCORD_MEETING_SYSTEM_V1.md)
 
 ## Ce que le systeme doit faire pour un humain
 
@@ -27,9 +28,9 @@ Un humain ne doit pas etre force de lire des JSON dans `runtime/` pour comprendr
 
 Le workflow humain cible est:
 
-1. l'humain parle dans `Codex` ou `Discord`
-2. `Codex` cadre, prepare et lance si necessaire
-3. le gros run API travaille en silence pendant l'execution
+1. l'humain parle surtout dans `Discord`
+2. `Claude API` filtre, traduit et remet les arbitrages humains dans le pipeline
+3. `GPT API` cadre, prepare et lance si necessaire
 4. l'etat visible remonte dans une surface humaine
 5. les fichiers runtime restent consultables comme preuves
 
@@ -62,11 +63,11 @@ Ils ne doivent pas etre le point d'entree principal d'un operateur.
 1. contrat court comprehensible
 2. validation humaine
 3. execution silencieuse
-4. signal humain au minimum sur:
-   - demarrage
+4. preuve visible pendant le run via dashboard local, terminal live, ou carte compacte deja ouverte
+5. signal humain au minimum sur:
    - `clarification_required`
    - fin de run
-5. revue et integration
+6. revue et integration
 
 Si un run a besoin d'une clarification:
 
@@ -88,4 +89,12 @@ La bonne cible est:
 - interface humaine simple
 - arbitrages visibles dans `Discord`
 
-Aujourd'hui, si un run API travaille mais ne remonte pas clairement son demarrage, son blocage ou son verdict dans une vraie surface humaine, le workflow est considere incomplet.
+Quand un sujet depasse la simple reponse ou la simple execution, le systeme peut ouvrir une deliberation structuree:
+
+- angles d'analyse bornes
+- contradictions ciblees
+- synthese arbitree
+- `Discord` comme surface lisible
+- runtime local comme trace canonique
+
+Aujourd'hui, si un run API travaille sans preuve visible locale, ou sans remonter clairement son blocage ou son verdict dans une vraie surface humaine, le workflow est considere incomplet.

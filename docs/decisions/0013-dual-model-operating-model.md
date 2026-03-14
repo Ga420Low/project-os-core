@@ -2,19 +2,19 @@
 
 ## Statut
 
-DECISION CHANGED — supersede ADR 0010
+DECISION CHANGED - supersede ADR 0010
 
 ## Contexte
 
 Le modele operatoire ADR 0010 reposait sur:
 
-- `OpenAI API` grande fenetre = Lead Agent
-- `Codex` (l'app) = Command Board (inspecteur, integrateur, verificateur)
+- `GPT API` grande fenetre = Lead Agent
+- une surface locale manuelle = Command Board (inspection, integration, verification)
 
 Ce modele atteint ses limites:
 
-1. `Codex` est lie a une conversation manuelle dans l'app — il ne peut pas etre un agent autonome dans le pipeline
-2. `Codex` ne peut pas aller sur Discord, ni etre appele par API
+1. une surface locale manuelle ne peut pas etre un agent autonome dans le pipeline
+2. une surface locale manuelle ne peut ni aller sur Discord, ni etre appelee par API
 3. un seul modele (`gpt-5.4`) qui code ET qui review son propre code = memes angles morts, memes biais
 4. le fondateur a besoin d'un systeme qui tourne sans lui devant l'ecran
 
@@ -22,7 +22,7 @@ Ce modele atteint ses limites:
 
 Le modele operatoire devient un duo de modeles complementaires:
 
-### GPT API (gpt-5.4, 1M contexte) — Le Cerveau / Le Dev
+### GPT API (gpt-5.4, 1M contexte) - Le Cerveau / Le Dev
 
 - code les gros lots
 - planifie les missions
@@ -32,16 +32,16 @@ Le modele operatoire devient un duo de modeles complementaires:
 
 Personnalite: technique, precis, executant.
 
-### Claude API (opus/sonnet, 1M contexte) — L'Auditeur / Le Traducteur
+### Claude API (opus/sonnet, 1M contexte) - L'Auditeur / Le Traducteur
 
-Role 1 — Auditeur:
+Role 1 - Auditeur:
 
 - review le code produit par GPT (vrai regard exterieur cross-model)
 - challenge les decisions
 - detecte ce que GPT ne voit pas (angles morts du meme modele)
 - produit des signaux de qualite et de risque
 
-Role 2 — Traducteur:
+Role 2 - Traducteur:
 
 - recoit les questions structurees de GPT au format `structured_question`
 - traduit en francais humain simple pour le fondateur
@@ -50,14 +50,13 @@ Role 2 — Traducteur:
 
 Personnalite: critique, humain, protecteur.
 
-### Codex (l'app) — Outil de conversation directe
+### Supervision locale (terminal + dashboard) - Hors pipeline
 
-- reste disponible pour les conversations directes avec le fondateur
-- utile pour discuter d'une idee, comprendre un resultat, iterer vite
-- n'est plus dans le pipeline autonome
-- n'a plus de role d'inspecteur ou d'integrateur
+- reste disponible pour inspecter un run, comprendre un resultat, ou suivre un incident
+- n'est pas une lane produit autonome
+- ne remplace ni `Discord`, ni `Claude API`, ni le runtime local
 
-### Theo (le fondateur) — Direction et decision
+### Theo (le fondateur) - Direction et decision
 
 - parle en humain, en francais
 - donne la vision, les ambitions, les decisions
@@ -72,7 +71,7 @@ Personnalite: critique, humain, protecteur.
 {
   "type": "question_for_founder",
   "run_id": "api_run_xxx",
-  "branch": "codex/refactor-memory",
+  "branch": "project-os/refactor-memory",
   "context": "description courte du probleme",
   "impact": "consequence si pas de reponse",
   "options": [
@@ -114,7 +113,7 @@ Personnalite: critique, humain, protecteur.
 {
   "type": "run_summary",
   "run_id": "api_run_xxx",
-  "branch": "codex/refactor-memory",
+  "branch": "project-os/refactor-memory",
   "status": "completed | failed | clarification_required",
   "decision_summary": "ce qui a ete decide",
   "files_changed": 5,
@@ -125,9 +124,9 @@ Personnalite: critique, humain, protecteur.
 
 ## Trois niveaux de langage
 
-1. **Machine** (JSON, code, schemas) — entre GPT API et le runtime, jamais montre au fondateur
-2. **Prompt structure** (structured_question / founder_decision) — entre GPT API et Claude API
-3. **Humain** (francais simple, max 3 lignes) — de Claude API vers le fondateur via Discord
+1. **Machine** (JSON, code, schemas) - entre GPT API et le runtime, jamais montre au fondateur
+2. **Prompt structure** (structured_question / founder_decision) - entre GPT API et Claude API
+3. **Humain** (francais simple, max 3 lignes) - de Claude API vers le fondateur via Discord
 
 ## Regles de filtrage (Claude decidant quoi envoyer)
 
@@ -167,7 +166,7 @@ Journee type avec 5 runs:
 - traduction humaine naturelle integree au pipeline
 - filtre anti-bruit pour Discord (5 messages/jour au lieu de 60)
 - le fondateur peut piloter depuis son telephone
-- Codex reste disponible pour les conversations directes
+- la supervision locale reste disponible pour l'inspection et la preuve
 - le traducteur est remplacable (si un meilleur modele arrive demain, on change juste cette couche)
 
 ### Contraintes
@@ -176,6 +175,29 @@ Journee type avec 5 runs:
 - le format structured_question doit etre respecte par les prompts GPT
 - la latence augmente (GPT -> Claude -> Discord -> fondateur -> Discord -> Claude -> GPT = 6 hops)
 - `can_wait_hours` et `fallback_if_no_answer` doivent toujours etre remplis pour eviter les blocages indefinis
+
+## Extension de deliberation structuree
+
+Cette ADR reste compatible avec une couche de deliberation multi-angles sur les sujets importants.
+
+Principes:
+
+- aucune nouvelle identite produit
+- aucun nouveau cerveau autonome
+- les angles d'analyse sont des prismes bornes, pas des modeles separes
+- `Discord` reste la surface lisible
+- le runtime reste la trace canonique
+
+Quand cette couche est activee:
+
+- `GPT API` peut alimenter l'analyse et le plan
+- `Claude API` peut auditer, clarifier et traduire la synthese pour le fondateur
+- le `Moderator` reste une fonction procedurale du systeme
+
+References:
+
+- `docs/analysis-angles/README.md`
+- `docs/integrations/DISCORD_MEETING_SYSTEM_V1.md`
 
 ## Principe d'autonomie fondateur
 
@@ -207,9 +229,9 @@ Le state persistant maintient en permanence (cout: 0 EUR, latence: <100ms):
 Quand un message Discord arrive:
 
 1. le state sait ce qui est en cours (zero API call)
-2. si l'intention est claire en contexte ("ouais" alors qu'un contrat est en attente) → action directe
-3. si l'intention est ambigue → escalade a Claude API avec un context brief minuscule (~500 tokens)
-4. si le message demande du travail reel → GPT API est appele pour executer
+2. si l'intention est claire en contexte ("ouais" alors qu'un contrat est en attente) -> action directe
+3. si l'intention est ambigue -> escalade a Claude API avec un context brief minuscule (~500 tokens)
+4. si le message demande du travail reel -> GPT API est appele pour executer
 
 Les appels API (GPT ou Claude) sont reserves au TRAVAIL et a la PENSEE, jamais a la MEMOIRE.
 
@@ -250,3 +272,4 @@ else:
 - `docs/workflow/LANGUAGE_LEVELS.md`
 - `docs/workflow/DAILY_OPERATOR_WORKFLOW.md`
 - `docs/workflow/DISCORD_MESSAGE_TEMPLATES.md`
+- `docs/analysis-angles/README.md`

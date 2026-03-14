@@ -56,7 +56,7 @@ Un format que Claude API peut lire et traduire mecaniquement.
 {
   "type": "question_for_founder",
   "run_id": "api_run_xxx",
-  "branch": "codex/refactor-memory",
+  "branch": "project-os/refactor-memory",
   "context": "Deux modules memory se bloquent mutuellement par dependance circulaire",
   "impact": "Bloque le lot de refactoring en cours",
   "options": [
@@ -98,7 +98,7 @@ Un format que Claude API peut lire et traduire mecaniquement.
 {
   "type": "run_summary",
   "run_id": "api_run_xxx",
-  "branch": "codex/refactor-memory",
+  "branch": "project-os/refactor-memory",
   "status": "completed",
   "decision_summary": "Memory separe en bridge, store et curator",
   "files_changed": 5,
@@ -136,21 +136,25 @@ Claude API vers le fondateur (via Discord).
 ### Style
 
 Francais simple. Phrases courtes. Pas de jargon.
-Maximum 3 lignes par message. Jamais de code. Jamais de chemin de fichier.
+Trois profils existent:
 
-### Exemples par situation
+- `notification_card`: maximum 3 lignes. Jamais de code. Jamais de chemin de fichier.
+- `meeting_thread`: format structure, pas de limite fixe en lignes, toujours lisible.
+- `founder_synthesis`: recap humain concis dans `#pilotage`, non borne a 3 lignes si la clarte le demande.
+
+### Exemples `notification_card` par situation
 
 #### Run complete
 
 ```
-codex/refactor-memory termine — Memory separe en 3 modules propres.
+project-os/refactor-memory termine — Memory separe en 3 modules propres.
 5 fichiers, 0.28EUR. Review dispo au retour.
 ```
 
 #### Clarification requise
 
 ```
-Question sur codex/refactor-memory —
+Question sur project-os/refactor-memory —
 Deux modules se bloquent mutuellement.
 A) Separer proprement (recommande) B) Fusionner
 Pas urgent, j'ai 4h. Si tu reponds pas je fais A.
@@ -159,7 +163,7 @@ Pas urgent, j'ai 4h. Si tu reponds pas je fais A.
 #### Run echoue
 
 ```
-codex/add-guardian echoue — l'API OpenAI a refuse la requete (quota depasse).
+project-os/add-guardian echoue — l'API OpenAI a refuse la requete (quota depasse).
 Aucune action requise, je reessaie dans 30 min.
 ```
 

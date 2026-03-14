@@ -33,7 +33,7 @@ Le fondateur est libre de bouger. Le systeme s'adapte, pas l'inverse.
 
 ## Surfaces disponibles
 
-### Discord (PC + mobile) — surface principale
+### Discord (PC + mobile) - surface principale
 
 - recevoir les notifications (runs, clarifications, budget)
 - approuver ou rejeter des contrats
@@ -62,7 +62,7 @@ Via Discord:
 
 ```
 Fondateur: "lance un audit du module memory"
-Systeme:   "Nouveau lot propose — Audit complet du module memory.
+Systeme:   "Nouveau lot propose - Audit complet du module memory.
             Cout estime: 0.35EUR. Dis 'go' pour lancer."
 Fondateur: "go"
 ```
@@ -77,14 +77,14 @@ pos approve-contract --id xxx
 ### Recevoir un resultat
 
 ```
-Systeme:   "codex/audit-memory termine — 3 issues trouvees, aucune critique.
+Systeme:   "project-os/audit-memory termine - 3 issues trouvees, aucune critique.
             0.28EUR. Review dispo quand tu veux."
 ```
 
 ### Repondre a une clarification
 
 ```
-Systeme:   "Question sur codex/refactor-memory —
+Systeme:   "Question sur project-os/refactor-memory -
             Deux modules se bloquent. A) Separer (recommande) B) Fusionner
             Pas urgent, j'ai 4h. Si tu reponds pas je fais A."
 Fondateur: "A"
@@ -120,25 +120,35 @@ Le systeme ne spamme pas. Claude API filtre les signaux avant envoi:
 - `budget_alert >= 80%`: envoye
 - `contract_proposed`: toujours envoye (besoin d'approbation)
 
-Regle dure: maximum 3 lignes par message Discord. Jamais de code. Jamais de chemin de fichier.
+Profils de sortie Discord:
 
-## Codex (l'app) — hors pipeline, usage libre
+- `notification_card` pour `contract_proposed`, `run_completed`, `run_failed`, `clarification_required`, `budget_alert` et les cartes `#runs-live`
+- `meeting_thread` pour les deliberations multi-angles visibles
+- `founder_synthesis` pour la synthese humaine finale republiquee dans `#pilotage`
 
-Codex reste disponible comme outil de conversation directe si le fondateur le souhaite.
+Regles dures:
 
-Ce qui est utile dans Codex:
+- `notification_card`: maximum 3 lignes. Jamais de code. Jamais de chemin de fichier.
+- `meeting_thread`: format structure autorise, pas de limite fixe en lignes, rester lisible et oriente decision.
+- `founder_synthesis`: concise mais non bornee a 3 lignes si la situation demande une synthese plus riche.
 
-- discuter d'une idee en direct
+## Supervision locale - hors pipeline
+
+La supervision locale via terminal + dashboard reste disponible si le fondateur en a besoin.
+
+Ce qui est utile en local:
+
 - comprendre un resultat en detail
-- les automations Codex (taches autonomes en sandbox) peuvent servir d'audit supplementaire
+- suivre un incident ou un blocage sans bruit Discord
+- les automations locales en sandbox peuvent servir d'audit supplementaire
 
 Ce que le systeme fait mieux en local:
 
-- les automations Codex sont reproductibles en local via `execute_run()` avec le pipeline complet (contrats, guardian, memoire, learning)
+- les automations locales sont reproductibles via `execute_run()` avec le pipeline complet (contrats, guardian, memoire, learning)
 - les automations locales passent par les memes garde-fous que les gros runs
 - elles sont auditables, budgetisees et tracees
 
-Regle: le systeme ne depend jamais de Codex pour fonctionner. Si le fondateur veut l'utiliser, il peut. Sinon, rien ne change.
+Regle: le systeme ne depend jamais d'une app locale separee pour fonctionner. Si une supervision locale est utile, elle reste optionnelle.
 
 ## References
 

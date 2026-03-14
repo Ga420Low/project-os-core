@@ -68,7 +68,7 @@ The system may use `gpt-5.4-pro` only in rare, explicit cases:
 
 Project OS is currently optimized for:
 
-- `ChatGPT Plus` for build work and Codex collaboration
+- local build work plus operator discussion, with limited API budget for runtime autonomy
 - limited API budget for runtime autonomy
 
 That means:
@@ -96,4 +96,3 @@ It should escalate only when the expected value of better reasoning exceeds the 
 - memory and runtime state do not depend on `pro`
 - model usage stays compatible with the current budget cap
 - future optimization can focus on routing quality, not brute-force model spend
-

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import json
 import logging
@@ -587,10 +587,10 @@ class GatewayService:
                 model=model,
                 max_tokens=500,
                 system=(
-                    "Tu es Project OS, un agent autonome qui gère des projets de développement. "
-                    "Tu réponds en français, de façon concise et directe. "
-                    "Tu es connecté via Discord et tu assistes le fondateur du projet. "
-                    "Sois utile, professionnel mais décontracté."
+                    "Tu es Project OS, un agent autonome qui gere des projets de developpement. "
+                    "Tu reponds en francais, de facon concise et directe. "
+                    "Tu es connecte via Discord et tu assistes le fondateur du projet. "
+                    "Sois utile, professionnel mais decontracte."
                 ),
                 messages=[
                     {"role": "user", "content": message},
@@ -793,3 +793,4 @@ class GatewayService:
             conflict_columns="dispatch_id",
             immutable_columns=["created_at"],
         )
+

@@ -47,14 +47,14 @@
       "model": "gpt-5.4",
       "reasoning_effort": "high",
       "instructions": [
-        "Produce a step-by-step patch plan that is immediately implementable by Codex."
+        "Produce a step-by-step patch plan that is immediately implementable in the GPT code lane."
       ]
     },
     "generate_patch": {
       "model": "gpt-5.4",
       "reasoning_effort": "xhigh",
       "instructions": [
-        "Generate the strongest safe patch outline you can, but assume Codex will still inspect and test locally."
+        "Generate the strongest safe patch outline you can, but assume Claude API will still review and tests will still run locally."
       ]
     }
   }

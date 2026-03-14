@@ -4,7 +4,7 @@ Ce document fixe comment l'information circule proprement entre:
 
 - humain
 - `Discord`
-- `Codex`
+- supervision locale
 - gros runs API
 - runtime `Project OS`
 
@@ -110,12 +110,12 @@ Quand Claude API (l'auditeur) confirme un choix important apres review:
 - emettre un signal `DECISION CONFIRMED` ou `DECISION CHANGED`
 - pousser cela dans la memoire durable
 
-### Codex (l'app) -> Runtime (optionnel)
+### Supervision locale -> Runtime (optionnel)
 
-Si le fondateur utilise Codex pour une conversation directe et qu'un choix important emerge:
+Si le fondateur utilise une surface locale directe et qu'un choix important emerge:
 
 - suivre les memes regles que ci-dessus
-- `Codex` n'est plus dans le pipeline autonome (ADR 0013)
+- la supervision locale n'est pas une voie autonome du pipeline (ADR 0013)
 
 ### API Run -> Runtime
 
@@ -132,6 +132,25 @@ Puis:
 - rien n'est memoire durable par defaut
 - seules les sorties relues et promues entrent dans la memoire canonique
 
+### Discord meeting -> Runtime
+
+Une reunion multi-angles visible dans `Discord` doit etre recopiee en contrat machine dans le runtime.
+
+Objets canoniques documentaires:
+
+- `MeetingIntent`
+- `MeetingBrief`
+- `AngleResponse`
+- `ContradictionReply`
+- `MeetingSynthesis`
+- `DecisionRecord`
+
+Regles:
+
+- le runtime garde toujours le transcript machine complet du thread
+- `Discord` reste une projection humaine, pas la verite canonique
+- l'implementation runtime detaillee peut venir plus tard, mais le contrat documentaire est deja fixe
+
 ## Promotions automatiques souhaitables
 
 Le systeme doit penser a promouvoir regulierement:
@@ -143,6 +162,8 @@ Le systeme doit penser a promouvoir regulierement:
 - `LOOP_DETECTED`
 - `REFRESH_NEEDED`
 - preference stable explicite du fondateur
+- `MeetingSynthesis` durable
+- `DecisionRecord`
 
 Le fondateur ne doit pas avoir besoin de le demander a chaque fois.
 
@@ -156,6 +177,8 @@ Ne pas promouvoir automatiquement:
 - idees non validees
 - bruit de debug
 - frustrations temporaires sans impact structurel
+- transcript complet d'un thread de reunion
+- details exploratoires de contradiction
 
 ## Refresh
 
@@ -179,4 +202,4 @@ Le handoff ideal doit produire:
 
 - zero decision critique perdue
 - zero memoire polluee par du bruit
-- zero double verite entre `Codex`, `Discord` et l'API
+- zero double verite entre supervision locale, `Discord` et l'API

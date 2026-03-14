@@ -4,7 +4,7 @@ Ce document detaille comment chaque outil ou repo tiers est utilise dans Project
 
 Pour la liste complete, voir `EXTERNAL_STACK_REFERENCE.md`. Ce document explique le **comment** et le **pourquoi** de chaque integration.
 
-## Core Stack — Decisions fermes
+## Core Stack - Decisions fermes
 
 ### OpenClaw
 
@@ -42,13 +42,13 @@ Pour la liste complete, voir `EXTERNAL_STACK_REFERENCE.md`. Ce document explique
 - **Integration**: `third_party/openmemory/`
 - **Utilise pour**: stocker et retrouver les souvenirs episodiques, proceduraux et semantiques
 - **Apprentissage**: les preferences du fondateur sont promues en memoire durable via OpenMemory
-- **Tiering**: hot (7j) → warm (decisions confirmees) → cold (archive)
+- **Tiering**: hot (7j) -> warm (decisions confirmees) -> cold (archive)
 
-### OpenAI API (gpt-5.4)
+### GPT API (OpenAI, gpt-5.4)
 
 - **Role**: Le Cerveau / Le Dev (ADR 0013)
 - **Integration**: `src/project_os_core/api_runs/service.py` via `_call_openai()`
-- **Utilise pour**: audit, design, patch_plan, generate_patch — les 4 modes de run
+- **Utilise pour**: audit, design, patch_plan, generate_patch - les 4 modes de run
 - **Contexte**: 1M tokens, structured output JSON
 - **Politique**: `high` par defaut, `xhigh` sur escalade, `pro` avec approbation (ADR 0003)
 
@@ -70,21 +70,21 @@ Pour la liste complete, voir `EXTERNAL_STACK_REFERENCE.md`. Ce document explique
 - **Mode**: `infisical_first` avec fallback `.env` local
 - **Regles**: jamais de secret dans SQLite, jamais dans les logs, jamais dans le repo
 
-## Core Stack — Execution (workers)
+## Core Stack - Execution (workers)
 
 ### UFO
 
 - **Role**: Reference pour le worker Windows desktop
 - **Integration**: architecture de reference, pas d'import direct
 - **Utilise pour**: comprendre les patterns d'interaction Windows (UIA, accessibility tree)
-- **Status**: lot 6 — le worker Windows s'inspirera de UFO mais sera une implementation Project OS
+- **Status**: lot 6 - le worker Windows s'inspirera de UFO mais sera une implementation Project OS
 
 ### Stagehand
 
 - **Role**: Execution web fiable pour le worker Browser
 - **Integration**: `third_party/stagehand/`
 - **Utilise pour**: navigation web, remplissage de formulaires, extraction de donnees
-- **Status**: lot 7 — le worker Browser sera base sur Stagehand
+- **Status**: lot 7 - le worker Browser sera base sur Stagehand
 
 ### pywinauto
 
@@ -98,9 +98,9 @@ Pour la liste complete, voir `EXTERNAL_STACK_REFERENCE.md`. Ce document explique
 - **Role**: Perception visuelle fallback
 - **Integration**: `third_party/omniparser/`
 - **Utilise pour**: quand pywinauto ne trouve pas un element, OmniParser analyse le screenshot
-- **Pipeline**: screenshot → OmniParser → detection d'elements → coordonnees → action
+- **Pipeline**: screenshot -> OmniParser -> detection d'elements -> coordonnees -> action
 
-## Support Stack — Observabilite
+## Support Stack - Observabilite
 
 ### Langfuse
 
@@ -115,7 +115,7 @@ Pour la liste complete, voir `EXTERNAL_STACK_REFERENCE.md`. Ce document explique
 - **Integration**: a connecter
 - **Utilise pour**: monitoring systeme (CPU, memoire, latence, erreurs)
 
-## Support Stack — Methodologie
+## Support Stack - Methodologie
 
 ### gstack
 
@@ -157,11 +157,11 @@ Ces repos sont des references pour des evolutions futures:
 
 ## Regles d'integration
 
-1. **Pas de dependance cachee** — chaque integration est explicite dans les imports et la doc
-2. **Facade obligatoire** — chaque outil externe est enveloppe dans un adapter Project OS
-3. **Remplacable** — si un outil est meilleur demain, on change l'adapter, pas le core
-4. **Local first** — tout tourne en local, pas de dependance cloud sauf les APIs LLM
-5. **Auditable** — chaque appel a un outil externe est logue
+1. **Pas de dependance cachee** - chaque integration est explicite dans les imports et la doc
+2. **Facade obligatoire** - chaque outil externe est enveloppe dans un adapter Project OS
+3. **Remplacable** - si un outil est meilleur demain, on change l'adapter, pas le core
+4. **Local first** - tout tourne en local, pas de dependance cloud sauf les APIs LLM
+5. **Auditable** - chaque appel a un outil externe est logue
 
 ## References
 

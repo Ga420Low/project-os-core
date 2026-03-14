@@ -1,0 +1,10 @@
+{
+  "openclaw_config": {
+    "runtime_root": "D:\\ProjectOS\\project-os-core\\tests\\fixtures\\project_os_runtime\\openclaw-runtime",
+    "state_root": "D:\\ProjectOS\\project-os-core\\tests\\fixtures\\project_os_runtime\\runtime\\openclaw"
+  },
+  "api_dashboard_config": {
+    "auto_open_browser": false,
+    "require_visible_ui": false
+  }
+}

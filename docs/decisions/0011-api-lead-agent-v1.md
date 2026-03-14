@@ -4,7 +4,7 @@
 
 Accepted — operating model updated by ADR 0013
 
-Note: the review role originally assigned to Codex is now handled by Claude API (cross-model auditor + translator).
+Note: the former manual inspection role is now handled by Claude API (cross-model auditor + translator).
 See `docs/decisions/0013-dual-model-operating-model.md` for the current operating model.
 
 ## Decision
@@ -14,7 +14,7 @@ Project OS adopts an `API Lead Agent v1` layer built around `gpt-5.4` and the `R
 The current operating model is (ADR 0013):
 
 - `GPT API` (gpt-5.4, 1M context) = large-context lead agent for `audit`, `design`, `patch_plan`, and `generate_patch`
-- `Claude API` (opus/sonnet, 1M context) = cross-model auditor and human translator (replaces Codex in the pipeline)
+- `Claude API` (opus/sonnet, 1M context) = cross-model auditor and human translator
 - `Project OS runtime` = canonical truth for memory, evidence, routing, budgets, approvals, and artifacts
 
 The coding lane remains `repo_cli`.
@@ -35,7 +35,7 @@ It also lets the product build itself progressively:
 ### Accepted
 
 - `api_runs` is now a first-class subsystem in the core
-- large runs must target `codex/*` branches
+- large runs must target `project-os/*` branches
 - outputs are structured and schema-bound
 - raw prompts/results live in runtime storage, not in the repo
 - validated decisions and review outcomes feed the learning layer

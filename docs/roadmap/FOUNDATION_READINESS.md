@@ -8,7 +8,7 @@ Le coeur vise la version finale suivante:
 - `OpenClaw` pour le shell operateur et Discord
 - `LangGraph` pour l'orchestration durable
 - `OpenMemory` pour la memoire long terme primaire
-- `OpenAI API` pour le cerveau
+- `GPT API` pour le cerveau
 - `UFO` style worker pour Windows
 - `Stagehand` pour le web
 - `pywinauto` et UIA pour la perception structuree
@@ -50,7 +50,7 @@ Manquants ou non exploitables pour la stack cible:
 - `docker`
 - `bun`
 - `poetry`
-- `rg` reste ambigu a cause de l'alias embarque par Codex, mais ce n'est pas un blocage noyau
+- `rg` reste ambigu a cause de l'alias embarque par l'environnement local, mais ce n'est pas un blocage noyau
 
 ## Verdict
 

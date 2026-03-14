@@ -15,6 +15,7 @@ Usage:
 - idees
 - direction
 - arbitrages
+- syntheses finales de reunion
 - go / stop
 - doutes
 
@@ -33,6 +34,7 @@ Usage:
 - progression
 - cout
 - verdicts
+- ouverture ou lien vers un thread si un run demande plus qu'une carte compacte
 
 Style:
 
@@ -48,6 +50,7 @@ Usage:
 - demandes budget exceptionnel
 - permissions speciales
 - approvals sensibles
+- miroir des decisions de reunion seulement si le sujet est sensible
 
 ### `#incidents`
 
@@ -64,6 +67,7 @@ Usage:
 
 - isoler une mission longue
 - regrouper contexte, cartes, rapports et arbitrages
+- porter les `meeting_thread` multi-angles visibles
 
 ## Regles
 
@@ -92,6 +96,12 @@ Dans `#runs-live`, le format cible est une carte compacte avec:
 - lien artefact ou dashboard
 
 Pas de long texte par defaut.
+
+## Profils de sortie Discord
+
+- `notification_card` -> `#runs-live`, validations courtes, clarifications courtes, 3 lignes max
+- `meeting_thread` -> thread visible depuis `#pilotage` ou `#incidents`, format structure
+- `founder_synthesis` -> `#pilotage`, recap final concis apres une reunion ou un arbitrage dense
 
 ## Voix
 

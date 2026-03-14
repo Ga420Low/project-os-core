@@ -919,7 +919,7 @@ def _execute_scheduler_task(services, command: str, args_dict: dict[str, Any]) -
     if command == "daily_audit":
         metadata = {"scheduled": True, "scheduled_task": "daily_audit"}
         previous_policy = services.api_runs.execution_policy.run_contract_required
-        branch_name = f"codex/scheduled-audit-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
+        branch_name = f"project-os/scheduled-audit-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
         try:
             services.api_runs.execution_policy.run_contract_required = False
             payload = services.api_runs.execute_run(

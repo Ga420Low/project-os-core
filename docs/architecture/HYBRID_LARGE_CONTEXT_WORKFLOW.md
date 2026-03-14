@@ -1,11 +1,11 @@
-# Hybrid Large-Context Workflow
+﻿# Hybrid Large-Context Workflow
 
 Ce document fixe le workflow officiel entre:
 
-- `GPT API` (gpt-5.4, 1M contexte) — le cerveau / le dev
-- `Claude API` (opus/sonnet, 1M contexte) — l'auditeur / le traducteur
-- `Project OS` runtime local — la verite machine
-- `Discord` — la surface operateur fondateur
+- `GPT API` (gpt-5.4, 1M contexte) - le cerveau / le dev
+- `Claude API` (opus/sonnet, 1M contexte) - l'auditeur / le traducteur
+- `Project OS` runtime local - la verite machine
+- `Discord` - la surface operateur fondateur
 
 L'objectif est simple:
 
@@ -16,7 +16,7 @@ L'objectif est simple:
 
 ## Role de chaque couche
 
-### OpenAI API 1M
+### GPT API 1M
 
 L'API grande fenetre est la force de frappe principale pour:
 
@@ -48,14 +48,14 @@ Elle ne devient jamais:
 
 `Claude API` est le deuxieme regard et la voix du systeme vers le fondateur.
 
-Role 1 — Auditeur:
+Role 1 - Auditeur:
 
 - review le code produit par GPT (vrai challenge cross-model)
 - detecte les bugs, trous de securite et incoherences que GPT ne voit pas
 - produit des signaux de qualite et de risque
 - un modele different = des biais differents = vrais bugs trouves
 
-Role 2 — Traducteur:
+Role 2 - Traducteur:
 
 - recoit les questions structurees de GPT (format `structured_question`)
 - traduit en francais humain simple pour le fondateur via Discord
@@ -65,13 +65,13 @@ Role 2 — Traducteur:
 Regle dure:
 
 - Claude API ne code pas les gros lots (GPT est le dev)
-- Claude API ne s'efface pas devant GPT — il challenge et protege
+- Claude API ne s'efface pas devant GPT - il challenge et protege
 - un modele ne review jamais son propre code
 
-### Codex (l'app) — hors pipeline
+### Supervision locale (terminal + dashboard) - hors pipeline
 
-`Codex` reste disponible comme outil de conversation directe avec le fondateur.
-Il n'est plus dans le pipeline autonome (ADR 0013).
+La supervision locale reste disponible pour l'inspection directe.
+Elle n'est plus une voie autonome du pipeline (ADR 0013).
 
 ### Project OS Runtime
 
@@ -87,7 +87,7 @@ Le runtime local reste la verite pour:
 
 Regle dure:
 
-- ni `Codex`
+- ni la supervision locale
 - ni l'API
 
 ne remplacent le runtime reel.
@@ -116,7 +116,7 @@ References:
 
 ### Phase A - Direction
 
-Ici, humain + Codex decident:
+Ici, humain + surface operateur decident:
 
 - quelle branche ou quel lot on ouvre
 - quel resultat exact on attend
@@ -190,34 +190,44 @@ Pendant les gros runs de code:
 - pas de narration intermediaire
 - la visibilite passe par le dashboard, le terminal et les cartes compactes
 
-### Phase F - Review cross-model
+### Phase F - Tests et verifications
 
-Claude API audite le resultat de GPT API.
+Avant toute approbation finale:
+
+- on lance les tests et verifications pertinents
+- on consolide les preuves utiles
+- on prepare le verdict technique reel
+
+### Phase G - Review cross-model
+
+Claude API audite le resultat de GPT API et ses preuves.
 
 Claude API doit:
 
 - verifier la coherence du code produit
 - verifier les interfaces et les risques
-- verifier les tests a lancer
+- verifier les tests lances et leur resultat
 - corriger les erreurs de raisonnement
 - detecter les signes de boucle, d'appauvrissement ou de baisse de capacite
 - forcer un `refresh` de contexte si la sortie perd en qualite ou recycle les memes idees
 - produire un verdict (accepted, accepted_with_reserves, rejected)
 
-### Phase G - Rapport et decision fondateur
+### Phase H - Synthese et decision fondateur
 
 Claude API traduit le verdict en francais humain et l'envoie sur Discord.
 
 Le fondateur:
 
-- recoit le resume (max 3 lignes)
+- recoit une `notification_card` si un resume court suffit
+- recoit une `founder_synthesis` si le sujet demande plus de contexte
 - approuve ou rejette
 - peut demander des precisions
+
+### Phase I - Integration
 
 Seulement apres approbation:
 
 - on integre le code
-- on lance les tests
 - on documente
 - on commit
 
@@ -300,7 +310,7 @@ Tout le reste doit passer par des signaux compacts et visibles.
 
 Les `skills` de mega prompt sont des etiquettes de run qui disent a l'API quel mode de travail adopter.
 
-Ils ne remplacent pas les skills Codex locaux.
+Ils ne remplacent pas les skills locaux de l'agent.
 
 Base minimale:
 
@@ -432,7 +442,7 @@ Le workflow futurproof doit aussi router intelligemment le niveau de raisonnemen
 
 Policy cible:
 
-- banal / Discord simple -> `gpt-5.4` avec `reasoning.effort=medium` si le deterministic first ne suffit pas
+- banal / Discord simple -> `Claude API` si le deterministic first ne suffit pas
 - standard -> `gpt-5.4 high`
 - critique / ambigu -> `gpt-5.4 xhigh`
 - exceptionnel -> `gpt-5.4-pro` avec approval
@@ -440,5 +450,6 @@ Policy cible:
 Le but est de garder:
 
 - qualite
-- continuité d'identite
+- continuite d'identite
 - maitrise du budget
+

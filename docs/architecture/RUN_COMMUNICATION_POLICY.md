@@ -56,7 +56,6 @@ Mode intermediaire pour des runs visibles mais encore peu bavards.
 
 Autorise:
 
-- `demarrage`
 - `generation`
 - `tests`
 - `review`
@@ -74,6 +73,53 @@ Reserve:
 - aux arbitrages
 - aux incidents qui exigent un vrai echange
 
+## Profils Discord
+
+### `notification_card`
+
+Usage:
+
+- `contract_proposed`
+- `clarification_required`
+- `run_completed`
+- `run_failed`
+- `budget_alert`
+- cartes `#runs-live`
+
+Regles:
+
+- 3 lignes max
+- pas de code
+- pas de chemin de fichier
+- valeur operateur immediate
+
+### `meeting_thread`
+
+Usage:
+
+- deliberation multi-angles visible
+- contradictions ciblees
+- synthese structuree avant decision
+
+Regles:
+
+- pas de limite fixe en lignes
+- format structure obligatoire
+- le runtime garde toujours le transcript machine complet
+
+### `founder_synthesis`
+
+Usage:
+
+- synthese humaine finale republiquee dans `#pilotage`
+- recap d'un arbitrage important apres thread ou review dense
+
+Regles:
+
+- concise
+- pas bornee a 3 lignes si la clarte demande plus
+- oriente decision et prochaine action
+
 ## Regles par contexte
 
 ### Gros run de code
@@ -88,9 +134,14 @@ Ordre obligatoire:
 
 Visibilite humaine minimale obligatoire:
 
-- message de demarrage compact dans la surface humaine retenue
+- preuve visible de vie dans la surface de supervision retenue
 - message de blocage ou `clarification_required` avec question claire
 - message final avec verdict et prochaine action
+
+Regle supplementaire:
+
+- `run_started` reste filtre comme bruit operateur
+- la preuve de vie passe par le dashboard local, le terminal live, ou une `notification_card` deja ouverte dans `#runs-live`
 
 Si `Discord` est configure:
 

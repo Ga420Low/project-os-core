@@ -8,8 +8,8 @@ DECISION CONFIRMED
 
 `Project OS` doit fonctionner comme un seul agent systeme a travers:
 
-- `Codex`
-- gros runs API
+- `Claude API`
+- gros runs `GPT API`
 - `Discord`
 - futures surfaces
 
@@ -22,7 +22,7 @@ Le systeme retient:
 
 ## Routing retenu
 
-- banal Discord -> `gpt-5.4` avec `reasoning.effort=medium` si LLM necessaire
+- banal Discord -> `Claude API` pour discussion/traduction si LLM necessaire
 - operateur standard -> `gpt-5.4 high`
 - critique / ambigu -> `gpt-5.4 xhigh`
 - exceptionnel -> `gpt-5.4-pro` seulement sur approval explicite

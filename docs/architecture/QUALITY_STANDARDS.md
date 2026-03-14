@@ -1,4 +1,4 @@
-# Quality Standards
+﻿# Quality Standards
 
 Ce document definit les normes de qualite de Project OS.
 
@@ -6,11 +6,11 @@ Objectif: un agent autonome de qualite production, fiable, auditable et evolutif
 
 ## Principes de qualite
 
-1. **Robuste** — le systeme ne casse pas silencieusement
-2. **Auditable** — chaque decision a une trace
-3. **Verifiable** — chaque sortie peut etre rejouee et validee
-4. **Pas de spaghetti** — chaque module a une responsabilite claire
-5. **Pas de doublon** — une seule source de verite par concept
+1. **Robuste** - le systeme ne casse pas silencieusement
+2. **Auditable** - chaque decision a une trace
+3. **Verifiable** - chaque sortie peut etre rejouee et validee
+4. **Pas de spaghetti** - chaque module a une responsabilite claire
+5. **Pas de doublon** - une seule source de verite par concept
 
 ## Review cross-model obligatoire
 
@@ -28,10 +28,10 @@ Criteres de review:
 | Degradation | Pas de degradation de qualite par rapport au code existant |
 
 Verdicts possibles:
-- `accepted` — pret a merger
-- `accepted_with_reserves` — mergeable apres correction mineure
-- `rejected` — a refaire
-- `needs_clarification` — question a poser au fondateur
+- `accepted` - pret a merger
+- `accepted_with_reserves` - mergeable apres correction mineure
+- `rejected` - a refaire
+- `needs_clarification` - question a poser au fondateur
 
 ## Acceptance criteria par type de run
 
@@ -81,7 +81,7 @@ Verdicts possibles:
 ### SQL (SQLite)
 
 - transactions explicites pour les ecritures multiples
-- `INSERT OR REPLACE` interdit — utiliser `INSERT` strict avec gestion de conflit
+- `INSERT OR REPLACE` interdit - utiliser `INSERT` strict avec gestion de conflit
 - pas de `check_same_thread=False` en production
 - index sur les colonnes filtrees frequemment
 
@@ -102,15 +102,16 @@ Verdicts possibles:
 | Contract tests | Tous les schemas JSON (entrees et sorties) |
 | Security tests | Tous les P0 identifies dans les audits |
 
-### Etat actuel
+### Verification actuelle
 
-- 27 tests passants (unit + integration)
-- Manquants: tests de concurrence, tests CLI, tests edge-case
+- verifier via `py -m pytest tests/unit tests/integration -q`
+- completer au besoin avec des suites ciblees par sous-systeme
+- garder les chiffres de tests hors de cette doc pour eviter le drift
 
 ### Outil
 
 - `pytest` avec fixtures locales
-- Pas de CI/CD externe en v1 — les tests tournent localement avant merge
+- Pas de CI/CD externe en v1 - les tests tournent localement avant merge
 
 ## Performance
 
@@ -134,7 +135,7 @@ Verdicts possibles:
 
 - la dette technique est acceptee si documentee (ADR ou commentaire)
 - chaque dette a un lot de remediation planifie
-- les P0 de l'audit ne sont pas de la dette — ce sont des blocages
+- les P0 de l'audit ne sont pas de la dette - ce sont des blocages
 
 ## References
 
@@ -142,3 +143,4 @@ Verdicts possibles:
 - `docs/decisions/0013-dual-model-operating-model.md`
 - `docs/integrations/API_RUN_CONTRACT.md`
 - `config/api_run_templates.json`
+

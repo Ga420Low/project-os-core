@@ -40,7 +40,7 @@ Le workflow officiel repose sur un duo de modeles complementaires (ADR 0013):
 - `GPT API` (gpt-5.4, 1M contexte) = Le Cerveau / Le Dev (code, planifie, brainstorme)
 - `Claude API` (opus/sonnet, 1M contexte) = L'Auditeur / Le Traducteur (review cross-model, traduit pour l'humain, filtre le bruit)
 - `Project OS` runtime = verite machine, memoire canonique, tests et evidence
-- `Codex` (l'app) = outil de conversation directe avec le fondateur, hors pipeline autonome
+- `Discord` = surface operateur prioritaire ; terminal + dashboard = supervision locale et preuve
 
 Regles:
 
@@ -260,7 +260,7 @@ Les branches majeures sont:
 - `OpenClaw`: shell operateur, Discord, inbox, acces distant
 - `LangGraph`: orchestration durable
 - `OpenMemory`: logique de memoire long terme locale
-- `OpenAI API`: cerveau generaliste (GPT API, le dev)
+- `GPT API`: cerveau generaliste (lane code et planification)
 - `Claude API` (Anthropic): auditeur cross-model et traducteur operateur
 - `UFO` style worker: execution Windows
 - `Stagehand`: execution web
@@ -318,6 +318,52 @@ Le graphe mission officiel part sur 6 roles:
 Le premier graphe reste unique et canonique.
 On ne multiplie pas les graphes metier avant d'avoir valide cette forme.
 
+## Gouvernance analytique
+
+Au-dessus du graphe canonique, `Project OS` peut ouvrir une couche de deliberation structuree pour les arbitrages importants.
+
+Cette couche ne remplace pas les 6 roles.
+Elle sert a cadrer:
+
+- les reviews avant codage
+- les arbitrages d'architecture
+- les pre-mortems
+- les conseils strategiques
+- les revues de confiance et de comportement externe
+
+V1 retenue:
+
+- `Vision Strategy`
+- `Product Value`
+- `Technical Architecture`
+- `Execution Delivery`
+- `Operations Workflow`
+- `Security Governance`
+- `Red Team`
+- `Clarity Anti-Bullshit`
+- `Research Exploration`
+
+Angles reserves:
+
+- `Financial Leverage`
+- `Legal Compliance`
+- `Brand Trust`
+
+Regles dures:
+
+- les angles sont des fonctions d'analyse bornees, pas des personnages
+- ils sont actives selectivement
+- ils n'ont aucune autorite d'execution directe
+- le `Moderator` est une fonction procedurale, pas une nouvelle identite produit
+- la synthese arbitree et le `DecisionRecord` sont les seules sorties durables par defaut
+
+References:
+
+- `docs/analysis-angles/README.md`
+- `docs/analysis-angles/00-framework.md`
+- `docs/analysis-angles/06-activation-policy.md`
+- `docs/integrations/DISCORD_MEETING_SYSTEM_V1.md`
+
 ## Skills de mega prompt
 
 Les gros runs API doivent declarer explicitement leurs skills de run.
@@ -337,7 +383,7 @@ Base minimale:
 - `OPS`
 
 Ces skills de run servent a borner le mega prompt.
-Ils ne remplacent pas les skills locaux Codex.
+Ils ne remplacent pas les skills locaux de l'agent.
 
 ## Etat operationnel actuel
 
@@ -471,7 +517,7 @@ Cela impose:
 - des overlays de canal sans changer la personnalite
 - une memoire partagee
 - un handoff explicite entre GPT API, Claude API et Discord
-- `Codex` (l'app) reste disponible pour la conversation directe mais n'est pas dans le pipeline
+- une supervision locale via terminal + dashboard reste disponible pour l'inspection et la preuve
 
 References:
 
@@ -487,7 +533,7 @@ Le systeme doit y rester:
 - compact
 - operateur
 - rigoureux
-- coherent avec `Codex`
+- coherent avec l'identite agent
 
 `Discord` n'est jamais:
 
@@ -498,6 +544,7 @@ Le systeme doit y rester:
 Reference:
 
 - `docs/integrations/DISCORD_OPERATING_MODEL.md`
+- `docs/integrations/DISCORD_MEETING_SYSTEM_V1.md`
 
 ## Stockage cible
 
@@ -554,7 +601,7 @@ La politique modele retenue est:
 
 Pour le canal `Discord`, la policy adaptative est:
 
-- banal / check rapide / accuse de reception -> `gpt-5.4` avec `reasoning.effort=medium` si un LLM est necessaire
+- banal / check rapide / accuse de reception -> `Claude API` si un LLM est necessaire
 - operateur standard -> `gpt-5.4 high`
 - complexe / critique / ambigu -> `gpt-5.4 xhigh`
 - exceptionnel -> `gpt-5.4-pro` seulement avec approval explicite

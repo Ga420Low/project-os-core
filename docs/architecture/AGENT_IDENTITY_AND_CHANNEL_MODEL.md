@@ -2,8 +2,8 @@
 
 Ce document fixe comment `Project OS` garde le meme agent a travers:
 
-- `Codex`
-- `OpenAI API`
+- `Claude API`
+- `GPT API`
 - `Discord`
 - plus tard `WebChat`, `Control UI` et la voix transcrite
 
@@ -49,8 +49,8 @@ Regles canoniques:
 
 Cette identite doit rester la meme:
 
-- dans `Codex`
-- dans les gros runs API
+- dans `Claude API`
+- dans les gros runs `GPT API`
 - dans `Discord`
 - dans les futures interfaces
 
@@ -64,14 +64,14 @@ Il change seulement:
 - la vitesse de reponse
 - la densite d'information
 
-### Codex
+### GPT API / code lane
 
 But:
 
 - construire
-- verifier
-- integrer
+- planifier
 - corriger
+- produire des sorties structurees
 
 Style:
 
@@ -79,6 +79,22 @@ Style:
 - exigeant
 - detaille quand necessaire
 - axe repo/tests/runtime
+
+### Claude API / discussion-review lane
+
+But:
+
+- auditer GPT
+- challenger les decisions
+- traduire pour l'operateur
+- filtrer le bruit
+
+Style:
+
+- critique
+- humain
+- compact cote operateur
+- strict sur le sens
 
 ### Discord
 
@@ -133,6 +149,19 @@ Le mode depend de:
 Le mode ne cree pas une nouvelle personnalite.
 Il change le niveau de profondeur et le routage.
 
+## Deliberation structuree
+
+Quand un sujet depasse la simple reponse ou le simple run, le meme agent peut ouvrir une deliberation structuree.
+
+Regles:
+
+- le systeme reste un seul agent produit
+- les angles d'analyse sont des prismes proceduraux, pas de nouveaux roles executifs
+- le moteur canonique reste le graphe a 6 roles
+- `Discord` montre un thread visible pour la reunion
+- le runtime garde toujours le transcript machine complet
+- une synthese humaine globale est republiquee dans `#pilotage`
+
 ## Couche 4 - Memoire partagee
 
 Le meme agent n'est possible que si la memoire est partagee.
@@ -147,7 +176,7 @@ La memoire doit contenir:
 - contraintes confirmees
 - habitudes de workflow
 
-Discord, Codex et les gros runs API doivent tous se brancher sur:
+Discord, Claude API et les gros runs GPT API doivent tous se brancher sur:
 
 - la meme memoire canonique
 - les memes signaux de learning
@@ -155,7 +184,7 @@ Discord, Codex et les gros runs API doivent tous se brancher sur:
 
 ## Regles du meme agent
 
-- pas de personnalite differente entre `Codex` et `Discord`
+- pas de personnalite differente entre `Claude API`, `GPT API` et `Discord`
 - pas de prompt local qui contredit la constitution du projet
 - pas de memoire privee implicite par canal
 - pas de reponse Discord qui ignore les decisions confirmees du coeur

@@ -41,9 +41,9 @@ Sans validation:
 
 Si le fondateur dit explicitement dans la conversation courante de lancer l'API:
 
-- `Codex` peut preparer le contrat
-- `Codex` peut enregistrer le `go` correspondant
-- `Codex` peut lancer le run sans demander une deuxieme action manuelle
+- `Claude API` peut traduire l'intention operateur en contrat exploitable
+- le runtime peut enregistrer le `go` correspondant
+- `GPT API` peut lancer le run sans demander une deuxieme action manuelle
 
 Ce `go` doit rester trace dans les notes d'approbation du contrat.
 

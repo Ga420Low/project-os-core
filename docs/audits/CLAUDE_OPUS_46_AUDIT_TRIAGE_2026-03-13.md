@@ -1,5 +1,7 @@
 # Claude Opus 4.6 Audit Triage - 2026-03-13
 
+Note historique: ce document capture l'etat du repo avant le lot 1 de nettoyage d'identite. Les references a `Codex` sont conservees comme trace d'audit.
+
 Ce document ne reprend pas aveuglement l'audit externe.
 Il fige ce qui a ete reverifie dans le code reel de `Project OS` au 13 mars 2026.
 

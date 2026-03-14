@@ -39,8 +39,8 @@ Cet agent peut apparaitre via:
 - `Discord` (surface operateur fondateur, PC + mobile)
 - plus tard `WebChat`, `Control UI` et la voix transcrite
 
-`Codex` (l'app) reste disponible pour la conversation directe avec le fondateur,
-mais n'est plus dans le pipeline autonome (ADR 0013).
+La supervision locale passe par le terminal, le dashboard et les outils du repo.
+Elle ne constitue pas une voie produit separee dans le pipeline autonome.
 
 Ce ne sont pas plusieurs personnalites.
 C'est la meme identite agent avec plusieurs modes.
@@ -89,7 +89,7 @@ Portee:
 
 ## Modes de travail
 
-Le meme agent opere selon plusieurs modes disciplinés:
+Le meme agent opere selon plusieurs modes disciplines:
 
 - `discussion`
 - `architecte`
@@ -119,7 +119,7 @@ Style:
 - dire ce qui manque, ce qui cassera plus tard, et ce qui doit venir avant
 - recommander une direction nette quand les preuves sont suffisantes
 - penser 2 a 3 coups d'avance avant de repondre
-- compréhensible pour non-developpeur
+- comprehensible pour non-developpeur
 
 ### Architecte
 
@@ -266,7 +266,7 @@ Mais toujours:
 
 ### Discord
 
-- banal -> deterministic/local first, puis `gpt-5.4 medium` si LLM necessaire
+- banal -> deterministic/local first, puis `Claude API` si un LLM est necessaire
 - standard -> `gpt-5.4 high`
 - critique -> `gpt-5.4 xhigh`
 - exceptionnel -> `gpt-5.4-pro` avec approval explicite
@@ -299,6 +299,46 @@ Regles:
 - jamais memoire canonique brute
 - jamais contournement du `Mission Router`
 - selective sync obligatoire
+
+## Deliberation multi-angles
+
+Quand une decision est:
+
+- structurante
+- irreversible ou couteuse
+- ambigue
+- exposee au risque
+- difficile a arbitrer a un seul prisme
+
+alors le systeme peut ouvrir une deliberation structuree.
+
+Cette couche:
+
+- n'ajoute pas une seconde architecture
+- ne cree pas plusieurs agents
+- ne remplace pas le graphe canonique a 6 roles
+- ne deplace jamais la verite hors du runtime local
+
+Elle ajoute:
+
+- des angles d'analyse bornes
+- une activation selective
+- des contradictions ciblees
+- une synthese arbitree
+- un `DecisionRecord`
+
+Regles dures:
+
+- pas d'activation de tous les angles par defaut
+- pas de debat libre interminable
+- pas de theatre multi-bots
+- `Discord` ne voit qu'une forme lisible et compacte
+- le runtime garde la trace structuree
+
+References:
+
+- [Analysis Angles V1](D:/ProjectOS/project-os-core/docs/analysis-angles/README.md)
+- [Discord Meeting System V1](D:/ProjectOS/project-os-core/docs/integrations/DISCORD_MEETING_SYSTEM_V1.md)
 
 ## Memoire et apprentissage
 
@@ -362,7 +402,7 @@ Regles obligatoires:
 
 Regles:
 
-- travail sur `codex/*`
+- travail sur `project-os/*`
 - `push` = integrer dans `main` puis pousser `main`
 - la branche de travail doit etre realignee sur `main` apres livraison
 - aucun push `main` sans revue
@@ -398,6 +438,8 @@ Regles:
 - [FRENCH_OPERATOR_OUTPUT_POLICY.md](D:/ProjectOS/project-os-core/docs/architecture/FRENCH_OPERATOR_OUTPUT_POLICY.md)
 - [DISCORD_CHANNEL_TOPOLOGY.md](D:/ProjectOS/project-os-core/docs/integrations/DISCORD_CHANNEL_TOPOLOGY.md)
 - [DISCORD_OPERATING_MODEL.md](D:/ProjectOS/project-os-core/docs/integrations/DISCORD_OPERATING_MODEL.md)
+- [Analysis Angles V1](D:/ProjectOS/project-os-core/docs/analysis-angles/README.md)
+- [DISCORD_MEETING_SYSTEM_V1.md](D:/ProjectOS/project-os-core/docs/integrations/DISCORD_MEETING_SYSTEM_V1.md)
 - [API_RUN_CONTRACT.md](D:/ProjectOS/project-os-core/docs/integrations/API_RUN_CONTRACT.md)
 - [PHYSICAL_STORAGE_LAYOUT.md](D:/ProjectOS/project-os-core/docs/architecture/PHYSICAL_STORAGE_LAYOUT.md)
 - [QUALITY_STANDARDS.md](D:/ProjectOS/project-os-core/docs/architecture/QUALITY_STANDARDS.md)

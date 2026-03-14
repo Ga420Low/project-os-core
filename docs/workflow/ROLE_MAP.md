@@ -5,7 +5,7 @@ Ce document definit qui fait quoi dans Project OS.
 Le systeme repose sur trois acteurs complementaires et un fondateur humain.
 Aucun acteur ne s'auto-valide. Chaque acteur a un role precis.
 
-## GPT API (gpt-5.4, 1M contexte) — Le Cerveau
+## GPT API (gpt-5.4, 1M contexte) - Le Cerveau
 
 ### Ce qu'il fait
 
@@ -32,7 +32,7 @@ Technique, precis, executant. Pense en code et en structures.
 - pendant la phase PLAN d'une mission
 - pendant le brainstorm d'architecture
 
-## Claude API (opus/sonnet, 1M contexte) — L'Auditeur + Le Traducteur
+## Claude API (opus/sonnet, 1M contexte) - L'Auditeur + Le Traducteur
 
 ### Role 1: Auditeur
 
@@ -73,7 +73,7 @@ Critique, humain, protecteur. Pense en risques et en clarte.
 - quand le fondateur repond (traduction vers GPT)
 - quand un run se termine (resume pour Discord)
 
-## Theo (le fondateur) — Direction et decision
+## Theo (le fondateur) - Direction et decision
 
 ### Ce qu'il fait
 
@@ -97,28 +97,52 @@ Critique, humain, protecteur. Pense en risques et en clarte.
 - en mobile: Discord uniquement
 - style: francais simple, reponses courtes ("go", "stop", "B", "fusionne")
 
-## Codex (l'app) — Conversation directe
+## Supervision locale (terminal + dashboard)
 
 ### Ce qu'il fait
 
-- outil de conversation directe avec le fondateur
-- discuter d'une idee en direct
+- suivre le dashboard et le terminal live
 - comprendre un resultat en detail
-- iterer vite sur un petit probleme
+- iterer localement sur un petit probleme
 - ecrire des docs de vision
 
 ### Ce qu'il ne fait plus
 
-- n'est plus dans le pipeline autonome
-- n'est plus inspecteur ni integrateur
-- n'est plus le "Command Board"
-- ne va pas sur Discord
-- ne fait plus de review de code dans le pipeline
+- ne constitue pas une voie produit separee
+- ne remplace pas `Discord` pour l'operateur
+- ne remplace pas `Claude API` comme traducteur/auditeur
+- ne remplace pas `GPT API` comme lane code massive
 
 ### Pourquoi ce changement
 
-Codex est lie a une conversation manuelle dans l'app.
-Il ne peut pas etre appele par API ni fonctionner comme agent autonome.
+Le systeme doit rester pilotable depuis `Discord` et verifiable via le runtime local.
+La supervision locale est un outil de preuve et d'inspection, pas une identite agent separee.
+
+## Deliberation multi-angles
+
+Les angles d'analyse ne sont pas de nouveaux acteurs autonomes.
+
+Ils sont une couche de review structuree activee quand:
+
+- un arbitrage est important
+- le risque est eleve
+- plusieurs prismes doivent etre confrontes
+- une synthese arbitree est preferable a une discussion libre
+
+Leur place:
+
+- `Planner` propose les angles
+- `Critic` aide a choisir les contradictions utiles
+- `Guardian` porte les vetos et contraintes dures
+- `Memory Curator` promeut seulement la synthese et le `DecisionRecord`
+- un `Moderator` procedurale orchestre la reunion
+
+Regle dure:
+
+- les angles n'ont aucune autorite directe sur le runtime
+- ils n'executent rien
+- ils n'ajoutent pas une nouvelle identite produit
+- ils servent la decision, puis s'effacent derriere une synthese
 
 ## Flux de traduction
 
@@ -127,7 +151,8 @@ GPT API travaille
   -> produit un structured_question (JSON)
     -> Claude API recoit le JSON
       -> Claude decide: envoyer ou filtrer ?
-        -> si envoyer: traduit en francais humain (3 lignes max)
+        -> si envoyer une notification_card: traduit en francais humain (3 lignes max)
+        -> si une reunion structuree est ouverte: alimente le meeting_thread et la founder_synthesis
           -> envoie sur Discord via OpenClaw
             -> Theo repond en humain ("go", "B", "fusionne")
               -> Claude traduit en founder_decision (JSON)
@@ -162,3 +187,5 @@ GPT API travaille
 - `docs/decisions/0013-dual-model-operating-model.md`
 - `docs/workflow/LANGUAGE_LEVELS.md`
 - `docs/workflow/DAILY_OPERATOR_WORKFLOW.md`
+- `docs/analysis-angles/README.md`
+- `docs/integrations/DISCORD_MEETING_SYSTEM_V1.md`

@@ -1,39 +1,81 @@
 # Discord Message Templates
 
-Ce document definit les formats exacts des messages que le systeme envoie au fondateur sur Discord.
+Ce document definit les formats exacts des sorties humaines que le systeme envoie au fondateur sur Discord.
 
-Tous les messages sont produits par Claude API (le traducteur) a partir des signaux structures de GPT API.
-Le fondateur ne recoit jamais de JSON, de code ou de chemin de fichier.
+Les `notification_card` et `founder_synthesis` sont produites par `Claude API` a partir des signaux structures de `GPT API` et du runtime.
+Les `meeting_thread` suivent le protocole strict de `DISCORD_MEETING_SYSTEM_V1`.
+Le fondateur ne recoit jamais de JSON brut, de code non demande ou de chemin de fichier.
 
-## Regles generales
+## Profils de sortie Discord
+
+### `notification_card`
+
+Usage:
+
+- `contract_proposed`
+- `run_completed`
+- `run_failed`
+- `clarification_required`
+- `budget_alert`
+- cartes `#runs-live`
+
+Regles:
 
 - maximum 3 lignes par message
 - francais simple, pas de jargon technique
 - jamais de code, jamais de chemin de fichier, jamais de JSON
 - chaque message doit etre comprehensible sans contexte technique
-- chaque message doit etre actionable (le fondateur sait quoi faire)
+- chaque message doit etre actionable
 - les emojis sont utilises comme marqueurs visuels rapides
 
-## Templates par type de signal
+### `meeting_thread`
+
+Usage:
+
+- deliberation multi-angles visible dans un thread Discord
+- contradiction ciblee
+- synthese arbitree dans le thread
+
+Regles:
+
+- pas de limite fixe en nombre de lignes
+- format structure obligatoire
+- pas de code brut ni de dump runtime
+- rester lisible pour le fondateur
+
+### `founder_synthesis`
+
+Usage:
+
+- synthese humaine finale republiquee dans `#pilotage`
+- recap fondateur apres une reunion ou un arbitrage dense
+
+Regles:
+
+- concise
+- pas bornee a 3 lignes si la clarte exige plus
+- ecrite pour la decision, pas pour l'exhaustivite
+
+## Templates `notification_card` par type de signal
 
 ### Run complete
 
 ```
-[branche] termine — [decision en 1 phrase].
+[branche] termine - [decision en 1 phrase].
 [nb fichiers] fichiers, [cout]EUR. Review dispo au retour.
 ```
 
 Exemple:
 
 ```
-codex/refactor-memory termine — Memory separe en bridge, store et curator.
+project-os/refactor-memory termine - Memory separe en bridge, store et curator.
 5 fichiers, 0.28EUR. Review dispo au retour.
 ```
 
 ### Clarification requise
 
 ```
-Question sur [branche] —
+Question sur [branche] -
 [question en francais simple].
 A) [option A] B) [option B]
 [urgence]. Si tu reponds pas je fais [fallback].
@@ -42,7 +84,7 @@ A) [option A] B) [option B]
 Exemple:
 
 ```
-Question sur codex/refactor-memory —
+Question sur project-os/refactor-memory -
 Deux modules se bloquent mutuellement.
 A) Separer proprement (recommande) B) Fusionner
 Pas urgent, j'ai 4h. Si tu reponds pas je fais A.
@@ -51,49 +93,49 @@ Pas urgent, j'ai 4h. Si tu reponds pas je fais A.
 ### Run echoue (sans retry)
 
 ```
-[branche] echoue — [raison simple].
+[branche] echoue - [raison simple].
 [action requise ou "Aucune action requise"].
 ```
 
 Exemple:
 
 ```
-codex/add-guardian echoue — erreur de connexion a l'API OpenAI.
+project-os/add-guardian echoue - erreur de connexion a l'API OpenAI.
 Je reessaie dans 30 min, aucune action requise.
 ```
 
 ### Contrat propose
 
 ```
-Nouveau lot propose — [objectif en 1 phrase].
+Nouveau lot propose - [objectif en 1 phrase].
 Cout estime: [montant]EUR. Dis "go" pour lancer.
 ```
 
 Exemple:
 
 ```
-Nouveau lot propose — Ajouter le guardian pre-spend avec detection de boucle.
+Nouveau lot propose - Ajouter le guardian pre-spend avec detection de boucle.
 Cout estime: 0.45EUR. Dis "go" pour lancer.
 ```
 
 ### Budget alert
 
 ```
-Budget jour a [pourcentage]% — [depense]EUR sur [limite]EUR.
+Budget jour a [pourcentage]% - [depense]EUR sur [limite]EUR.
 [consequence simple].
 ```
 
 Exemple:
 
 ```
-Budget jour a 82% — 2.87EUR sur 3.50EUR.
+Budget jour a 82% - 2.87EUR sur 3.50EUR.
 Les runs non urgents attendront demain.
 ```
 
 ### Review terminee (resume)
 
 ```
-Review de [branche] — [verdict en 1 phrase].
+Review de [branche] - [verdict en 1 phrase].
 [detail principal si pertinent].
 [prochaine action].
 ```
@@ -101,21 +143,21 @@ Review de [branche] — [verdict en 1 phrase].
 Exemple accepte:
 
 ```
-Review de codex/refactor-memory — Code propre, tout est bon.
+Review de project-os/refactor-memory - Code propre, tout est bon.
 Pret a merger. Dis "merge" pour valider.
 ```
 
 Exemple avec reserves:
 
 ```
-Review de codex/refactor-memory — 1 probleme a corriger.
+Review de project-os/refactor-memory - 1 probleme a corriger.
 Fuite de connexion detectee, GPT va corriger automatiquement.
 ```
 
 ### Mission avancee (futur lot 5)
 
 ```
-Mission [nom] — etape [n]/[total] terminee.
+Mission [nom] - etape [n]/[total] terminee.
 [resume etape]. Prochaine etape: [description].
 ```
 
@@ -142,17 +184,17 @@ Ce state permet de comprendre le contexte de chaque message sans appel API.
 Intention "approuver":
 
 - "go", "vas-y", "envoie", "lance", "c'est bon", "ouais", "ok", "fais-le"
-- Le systeme sait qu'un contrat est en attente → il approuve sans rien demander
+- Le systeme sait qu'un contrat est en attente -> il approuve sans rien demander
 
 Intention "refuser":
 
 - "stop", "non", "bof", "pas maintenant", "annule", "laisse tomber"
-- Le systeme sait quel contrat est concerne → il rejette
+- Le systeme sait quel contrat est concerne -> il rejette
 
 Intention "choisir une option":
 
 - "le premier", "A", "fais la separation", "comme tu recommandes"
-- Le systeme sait quelle question est en attente → il identifie l'option
+- Le systeme sait quelle question est en attente -> il identifie l'option
 
 Intention "donner une direction":
 
@@ -172,16 +214,26 @@ Le systeme apprend les habitudes du fondateur via OpenMemory:
 Si le message est vraiment ambigu par rapport au contexte:
 
 ```
-J'ai pas compris — tu parles du lot memory ou du guardian ?
+J'ai pas compris - tu parles du lot memory ou du guardian ?
 ```
 
 Regle: le systeme ne devine pas. Il demande. Mais il demande rarement car le state persistant lui donne presque toujours le contexte necessaire.
+
+## Syntheses et reunions
+
+Les deliberations multi-angles ne suivent pas la regle `3 lignes max`.
+
+Quand le systeme ouvre un thread de reunion:
+
+- le format vient de `docs/integrations/DISCORD_MEETING_SYSTEM_V1.md`
+- le thread visible porte les messages structures `[Moderator]`, `[Tech]`, `[RedTeam]`, etc.
+- la synthese finale du thread est ensuite republiquee dans `#pilotage` comme `founder_synthesis`
 
 ## Anti-patterns
 
 Ce que le systeme ne doit jamais envoyer sur Discord:
 
-- un message de plus de 3 lignes
+- une `notification_card` de plus de 3 lignes
 - du code ou du pseudo-code
 - un chemin de fichier (`src/project_os_core/...`)
 - un JSON brut

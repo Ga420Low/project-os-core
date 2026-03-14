@@ -34,6 +34,15 @@ Topologie cible:
 - `#incidents`
 - threads par mission
 
+Les deliberations multi-angles se branchent sur cette topologie existante:
+
+- ouverture depuis `#pilotage`
+- thread dedie pour la reunion
+- synthese finale dans le thread
+- synthese humaine finale republiquee dans `#pilotage`
+- miroir dans `#approvals` si la decision est sensible
+- lien vers `#runs-live` seulement si la reunion debouche sur un run
+
 ## Ce que Discord n'est pas
 
 `Discord` n'est pas:
@@ -84,13 +93,14 @@ Exemples:
 - salut
 - check rapide
 - petite question de statut
-- accusé de reception
+- accuse de reception
 - mini reformulation
 
 Route recommandee:
 
 - classification locale ou deterministic first
-- si LLM necessaire: `gpt-5.4` avec `reasoning.effort=medium`
+- si LLM necessaire: `Claude API` pour discussion/traduction compacte
+- si le message ouvre un vrai travail de fond: escalade vers `GPT API`
 
 ### Cas operateur standard
 
@@ -158,6 +168,12 @@ Regle:
 
 ## Politique de parole
 
+Profils de sortie Discord:
+
+- `notification_card` pour les signaux operateur courants et les cartes `#runs-live`
+- `meeting_thread` pour les deliberations structurees visibles
+- `founder_synthesis` pour la synthese humaine finale dans `#pilotage`
+
 Pendant un gros run de code:
 
 - pas de conversation naturelle sur Discord
@@ -175,6 +191,8 @@ Note:
 
 - `run_started` n'est pas emis sur `Discord`
 - il est filtre comme bruit pur (cf. ADR 0013 et `DAILY_OPERATOR_WORKFLOW`)
+- les `notification_card` restent bornees a 3 lignes max
+- les `meeting_thread` et `founder_synthesis` ne suivent pas cette limite, mais restent concis et lisibles
 
 Chaque carte doit rester courte et comprehensible par un humain non developpeur.
 Les artefacts runtime peuvent etre lies comme preuves, mais ne doivent pas etre la seule explication.
@@ -183,3 +201,30 @@ Dans `#pilotage`:
 
 - l'agent reste souple
 - mais toujours en francais clair et non technique si ce n'est pas necessaire
+
+## Reunions multi-angles structurees
+
+Quand une simple reponse ne suffit plus, `Discord` peut porter une deliberation structuree.
+
+But:
+
+- confronter plusieurs prismes sans theatre
+- produire une synthese arbitrable
+- garder la discussion lisible pour le fondateur
+
+Regles:
+
+- un seul bot
+- identites logiques `[Vision]`, `[Tech]`, `[RedTeam]`, etc.
+- `Moderator` procedurale
+- threads first
+- thread visible toujours
+- format strict
+- synthese finale obligatoire
+- `Discord` ne devient jamais la memoire canonique
+
+References:
+
+- `docs/analysis-angles/README.md`
+- `docs/analysis-angles/07-meeting-types.md`
+- `docs/integrations/DISCORD_MEETING_SYSTEM_V1.md`

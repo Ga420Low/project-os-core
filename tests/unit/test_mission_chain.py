@@ -23,6 +23,8 @@ from project_os_core.models import (
 )
 from project_os_core.services import build_app_services
 
+TEST_BRANCH = "project-os/test-mission-chain"
+
 
 def _install_stub_reviewer(services) -> None:
     def _stub(result, context_pack):
@@ -100,8 +102,8 @@ def _build_services(tmp_path: Path):
     services.api_runs._run_repo_preflight = lambda **_kwargs: {  # type: ignore[method-assign]
         "ok": True,
         "issues": [],
-        "current_branch": services.api_runs._current_branch(),
-        "target_branch": services.api_runs._current_branch(),
+        "current_branch": TEST_BRANCH,
+        "target_branch": TEST_BRANCH,
         "dirty": False,
     }
     services.api_runs._ensure_operator_dashboard = lambda contract=None: {"ready": True, "reason": "test"}  # type: ignore[method-assign]
@@ -187,7 +189,7 @@ class MissionChainTests(unittest.TestCase):
             try:
                 chain = services.chain.create_chain(
                     objective="Refactor the gateway stack.",
-                    branch_name=services.api_runs._current_branch(),
+                    branch_name=TEST_BRANCH,
                     chain_template="full_refactor",
                 )
                 self.assertEqual(len(chain.steps), 4)
@@ -202,7 +204,7 @@ class MissionChainTests(unittest.TestCase):
             try:
                 chain = services.chain.create_chain(
                     objective="Refactor the router.",
-                    branch_name=services.api_runs._current_branch(),
+                    branch_name=TEST_BRANCH,
                     chain_template="full_refactor",
                 )
                 self._persist_chain_run_for_step(services, chain=chain, step_index=0, status=ApiRunStatus.COMPLETED)
@@ -223,7 +225,7 @@ class MissionChainTests(unittest.TestCase):
             try:
                 chain = services.chain.create_chain(
                     objective="Single-step audit mission.",
-                    branch_name=services.api_runs._current_branch(),
+                    branch_name=TEST_BRANCH,
                     steps=[MissionStep(step_index=0, mode=ApiRunMode.AUDIT, objective="Audit only")],
                 )
                 chain = services.chain._update_chain(chain, current_step_index=0)  # type: ignore[attr-defined]
@@ -243,7 +245,7 @@ class MissionChainTests(unittest.TestCase):
             try:
                 chain = services.chain.create_chain(
                     objective="Chain that should fail.",
-                    branch_name=services.api_runs._current_branch(),
+                    branch_name=TEST_BRANCH,
                     steps=[
                         MissionStep(step_index=0, mode=ApiRunMode.AUDIT, objective="Audit"),
                         MissionStep(step_index=1, mode=ApiRunMode.DESIGN, objective="Design"),
@@ -265,7 +267,7 @@ class MissionChainTests(unittest.TestCase):
             try:
                 chain = services.chain.create_chain(
                     objective="Chain with skip-on-failure.",
-                    branch_name=services.api_runs._current_branch(),
+                    branch_name=TEST_BRANCH,
                     steps=[
                         MissionStep(step_index=0, mode=ApiRunMode.AUDIT, objective="Audit"),
                         MissionStep(
@@ -294,7 +296,7 @@ class MissionChainTests(unittest.TestCase):
             try:
                 chain = services.chain.create_chain(
                     objective="Inspect the chain state.",
-                    branch_name=services.api_runs._current_branch(),
+                    branch_name=TEST_BRANCH,
                     chain_template="design_only",
                     metadata={"owner": "founder"},
                 )
@@ -313,7 +315,7 @@ class MissionChainTests(unittest.TestCase):
             try:
                 chain = services.chain.create_chain(
                     objective="Launch the first chain step.",
-                    branch_name=services.api_runs._current_branch(),
+                    branch_name=TEST_BRANCH,
                     steps=[MissionStep(step_index=0, mode=ApiRunMode.AUDIT, objective="Audit first")],
                 )
 
@@ -332,7 +334,7 @@ class MissionChainTests(unittest.TestCase):
                 services.api_runs.execution_policy.daily_budget_limit_eur = 0.01
                 chain = services.chain.create_chain(
                     objective="Pause chain when guardian blocks a step.",
-                    branch_name=services.api_runs._current_branch(),
+                    branch_name=TEST_BRANCH,
                     steps=[MissionStep(step_index=0, mode=ApiRunMode.AUDIT, objective="Audit first")],
                 )
 

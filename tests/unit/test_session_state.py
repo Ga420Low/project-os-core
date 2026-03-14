@@ -136,14 +136,14 @@ class PersistentSessionStateTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.PATCH_PLAN,
                     objective="Prepare patch plan",
-                    branch_name="codex/running-branch",
+                    branch_name="project-os/running-branch",
                 )
                 _, running_result = self._persist_request_and_result(
                     services,
                     prompt=prompt_running,
                     context=context_running,
                     status=ApiRunStatus.RUNNING,
-                    branch_name="codex/running-branch",
+                    branch_name="project-os/running-branch",
                     objective="Prepare patch plan",
                     estimated_cost_eur=0.17,
                 )
@@ -152,7 +152,7 @@ class PersistentSessionStateTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.AUDIT,
                     objective="Audit memory layer",
-                    branch_name="codex/pending-contract",
+                    branch_name="project-os/pending-contract",
                 )
                 contract = services.api_runs.create_run_contract(
                     context_pack_id=context_contract.context_pack_id,
@@ -164,14 +164,14 @@ class PersistentSessionStateTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.DESIGN,
                     objective="Design new flow",
-                    branch_name="codex/clarification-branch",
+                    branch_name="project-os/clarification-branch",
                 )
                 clarification_request, clarification_result = self._persist_request_and_result(
                     services,
                     prompt=prompt_clarification,
                     context=context_clarification,
                     status=ApiRunStatus.CLARIFICATION_REQUIRED,
-                    branch_name="codex/clarification-branch",
+                    branch_name="project-os/clarification-branch",
                     objective="Design new flow",
                     contract_id=contract.contract_id,
                     estimated_cost_eur=0.23,
@@ -191,14 +191,14 @@ class PersistentSessionStateTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.GENERATE_PATCH,
                     objective="Ship patch",
-                    branch_name="codex/completed-branch",
+                    branch_name="project-os/completed-branch",
                 )
                 self._persist_request_and_result(
                     services,
                     prompt=prompt_completed,
                     context=context_completed,
                     status=ApiRunStatus.COMPLETED,
-                    branch_name="codex/completed-branch",
+                    branch_name="project-os/completed-branch",
                     objective="Ship patch",
                     estimated_cost_eur=0.41,
                 )
@@ -405,7 +405,7 @@ class PersistentSessionStateTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.AUDIT,
                     objective="Audit the module",
-                    branch_name="codex/session-contract",
+                    branch_name="project-os/session-contract",
                 )
                 contract = services.api_runs.create_run_contract(
                     context_pack_id=context.context_pack_id,
@@ -460,7 +460,7 @@ class PersistentSessionStateTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.AUDIT,
                     objective="Audit the module",
-                    branch_name="codex/session-persist-order",
+                    branch_name="project-os/session-persist-order",
                 )
                 services.api_runs.create_run_contract(
                     context_pack_id=context.context_pack_id,

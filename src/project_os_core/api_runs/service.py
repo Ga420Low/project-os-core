@@ -1772,7 +1772,7 @@ class ApiRunService:
             "operator_delivery_counts": operator_delivery_counts,
             "latest_runs": items,
         }
-        return snapshot
+        return self._sanitize_monitor_snapshot(snapshot)
 
     def render_terminal_dashboard(self, *, limit: int = 5) -> str:
         snapshot = self.monitor_snapshot(limit=limit)
@@ -1789,6 +1789,73 @@ class ApiRunService:
             "dashboard_disabled": "dashboard_disabled",
         }
         return mapping.get(normalized, normalized or "unknown")
+
+    def _is_legacy_api_run_branch(self, branch_name: Any) -> bool:
+        normalized = str(branch_name or "").strip()
+        if not normalized:
+            return False
+        return not normalized.startswith("project-os/")
+
+    def _sanitize_monitor_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
+        latest_runs = snapshot.get("latest_runs") or []
+        visible_runs: list[dict[str, Any]] = []
+        hidden_run_count = 0
+        for item in latest_runs:
+            if not isinstance(item, dict):
+                continue
+            annotated = dict(item)
+            if self._is_legacy_api_run_branch(annotated.get("branch_name")):
+                hidden_run_count += 1
+                continue
+            annotated["legacy_runtime_artifact"] = False
+            visible_runs.append(annotated)
+
+        current_run = snapshot.get("current_run")
+        if isinstance(current_run, dict):
+            if self._is_legacy_api_run_branch(current_run.get("branch_name")):
+                current_run = None
+            elif visible_runs:
+                current_run = visible_runs[0]
+            else:
+                current_run = dict(current_run)
+                current_run["legacy_runtime_artifact"] = False
+        elif visible_runs:
+            current_run = visible_runs[0]
+
+        current_contract = snapshot.get("current_contract")
+        hidden_contract_count = 0
+        if isinstance(current_contract, dict):
+            if self._is_legacy_api_run_branch(current_contract.get("branch_name")):
+                hidden_contract_count = 1
+                current_contract = None
+            else:
+                current_contract = dict(current_contract)
+                current_contract["legacy_runtime_artifact"] = False
+
+        status_counts: dict[str, int] = {}
+        review_counts: dict[str, int] = {}
+        operator_delivery_counts: dict[str, int] = {}
+        for item in visible_runs:
+            status_key = str(item.get("status") or "unknown")
+            status_counts[status_key] = status_counts.get(status_key, 0) + 1
+            review_key = str(item.get("review_verdict") or "pending")
+            review_counts[review_key] = review_counts.get(review_key, 0) + 1
+            delivery_key = str(item.get("operator_delivery_status") or "none")
+            operator_delivery_counts[delivery_key] = operator_delivery_counts.get(delivery_key, 0) + 1
+
+        sanitized = dict(snapshot)
+        sanitized["current_run"] = current_run
+        sanitized["current_contract"] = current_contract
+        sanitized["latest_runs"] = visible_runs
+        sanitized["status_counts"] = status_counts
+        sanitized["review_counts"] = review_counts
+        sanitized["operator_delivery_counts"] = operator_delivery_counts
+        sanitized["legacy_hidden"] = {
+            "run_count": hidden_run_count,
+            "contract_count": hidden_contract_count,
+            "reason": "branch_not_project_os",
+        }
+        return sanitized
 
     def _render_terminal_frame(self, snapshot: dict[str, Any], *, width: int) -> list[str]:
         width = max(88, width)
@@ -1807,7 +1874,15 @@ class ApiRunService:
         )
         delivery_counts = snapshot.get("operator_delivery_counts") or {}
         delivery_line = ", ".join(f"{key}={value}" for key, value in sorted(delivery_counts.items())) or "aucune livraison"
-        lines.extend(self._terminal_section("Budget", [budget_line, f"Livraisons operateur: {delivery_line}"], width=width))
+        budget_lines = [budget_line, f"Livraisons operateur: {delivery_line}"]
+        legacy_hidden = snapshot.get("legacy_hidden") or {}
+        hidden_runs = int(legacy_hidden.get("run_count") or 0)
+        hidden_contracts = int(legacy_hidden.get("contract_count") or 0)
+        if hidden_runs or hidden_contracts:
+            budget_lines.append(
+                f"Hygiene runtime: runs legacy masques={hidden_runs}, contrats legacy masques={hidden_contracts}"
+            )
+        lines.extend(self._terminal_section("Budget", budget_lines, width=width))
 
         current = snapshot.get("current_run")
         if current:
@@ -3652,8 +3727,8 @@ class ApiRunService:
 
     def _normalize_branch_name(self, branch_name: str | None) -> str:
         candidate = branch_name or self._current_branch()
-        if not candidate.startswith("codex/"):
-            raise ValueError("API runs must target a codex/* branch")
+        if not candidate.startswith("project-os/"):
+            raise ValueError("API runs must target a project-os/* branch")
         return candidate
 
     def _normalize_skill_tags(self, skill_tags: list[str]) -> list[str]:
@@ -3713,7 +3788,11 @@ class ApiRunService:
         if self.paths.health_snapshot_path.exists():
             facts["health"] = json.loads(self.paths.health_snapshot_path.read_text(encoding="utf-8"))
         if self.paths.api_runs_terminal_snapshot_path.exists():
-            facts["api_runs_monitor"] = json.loads(self.paths.api_runs_terminal_snapshot_path.read_text(encoding="utf-8"))
+            snapshot = json.loads(self.paths.api_runs_terminal_snapshot_path.read_text(encoding="utf-8"))
+            if isinstance(snapshot, dict):
+                facts["api_runs_monitor"] = self._sanitize_monitor_snapshot(snapshot)
+            else:
+                facts["api_runs_monitor"] = snapshot
         return facts
 
     def _render_prompt_text(self, context_pack: ContextPack, template_config: dict[str, Any]) -> str:
@@ -3845,7 +3924,7 @@ class ApiRunService:
     def _default_constraints(self) -> list[str]:
         return [
             "Travaille d'abord sur le repo et la CLI. Pas de computer use Windows pour la lane code v1.",
-            "Ne modifie jamais main. Travaille sur une branche codex/*.",
+            "Ne modifie jamais main. Travaille sur une branche project-os/*.",
             "Ne contourne jamais le Mission Router, la verite runtime, ni la policy d'approbation.",
             "Reste silencieux pendant le run. Les messages naturels n'arrivent qu'en cas de blocage reel ou en fin de run.",
             "Retourne du JSON structure uniquement et signale explicitement les faits manquants.",
@@ -3859,7 +3938,7 @@ class ApiRunService:
             "The result keeps raw run artifacts in runtime storage and validated artifacts in the repo only.",
         ]
         if mode is ApiRunMode.GENERATE_PATCH:
-            base.append("The patch outline is ready for Codex review and local test execution.")
+            base.append("The patch outline is ready for Claude review and local test execution.")
         return base
 
     def _build_contract_summary(self, context_pack: ContextPack, prompt_template: MegaPromptTemplate, estimated_cost: float) -> str:

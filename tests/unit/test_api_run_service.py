@@ -146,6 +146,15 @@ class ApiRunServiceTests(unittest.TestCase):
         self.assertEqual(len(values), len(set(values)))
         self.assertIn("needs_revision", values)
 
+    def test_normalize_branch_name_rejects_legacy_prefixes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                with self.assertRaisesRegex(ValueError, "project-os/\\* branch"):
+                    services.api_runs._normalize_branch_name("codex/legacy-run")
+            finally:
+                services.close()
+
     def test_templates_require_contradiction_guard_for_all_modes(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = _build_services(Path(tmp))
@@ -161,7 +170,7 @@ class ApiRunServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             services = _build_services(Path(tmp))
             try:
-                branch_name = "codex/learning-injection"
+                branch_name = "project-os/learning-injection"
                 services.learning.record_decision(
                     status=DecisionStatus.CONFIRMED,
                     scope=f"api_run:audit:{branch_name}",
@@ -186,7 +195,7 @@ class ApiRunServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             services = _build_services(Path(tmp))
             try:
-                branch_name = "codex/learning-prompt"
+                branch_name = "project-os/learning-prompt"
                 services.learning.record_decision(
                     status=DecisionStatus.CONFIRMED,
                     scope=f"api_run:patch_plan:{branch_name}",
@@ -222,7 +231,7 @@ class ApiRunServiceTests(unittest.TestCase):
                 context_pack = services.api_runs.build_context_pack(
                     mode=ApiRunMode.DESIGN,
                     objective="Render prompt without prior lessons.",
-                    branch_name="codex/no-learning-prompt",
+                    branch_name="project-os/no-learning-prompt",
                     skill_tags=["design"],
                 )
                 prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
@@ -243,7 +252,7 @@ class ApiRunServiceTests(unittest.TestCase):
                 context_pack = services.api_runs.build_context_pack(
                     mode=ApiRunMode.GENERATE_PATCH,
                     objective="Continue even if learning injection fails.",
-                    branch_name="codex/learning-failure",
+                    branch_name="project-os/learning-failure",
                     skill_tags=["generate_patch"],
                 )
 
@@ -276,7 +285,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.AUDIT,
                     objective="Verifier le garde-fou de visibility UI.",
-                    branch_name="codex/test-ui-guard",
+                    branch_name="project-os/test-ui-guard",
                     skill_tags=["audit", "dashboard"],
                 )
                 with patch(
@@ -300,7 +309,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.AUDIT,
                     objective="Verifier le fallback d'approbation fondateur.",
-                    branch_name="codex/test-founder-fallback",
+                    branch_name="project-os/test-founder-fallback",
                     skill_tags=["audit", "dashboard"],
                 )
                 with patch(
@@ -351,7 +360,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.AUDIT,
                     objective="Verifier que le fallback ne dure pas trop longtemps.",
-                    branch_name="codex/test-stale-founder-fallback",
+                    branch_name="project-os/test-stale-founder-fallback",
                     skill_tags=["audit", "dashboard"],
                 )
                 stale_timestamp = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
@@ -382,7 +391,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.AUDIT,
                     objective="Verifier que le fallback lit la colonne canonique.",
-                    branch_name="codex/test-founder-approval-column",
+                    branch_name="project-os/test-founder-approval-column",
                     skill_tags=["audit", "dashboard"],
                 )
                 stale_timestamp = (datetime.now(timezone.utc) - timedelta(minutes=10)).isoformat()
@@ -409,7 +418,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.GENERATE_PATCH,
                     objective="Generer un patch sur un brief contradictoire.",
-                    branch_name="codex/test-clarification-required",
+                    branch_name="project-os/test-clarification-required",
                     skill_tags=["generate_patch", "guard"],
                 )
                 payload = services.api_runs.execute_run(
@@ -462,7 +471,7 @@ class ApiRunServiceTests(unittest.TestCase):
                 context_pack = services.api_runs.build_context_pack(
                     mode=ApiRunMode.GENERATE_PATCH,
                     objective="Verifier le preflight dur avant depense API.",
-                    branch_name="codex/preflight-mismatch",
+                    branch_name="project-os/preflight-mismatch",
                     skill_tags=["generate_patch", "guard"],
                 )
                 prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
@@ -497,7 +506,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.AUDIT,
                     objective="Verifier l'outbox operateur.",
-                    branch_name="codex/test-operator-outbox",
+                    branch_name="project-os/test-operator-outbox",
                     skill_tags=["audit", "observability"],
                 )
                 payload = services.api_runs.execute_run(
@@ -548,7 +557,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.AUDIT,
                     objective="Verifier le retry backoff operateur.",
-                    branch_name="codex/test-operator-backoff",
+                    branch_name="project-os/test-operator-backoff",
                     skill_tags=["audit", "observability"],
                 )
                 services.api_runs.execute_run(
@@ -609,7 +618,7 @@ class ApiRunServiceTests(unittest.TestCase):
                         services,
                         mode=ApiRunMode.AUDIT,
                         objective=f"Verifier backlog operateur {index}.",
-                        branch_name=f"codex/test-operator-backlog-{index}",
+                        branch_name=f"project-os/test-operator-backlog-{index}",
                         skill_tags=["audit", "observability"],
                     )
                     services.api_runs.execute_run(
@@ -647,7 +656,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.DESIGN,
                     objective="Design un lot ambigu.",
-                    branch_name="codex/test-clarification-resume",
+                    branch_name="project-os/test-clarification-resume",
                     skill_tags=["design", "guard"],
                 )
                 payload = services.api_runs.execute_run(
@@ -724,7 +733,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.AUDIT,
                     objective="Verifier le live dashboard pendant un run API.",
-                    branch_name="codex/test-live-snapshot",
+                    branch_name="project-os/test-live-snapshot",
                     skill_tags=["audit", "dashboard"],
                 )
                 observed_snapshot: dict[str, object] = {}
@@ -757,8 +766,110 @@ class ApiRunServiceTests(unittest.TestCase):
                 )
                 self.assertEqual(observed_snapshot["current_run"]["status"], "running")
                 self.assertEqual(observed_snapshot["current_run"]["phase"], "generation")
-                self.assertEqual(observed_snapshot["current_run"]["branch_name"], "codex/test-live-snapshot")
+                self.assertEqual(observed_snapshot["current_run"]["branch_name"], "project-os/test-live-snapshot")
                 self.assertEqual(observed_snapshot["current_run"]["run_id"], payload["result"].run_id)
+            finally:
+                services.close()
+
+    def test_monitor_snapshot_hides_legacy_branch_runs_from_current_truth(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier le masquage des runs legacy.",
+                    branch_name="project-os/test-legacy-snapshot",
+                    skill_tags=["audit"],
+                )
+                payload = services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
+                    response_runner=lambda request, prompt, context: {
+                        "model": "gpt-5.4",
+                        "output_text": json.dumps(
+                            {
+                                "decision": "Ne pas exposer les branches legacy comme verite courante.",
+                                "why": "Les anciennes branches ne doivent plus polluer le snapshot live.",
+                                "alternatives": ["Afficher tout sans distinction."],
+                                "files_to_change": ["src/project_os_core/api_runs/service.py"],
+                                "interfaces": ["ApiRunResult"],
+                                "patch_outline": ["Masquer les runs legacy.", "Conserver un compteur cache."],
+                                "tests": ["Verifier le snapshot hygienique."],
+                                "risks": ["Vieille verite visible dans le terminal."],
+                                "acceptance_criteria": ["Le snapshot courant ignore les branches non project-os."],
+                                "open_questions": [],
+                            }
+                        ),
+                        "usage": {"input_tokens": 300, "output_tokens": 120},
+                    },
+                )
+                services.database.execute(
+                    "UPDATE api_run_requests SET branch_name = ? WHERE run_request_id = ?",
+                    ("codex/legacy-run", payload["request"].run_request_id),
+                )
+                services.database.execute(
+                    "UPDATE api_run_contracts SET branch_name = ? WHERE contract_id = ?",
+                    ("codex/legacy-run", contract.contract_id),
+                )
+
+                snapshot = services.api_runs.monitor_snapshot(limit=5)
+                self.assertIsNone(snapshot["current_run"])
+                self.assertIsNone(snapshot["current_contract"])
+                self.assertEqual(snapshot["latest_runs"], [])
+                self.assertEqual(snapshot["legacy_hidden"]["run_count"], 1)
+                self.assertEqual(snapshot["legacy_hidden"]["contract_count"], 1)
+            finally:
+                services.close()
+
+    def test_build_context_pack_sanitizes_stale_legacy_snapshot_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                services.paths.api_runs_terminal_snapshot_path.write_text(
+                    json.dumps(
+                        {
+                            "schema_version": "2",
+                            "generated_at": "2026-03-14T00:00:00+00:00",
+                            "current_run": {
+                                "run_id": "api_run_legacy",
+                                "branch_name": "codex/legacy-run",
+                                "status": "completed",
+                                "review_verdict": "accepted",
+                                "operator_delivery_status": "none",
+                            },
+                            "current_contract": {
+                                "contract_id": "run_contract_legacy",
+                                "branch_name": "codex/legacy-run",
+                                "status": "approved",
+                            },
+                            "latest_runs": [
+                                {
+                                    "run_id": "api_run_legacy",
+                                    "branch_name": "codex/legacy-run",
+                                    "status": "completed",
+                                    "review_verdict": "accepted",
+                                    "operator_delivery_status": "none",
+                                }
+                            ],
+                        },
+                        ensure_ascii=True,
+                        indent=2,
+                    ),
+                    encoding="utf-8",
+                )
+
+                context_pack = services.api_runs.build_context_pack(
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier l'assainissement des faits runtime.",
+                    branch_name="project-os/test-runtime-facts",
+                    skill_tags=["audit"],
+                )
+                monitor_facts = context_pack.runtime_facts["api_runs_monitor"]
+                self.assertIsNone(monitor_facts["current_run"])
+                self.assertIsNone(monitor_facts["current_contract"])
+                self.assertEqual(monitor_facts["latest_runs"], [])
+                self.assertEqual(monitor_facts["legacy_hidden"]["run_count"], 1)
+                self.assertEqual(monitor_facts["legacy_hidden"]["contract_count"], 1)
             finally:
                 services.close()
 
@@ -770,7 +881,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.PATCH_PLAN,
                     objective="Finish the OpenClaw live adapter plan.",
-                    branch_name="codex/test-api-run",
+                    branch_name="project-os/test-api-run",
                     skill_tags=["patch_plan", "openclaw"],
                 )
                 payload = services.api_runs.execute_run(
@@ -796,7 +907,7 @@ class ApiRunServiceTests(unittest.TestCase):
                 )
                 result = payload["result"]
                 self.assertEqual(result.status.value, "completed")
-                self.assertEqual(payload["request"].branch_name, "codex/test-api-run")
+                self.assertEqual(payload["request"].branch_name, "project-os/test-api-run")
                 self.assertEqual(payload["context_pack"].skill_tags, ["PATCH_PLAN", "OPENCLAW"])
                 self.assertTrue(Path(result.raw_output_path).exists())
                 self.assertTrue(Path(result.result_artifact_path).exists())
@@ -814,7 +925,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.DESIGN,
                     objective="Design the first LangGraph live bridge.",
-                    branch_name="codex/test-review",
+                    branch_name="project-os/test-review",
                     skill_tags=["design", "langgraph"],
                 )
                 payload = services.api_runs.execute_run(
@@ -861,7 +972,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.GENERATE_PATCH,
                     objective="Generate a patch for a risky refactor.",
-                    branch_name="codex/test-reject",
+                    branch_name="project-os/test-reject",
                     skill_tags=["generate_patch", "security"],
                 )
                 payload = services.api_runs.execute_run(
@@ -904,7 +1015,7 @@ class ApiRunServiceTests(unittest.TestCase):
                 context_pack = services.api_runs.build_context_pack(
                     mode=ApiRunMode.AUDIT,
                     objective="Verifier le guardian budget ok.",
-                    branch_name="codex/test-guardian-budget-ok",
+                    branch_name="project-os/test-guardian-budget-ok",
                     skill_tags=["audit"],
                 )
                 prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
@@ -948,7 +1059,7 @@ class ApiRunServiceTests(unittest.TestCase):
                 context_pack = services.api_runs.build_context_pack(
                     mode=ApiRunMode.AUDIT,
                     objective="Verifier le guardian budget bloque.",
-                    branch_name="codex/test-guardian-budget-blocked",
+                    branch_name="project-os/test-guardian-budget-blocked",
                     skill_tags=["audit"],
                 )
                 prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
@@ -982,7 +1093,7 @@ class ApiRunServiceTests(unittest.TestCase):
                 context_pack = services.api_runs.build_context_pack(
                     mode=ApiRunMode.DESIGN,
                     objective="Verifier le guardian boucle.",
-                    branch_name="codex/test-guardian-loop",
+                    branch_name="project-os/test-guardian-loop",
                     skill_tags=["design"],
                 )
                 prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
@@ -1028,7 +1139,7 @@ class ApiRunServiceTests(unittest.TestCase):
                 context_pack = services.api_runs.build_context_pack(
                     mode=ApiRunMode.GENERATE_PATCH,
                     objective="Verifier le guardian override.",
-                    branch_name="codex/test-guardian-override",
+                    branch_name="project-os/test-guardian-override",
                     skill_tags=["generate_patch"],
                 )
                 prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
@@ -1061,7 +1172,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.AUDIT,
                     objective="Verifier le guardian bloque avant l'appel API.",
-                    branch_name="codex/test-guardian-blocked",
+                    branch_name="project-os/test-guardian-blocked",
                     skill_tags=["audit", "guardian"],
                 )
 
@@ -1093,7 +1204,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     services,
                     mode=ApiRunMode.PATCH_PLAN,
                     objective="Verifier le guardian laisse passer.",
-                    branch_name="codex/test-guardian-allowed",
+                    branch_name="project-os/test-guardian-allowed",
                     skill_tags=["patch_plan", "guardian"],
                 )
                 payload = services.api_runs.execute_run(
@@ -1178,7 +1289,7 @@ class ApiRunServiceTests(unittest.TestCase):
                 context_pack = services.api_runs.build_context_pack(
                     mode=ApiRunMode.PATCH_PLAN,
                     objective="Audit the generated patch plan.",
-                    branch_name="codex/test-claude-review",
+                    branch_name="project-os/test-claude-review",
                     skill_tags=["patch_plan", "review"],
                     source_paths=["src/project_os_core/api_runs/service.py"],
                 )
@@ -1233,7 +1344,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     prompt_template_id=new_id("mega_prompt"),
                     mode=ApiRunMode.PATCH_PLAN,
                     objective="Revise the patch plan.",
-                    branch_name="codex/test-needs-revision",
+                    branch_name="project-os/test-needs-revision",
                 )
                 result = ApiRunResult(
                     run_id=new_id("api_run"),
@@ -1270,7 +1381,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     kind=RunLifecycleEventKind.RUN_STARTED,
                     title="Run demarre",
                     summary="Le lot a commence.",
-                    branch_name="codex/test-translator-filter",
+                    branch_name="project-os/test-translator-filter",
                     mode=ApiRunMode.AUDIT,
                     channel_hint=OperatorChannelHint.RUNS_LIVE,
                     status=ApiRunStatus.RUNNING,
@@ -1305,7 +1416,7 @@ class ApiRunServiceTests(unittest.TestCase):
 
                 class _FakeBlock:
                     type = "text"
-                    text = "codex/test-translate termine — Le lot est pret.\n3 fichiers, 0.12EUR. Review dispo au retour.\nAucune action requise.\nLigne de trop."
+                    text = "project-os/test-translate termine — Le lot est pret.\n3 fichiers, 0.12EUR. Review dispo au retour.\nAucune action requise.\nLigne de trop."
 
                 class _FakeResponse:
                     content = [_FakeBlock()]
@@ -1334,7 +1445,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     kind=RunLifecycleEventKind.RUN_COMPLETED,
                     title="Run termine",
                     summary="Le run est termine et la review Claude est disponible pour decision.",
-                    branch_name="codex/test-translate",
+                    branch_name="project-os/test-translate",
                     mode=ApiRunMode.PATCH_PLAN,
                     channel_hint=OperatorChannelHint.RUNS_LIVE,
                     status=ApiRunStatus.COMPLETED,
@@ -1385,7 +1496,7 @@ class ApiRunServiceTests(unittest.TestCase):
                     kind=RunLifecycleEventKind.RUN_FAILED,
                     title="Run bloque",
                     summary="Le run a echoue.",
-                    branch_name="codex/test-translate-fallback",
+                    branch_name="project-os/test-translate-fallback",
                     mode=ApiRunMode.GENERATE_PATCH,
                     channel_hint=OperatorChannelHint.INCIDENTS,
                     status=ApiRunStatus.FAILED,
@@ -1395,7 +1506,7 @@ class ApiRunServiceTests(unittest.TestCase):
                 with patch("project_os_core.api_runs.service.Anthropic", _RaisingAnthropic):
                     translated = services.api_runs._call_translator(event=event)
 
-                self.assertEqual(translated, "codex/test-translate-fallback echoue.\nAucune action requise.")
+                self.assertEqual(translated, "project-os/test-translate-fallback echoue.\nAucune action requise.")
             finally:
                 services.close()
 

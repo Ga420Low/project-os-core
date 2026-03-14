@@ -21,7 +21,7 @@ Ces briques sont au coeur de la version finale.
 - `OpenMemory`
   - role: moteur memoire primaire local-first
   - decision: coeur de la memoire
-- `OpenAI API`
+- `GPT API` (`OpenAI`)
   - role: cerveau generaliste et arbitrage
   - decision: coeur du raisonnement
 - `UFO`

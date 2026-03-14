@@ -78,11 +78,11 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
 - [x] Types gateway/orchestration/promotions poses
 - [x] Adaptateur gateway interne `ChannelEvent -> Mission Router` implemente
 - [x] `ExecutionTicket` emis seulement par le graphe canonique
-- [x] Workflow hybride `Codex + API 1M + runtime local` documente
+- [x] Workflow hybride `Discord + Claude API + GPT API + runtime local` documente
 - [x] Discipline `DECISION CONFIRMED / DECISION CHANGED` documentee
 - [x] Skills de mega prompt documentes
 - [x] Identite agent unique documentee
-- [x] Handoff memoire Codex / API / Discord documente
+- [x] Handoff memoire supervision locale / API / Discord documente
 - [x] Policy Discord + routing adaptatif documentes
 
 ## Lots suivants
@@ -131,10 +131,10 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
   - [x] Templates Discord documentes
   - [x] MASTER_MACHINE, AGENTS, HYBRID_WORKFLOW mis a jour
   - [x] ADR 0010 marque SUPERSEDED
-  - [ ] Implementation `_call_reviewer()` Claude API dans service.py
-  - [ ] Implementation `_call_translator()` Claude API dans service.py
-  - [ ] Format `structured_question` dans le structured output GPT
-  - [ ] Filtre anti-bruit dans le pipeline operator delivery
+  - [x] Implementation `_call_reviewer()` Claude API dans service.py
+  - [x] Implementation `_call_translator()` Claude API dans service.py
+  - [x] Champs de clarification fondatrice dans le structured output GPT
+  - [x] Filtre anti-bruit dans le pipeline operator delivery
 - [ ] Lot API Runs - Persistence atomique
   - [ ] Remplacer INSERT OR REPLACE par INSERT strict sur toutes les tables api_run_*
   - [ ] Wrapper les multi-table writes dans db.transaction()

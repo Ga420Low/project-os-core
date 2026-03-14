@@ -7,8 +7,8 @@ Ce document definit les modes d'automatisation et le chainage de runs dans Proje
 Project OS execute du travail via des **runs API**. Chaque run est une unite atomique.
 Les runs peuvent etre enchaines en **missions** pour des objectifs plus grands.
 
-```
-Run (atomique)  →  Mission (sequence de runs)  →  Schedule (missions recurrentes)
+```text
+Run (atomique) -> Mission (sequence de runs) -> Schedule (missions recurrentes)
 ```
 
 ## Les 4 modes de run
@@ -17,7 +17,7 @@ Definis dans `docs/integrations/API_LEAD_AGENT_V1.md`.
 
 ### Audit
 
-- **Objectif**: Analyser un perimetre de code ou d'architecture
+- **Objectif**: analyser un perimetre de code ou d'architecture
 - **Entree**: context pack + perimetre cible
 - **Sortie**: rapport structure avec severites (P0, P1, P2)
 - **Cout type**: ~0.40 EUR
@@ -25,7 +25,7 @@ Definis dans `docs/integrations/API_LEAD_AGENT_V1.md`.
 
 ### Design
 
-- **Objectif**: Concevoir une architecture ou un lot de travail
+- **Objectif**: concevoir une architecture ou un lot de travail
 - **Entree**: context pack + objectif + contraintes
 - **Sortie**: design structure avec interfaces, dependances, alternatives, risques
 - **Cout type**: ~0.60 EUR
@@ -33,7 +33,7 @@ Definis dans `docs/integrations/API_LEAD_AGENT_V1.md`.
 
 ### Patch plan
 
-- **Objectif**: Planifier les modifications fichier par fichier
+- **Objectif**: planifier les modifications fichier par fichier
 - **Entree**: context pack + design valide
 - **Sortie**: plan de patch avec fichiers, ordre, tests, risques
 - **Cout type**: ~0.50 EUR
@@ -41,7 +41,7 @@ Definis dans `docs/integrations/API_LEAD_AGENT_V1.md`.
 
 ### Generate patch
 
-- **Objectif**: Produire le code
+- **Objectif**: produire le code
 - **Entree**: context pack + patch plan valide
 - **Sortie**: code structure, pret pour review
 - **Cout type**: ~0.80 EUR
@@ -51,20 +51,22 @@ Definis dans `docs/integrations/API_LEAD_AGENT_V1.md`.
 
 La sequence standard pour un lot de travail complet:
 
-```
-1. audit       →  comprendre l'etat actuel
-2. design      →  concevoir la solution
-3. patch_plan  →  planifier les modifications
-4. generate_patch  →  produire le code
-5. review (Claude API)  →  auditer cross-model
-6. decision (fondateur)  →  approuver ou rejeter
+```text
+1. audit -> comprendre l'etat actuel
+2. design -> concevoir la solution
+3. patch_plan -> planifier les modifications
+4. generate_patch -> produire le code
+5. tests / verifications -> prouver la sortie
+6. review (Claude API) -> auditer cross-model
+7. decision (fondateur) -> approuver ou rejeter
 ```
 
 Chaque etape peut:
-- **reussir** → passer a la suivante
-- **echouer** → retry ou escalade
-- **demander clarification** → attendre la reponse du fondateur
-- **etre rejetee** → retour a l'etape precedente ou abandon
+
+- **reussir** -> passer a la suivante
+- **echouer** -> retry ou escalade
+- **demander clarification** -> attendre la reponse du fondateur
+- **etre rejetee** -> retour a l'etape precedente ou abandon
 
 ## Missions
 
@@ -77,7 +79,7 @@ Une mission est une sequence de runs lies par un objectif commun.
 class Mission:
     mission_id: str
     objective: str              # "Refactorer le module memory"
-    branch: str                 # "codex/refactor-memory"
+    branch: str                 # "project-os/refactor-memory"
     steps: list[MissionStep]
     max_steps: int = 8          # guard: pas plus de 8 etapes
     status: str                 # "active", "completed", "paused", "failed"
@@ -94,12 +96,12 @@ class MissionStep:
 
 ### Workflow mission
 
-1. `create_mission(objective, branch)` → cree la mission et le premier step (audit ou design)
+1. `create_mission(objective, branch)` -> cree la mission et le premier step (audit ou design)
 2. le premier run est execute automatiquement
 3. a la completion, `advance_mission()` est appele
 4. `advance_mission()` injecte le contexte du run precedent dans le context pack du suivant
 5. la mission avance step par step jusqu'a completion ou echec
-6. le fondateur est notifie a chaque etape majeure
+6. le fondateur n'est notifie qu'aux points utiles: contrat, clarification, blocage reel, terminal state ou synthese importante
 
 ### Guards
 
@@ -113,6 +115,7 @@ class MissionStep:
 ### Context injection entre steps
 
 Chaque step recoit dans son context pack:
+
 - le resultat du step precedent (resume, pas brut)
 - les decisions prises pendant la mission
 - les clarifications resolues
@@ -143,7 +146,7 @@ class ScheduledRun:
 | Health audit | `audit` | Quotidien | Verifier la sante du code |
 | Security scan | `audit` | Hebdomadaire | Detecter les failles |
 | Doc freshness | `audit` | Hebdomadaire | Verifier que les docs sont a jour |
-| Budget review | — | Quotidien | Rapport de depenses |
+| Budget review | `review` | Quotidien | Rapport de depenses |
 
 ### Integration avec le monitor
 
@@ -171,6 +174,7 @@ def check_scheduled_runs():
 ### Mode autonome
 
 Le systeme agit seul tant que:
+
 - le budget est dans les limites
 - pas de boucle detectee
 - pas de clarification requise
@@ -179,6 +183,7 @@ Le systeme agit seul tant que:
 ### Mode assiste
 
 Le systeme demande au fondateur quand:
+
 - clarification requise (ambiguite, contradiction)
 - nouveau contrat a approuver
 - budget depasse
@@ -187,7 +192,7 @@ Le systeme demande au fondateur quand:
 
 ### Escalade progressive
 
-```
+```text
 1. Le systeme decide seul (pattern connu, budget ok)
 2. Le systeme propose et agit apres timeout (fallback_if_no_answer)
 3. Le systeme demande et attend (clarification_required)
@@ -211,7 +216,9 @@ Chaque run produit des signaux pour la couche learning:
 | Composant | Status |
 |-----------|--------|
 | Runs unitaires (4 modes) | Operationnel |
-| Review cross-model | A implementer (_call_reviewer) |
+| Review cross-model | Operationnel (_call_reviewer) |
+| Traduction operateur | Operationnel (_call_translator) |
+| Filtre `run_started` et bruit operateur | Operationnel |
 | Missions (chaining) | A implementer (lot planifie) |
 | Scheduled runs | A implementer (lot planifie) |
 | Guardian pre-spend | A implementer (lot planifie) |

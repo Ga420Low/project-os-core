@@ -231,8 +231,8 @@ Le cap est de faire grand sans casser la structure.
 
 Le projet suit maintenant un workflow hybride explicite:
 
-- direction et inspection via `Codex`
-- runs grands contextes via `OpenAI API`
+- direction via `Discord` et inspection via `Claude API`
+- runs grands contextes via `GPT API`
 - integration et verification dans le repo local
 
 Regle:
