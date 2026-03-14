@@ -101,14 +101,21 @@ Puis:
 - soit candidat memoire
 - soit `MissionIntent`
 
-### Codex -> Runtime
+### Claude API -> Runtime
 
-Quand `Codex` confirme un choix important:
+Quand Claude API (l'auditeur) confirme un choix important apres review:
 
 - ecrire la doc
 - ecrire ou mettre a jour l'ADR si necessaire
 - emettre un signal `DECISION CONFIRMED` ou `DECISION CHANGED`
 - pousser cela dans la memoire durable
+
+### Codex (l'app) -> Runtime (optionnel)
+
+Si le fondateur utilise Codex pour une conversation directe et qu'un choix important emerge:
+
+- suivre les memes regles que ci-dessus
+- `Codex` n'est plus dans le pipeline autonome (ADR 0013)
 
 ### API Run -> Runtime
 

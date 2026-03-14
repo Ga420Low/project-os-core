@@ -125,7 +125,7 @@ Le run ne donne jamais l'autorisation de pousser seul.
 
 Il faut ensuite:
 
-- revue `Codex`
-- verification locale
-- tests
-- integration ou rejet
+- review cross-model par Claude API (audit du code produit par GPT API)
+- verification locale (tests, coherence repo)
+- rapport traduit en francais humain pour le fondateur
+- integration ou rejet par le fondateur (via Discord ou terminal)

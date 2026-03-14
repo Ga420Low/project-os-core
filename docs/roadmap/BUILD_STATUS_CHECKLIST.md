@@ -123,9 +123,60 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
   - [x] Validation live en mode fail-closed posee
   - [x] Cartes Discord compactes preparees dans le modele operateur
   - [ ] Runtime `OpenClaw` reel connecte sur Discord/WebChat du poste
+- [x] Operating Model v2 - Dual Model (ADR 0013)
+  - [x] ADR 0013 redige (supersede ADR 0010)
+  - [x] Workflow quotidien fondateur documente
+  - [x] Carte des roles GPT API / Claude API / fondateur documentee
+  - [x] Niveaux de langage (machine / prompt structure / humain) documentes
+  - [x] Templates Discord documentes
+  - [x] MASTER_MACHINE, AGENTS, HYBRID_WORKFLOW mis a jour
+  - [x] ADR 0010 marque SUPERSEDED
+  - [ ] Implementation `_call_reviewer()` Claude API dans service.py
+  - [ ] Implementation `_call_translator()` Claude API dans service.py
+  - [ ] Format `structured_question` dans le structured output GPT
+  - [ ] Filtre anti-bruit dans le pipeline operator delivery
+- [ ] Lot API Runs - Persistence atomique
+  - [ ] Remplacer INSERT OR REPLACE par INSERT strict sur toutes les tables api_run_*
+  - [ ] Wrapper les multi-table writes dans db.transaction()
+  - [ ] Ajouter expected_updated_at sur mark_operator_delivery()
+  - [ ] Test d'integrite mid-transaction
+- [ ] Lot API Runs - Learning Context Injection
+  - [ ] Relire les completion_reports recents dans build_context_pack()
+  - [ ] Bloc LESSONS_LEARNED dans le context_pack (max 800 tokens)
+  - [ ] Tests: run apres rejets inclut les signaux negatifs
+- [ ] Lot API Runs - Guardian Pre-Spend Gate
+  - [ ] Check budget journalier avant _call_openai()
+  - [ ] Detection de boucle (3+ runs meme branche/mode en 2h)
+  - [ ] Check taille contexte anormale
+  - [ ] Chaque check produit clarification_required, pas un blocage dur
+- [ ] Lot API Runs - Hot Memory Integration
+  - [ ] Memory card JSON apres review accepted
+  - [ ] Inclusion des cards recentes dans build_context_pack()
+  - [ ] TTL 7 jours avec migration vers warm
+- [ ] Lot API Runs - Run Chain / Missions
+  - [ ] Dataclass Mission + MissionStep
+  - [ ] Table missions + mission_steps
+  - [ ] create_mission() -> PATCH_PLAN automatique
+  - [ ] advance_mission() -> run suivant avec contexte
+  - [ ] Guard dur 8 steps max
+- [ ] Lot API Runs - Scheduled Autonomous Runs
+  - [ ] Dataclass ScheduledRun
+  - [ ] Table scheduled_runs
+  - [ ] check_scheduled_runs() dans la boucle monitor
+  - [ ] Guard 5 schedules max actifs
 - [ ] Lot 5 - Orchestration durable `LangGraph` live
 - [ ] Lot 6 - Windows worker + perception
 - [ ] Lot 7 - Browser worker `Stagehand`
 - [ ] Lot 8 - Ops distantes `Langfuse` + `OpenTelemetry`
 - [ ] Lot 9 - Profile `UEFN`
 - [ ] Lot 10 - Audit ancien repo `keep / migrate / rewrite / delete`
+
+## Documentation systeme complete
+
+- [x] Physical Storage Layout (`docs/architecture/PHYSICAL_STORAGE_LAYOUT.md`)
+- [x] Quality Standards (`docs/architecture/QUALITY_STANDARDS.md`)
+- [x] Error Recovery and Resilience (`docs/architecture/ERROR_RECOVERY_AND_RESILIENCE.md`)
+- [x] Cost Optimization Strategy (`docs/architecture/COST_OPTIMIZATION_STRATEGY.md`)
+- [x] Worker Capability Contracts (`docs/architecture/WORKER_CAPABILITY_CONTRACTS.md`)
+- [x] Third-Party Integration Guide (`docs/knowledge/THIRD_PARTY_INTEGRATION_GUIDE.md`)
+- [x] Automation Modes and Chaining (`docs/architecture/AUTOMATION_MODES_AND_CHAINING.md`)

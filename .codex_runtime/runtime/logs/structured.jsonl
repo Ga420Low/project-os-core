@@ -1,0 +1,6 @@
+{"event_type": "scheduled_task_created", "level": "INFO", "name": "memory_compact", "task_id": "sched_task_4631302d166244caa1d0a15f82ca81f2", "timestamp": "2026-03-14T02:16:51.300472+00:00"}
+{"event_type": "scheduled_task_created", "level": "INFO", "name": "health_check", "task_id": "sched_task_cae8c65d1bde44dfbd53edd612b7da3f", "timestamp": "2026-03-14T02:16:51.303975+00:00"}
+{"event_type": "scheduled_task_created", "level": "INFO", "name": "daily_audit", "task_id": "sched_task_c22094c6abea49b993c03f69a5775b42", "timestamp": "2026-03-14T02:16:51.306566+00:00"}
+{"event_type": "scheduled_task_created", "level": "INFO", "name": "cleanup_expired_deliveries", "task_id": "sched_task_9bde35c4c7694122a401deb0c1455909", "timestamp": "2026-03-14T02:16:51.308898+00:00"}
+{"event_type": "scheduled_task_created", "level": "INFO", "name": "github_issue_learning_sync", "task_id": "sched_task_d0ec96680b4e42eba504e8a33485009d", "timestamp": "2026-03-14T02:16:51.310464+00:00"}
+{"event_type": "openclaw_replay_completed", "level": "info", "timestamp": "2026-03-14T02:16:51.492881+00:00", "total": 4, "verdict": "bloque"}

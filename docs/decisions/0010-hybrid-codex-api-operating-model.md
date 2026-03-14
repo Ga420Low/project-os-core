@@ -2,7 +2,11 @@
 
 ## Status
 
-DECISION CONFIRMED
+SUPERSEDED BY ADR 0013
+
+Note: ce modele a ete remplace par le duo GPT API + Claude API.
+Voir `docs/decisions/0013-dual-model-operating-model.md` pour le modele operatoire actuel.
+Codex (l'app) n'est plus dans le pipeline autonome.
 
 ## Context
 

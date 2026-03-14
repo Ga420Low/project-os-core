@@ -1,0 +1,27 @@
+{
+  "artifact_count": 0,
+  "created_at": "2026-03-14T02:16:51.404296+00:00",
+  "dispatch_status": "failed",
+  "evidence_refs": [],
+  "fixture_id": "small_talk_skip",
+  "metadata": {
+    "ack_sent": false,
+    "expected_route": {
+      "allowed": true,
+      "promoted_memory_count": 0,
+      "reply_kind": "ack"
+    },
+    "infos": [
+      "[project-os-gateway-adapter] polling disabled (enablePolling=false)"
+    ],
+    "warnings": [
+      "[project-os-gateway-adapter] Error: spawn EPERM"
+    ]
+  },
+  "passed": false,
+  "policy_verdict": "plugin_or_cli_failed",
+  "promoted_memory_count": 0,
+  "replay_result_id": "openclaw_replay_24dfce04d68f4a059e1359552ef18268",
+  "router_verdict": "missing_dispatch_result",
+  "run_card": {}
+}

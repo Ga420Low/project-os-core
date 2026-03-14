@@ -2,15 +2,17 @@
 
 Ce document fixe le workflow officiel entre:
 
-- `Codex`
-- `OpenAI API` grande fenetre de contexte
-- `Project OS` runtime local
+- `GPT API` (gpt-5.4, 1M contexte) — le cerveau / le dev
+- `Claude API` (opus/sonnet, 1M contexte) — l'auditeur / le traducteur
+- `Project OS` runtime local — la verite machine
+- `Discord` — la surface operateur fondateur
 
 L'objectif est simple:
 
-- utiliser la grande fenetre de contexte de l'API pour penser plus large
-- garder `Codex` comme inspecteur, integrateur et verificateur
+- utiliser GPT API 1M contexte pour coder, planifier et brainstormer
+- utiliser Claude API comme auditeur cross-model et traducteur humain
 - garder le runtime local comme verite reelle
+- le fondateur interagit via Discord, au feeling, sans planning rigide
 
 ## Role de chaque couche
 
@@ -42,26 +44,34 @@ Elle ne devient jamais:
 - la verite machine
 - la verite memoire canonique
 
-### Codex
+### Claude API (L'Auditeur + Le Traducteur)
 
-`Codex` reste le `Command Board`.
+`Claude API` est le deuxieme regard et la voix du systeme vers le fondateur.
 
-Roles:
+Role 1 — Auditeur:
 
-- preparer les context packs
-- preparer les mega prompts
-- challenger les solutions
-- inspecter les patchs
-- comparer la sortie API au repo reel
-- appliquer proprement dans le repo
-- lancer les tests
-- corriger les ecarts
-- tenir la coherence globale
+- review le code produit par GPT (vrai challenge cross-model)
+- detecte les bugs, trous de securite et incoherences que GPT ne voit pas
+- produit des signaux de qualite et de risque
+- un modele different = des biais differents = vrais bugs trouves
+
+Role 2 — Traducteur:
+
+- recoit les questions structurees de GPT (format `structured_question`)
+- traduit en francais humain simple pour le fondateur via Discord
+- filtre le bruit (decide quoi envoyer, quoi garder silencieux)
+- traduit les reponses du fondateur en retour (format `founder_decision`)
 
 Regle dure:
 
-- `Codex` ne s'efface pas devant l'API
-- `Codex` agit comme inspecteur severe et integrateur
+- Claude API ne code pas les gros lots (GPT est le dev)
+- Claude API ne s'efface pas devant GPT — il challenge et protege
+- un modele ne review jamais son propre code
+
+### Codex (l'app) — hors pipeline
+
+`Codex` reste disponible comme outil de conversation directe avec le fondateur.
+Il n'est plus dans le pipeline autonome (ADR 0013).
 
 ### Project OS Runtime
 
@@ -180,30 +190,36 @@ Pendant les gros runs de code:
 - pas de narration intermediaire
 - la visibilite passe par le dashboard, le terminal et les cartes compactes
 
-### Phase F - Inspection
+### Phase F - Review cross-model
 
-On revient dans `Codex`.
+Claude API audite le resultat de GPT API.
 
-`Codex` doit:
+Claude API doit:
 
-- verifier la coherence
-- verifier le repo reel
-- verifier les interfaces
-- verifier les risques
+- verifier la coherence du code produit
+- verifier les interfaces et les risques
 - verifier les tests a lancer
 - corriger les erreurs de raisonnement
 - detecter les signes de boucle, d'appauvrissement ou de baisse de capacite
 - forcer un `refresh` de contexte si la sortie perd en qualite ou recycle les memes idees
+- produire un verdict (accepted, accepted_with_reserves, rejected)
 
-### Phase G - Integration
+### Phase G - Rapport et decision fondateur
 
-Seulement apres inspection:
+Claude API traduit le verdict en francais humain et l'envoie sur Discord.
 
-- on ecrit le code
-- on modifie les fichiers
+Le fondateur:
+
+- recoit le resume (max 3 lignes)
+- approuve ou rejette
+- peut demander des precisions
+
+Seulement apres approbation:
+
+- on integre le code
 - on lance les tests
 - on documente
-- on commit si demande
+- on commit
 
 ## Types de runs autorises
 

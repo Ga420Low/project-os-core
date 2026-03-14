@@ -30,6 +30,10 @@
 
 Finir `OpenClaw live` avant `LangGraph live`.
 
+Document de pilotage recommande pour ce lot:
+
+- `docs/roadmap/CLAUDE_DISCORD_LIVE_READINESS.md`
+
 Ordre conseille:
 
 1. valider les tests et la vraie preuve du beacon

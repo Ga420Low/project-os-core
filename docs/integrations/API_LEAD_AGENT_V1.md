@@ -17,7 +17,7 @@ Chaque run suit la meme chaine :
 4. stocker le brut dans le runtime
 5. stocker la sortie structuree dans le runtime
 6. preparer un paquet de revue
-7. laisser `Codex` ou l'humain relire
+7. laisser Claude API (l'auditeur cross-model) et l'humain relire
 8. promouvoir les signaux valides dans la couche `learning`
 
 ## CLI
@@ -111,7 +111,7 @@ Si `Discord` n'est pas encore completement branche pour cette boucle:
 
 - aucun run n'ecrit directement dans `main`
 - aucun run ne contourne le `Mission Router`
-- `Codex` garde le role d'inspection locale
+- Claude API garde le role d'inspection cross-model (ADR 0013)
 - les runs acceptes, rejetes ou a revoir alimentent `learning`
 
 ## Contradiction guard
