@@ -84,6 +84,7 @@ async function main() {
   const warnings = [];
   const infos = [];
   let registeredHandler = null;
+  let registeredHookInfo = null;
   let ackSent = false;
 
   const pluginConfig = {
@@ -111,9 +112,41 @@ async function main() {
         warnings.push(String(message));
       },
     },
-    registerHook(name, handler) {
-      if (name === "message_received") {
+    on(hookName, handler, opts = {}) {
+      const normalizedHookName = String(hookName || "").trim();
+      if (!normalizedHookName) {
+        warnings.push("typed hook registration missing name");
+        return;
+      }
+      if (normalizedHookName === "message_received") {
         registeredHandler = handler;
+        registeredHookInfo = {
+          events: [normalizedHookName],
+          names: [normalizedHookName],
+          description: typeof opts.description === "string" ? opts.description : "",
+          typed: true,
+        };
+      }
+    },
+    registerHook(events, handler, opts = {}) {
+      const normalizedEvents = (Array.isArray(events) ? events : [events]).map((item) => String(item).trim()).filter(Boolean);
+      const names = Array.isArray(opts.names)
+        ? opts.names.map((item) => String(item).trim()).filter(Boolean)
+        : typeof opts.name === "string" && opts.name.trim()
+          ? [opts.name.trim()]
+          : [];
+      if (names.length === 0) {
+        warnings.push("hook registration missing name");
+        return;
+      }
+      if (normalizedEvents.includes("message_received")) {
+        registeredHandler = handler;
+        registeredHookInfo = {
+          events: normalizedEvents,
+          names,
+          description: typeof opts.description === "string" ? opts.description : "",
+          typed: false,
+        };
       }
     },
     runtime: {
@@ -162,6 +195,7 @@ async function main() {
     description: fixture.description || null,
     warnings,
     infos,
+    hook_registration: registeredHookInfo,
     ack_sent: ackSent,
     dispatch_result: parsedDispatch,
   };

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime, timezone
 
 from ..database import CanonicalDatabase, dump_json
@@ -37,6 +38,7 @@ class GatewayService:
         router: MissionRouter,
         memory: MemoryStore,
         session_state: PersistentSessionState,
+        secret_resolver=None,
         selective_sync: SelectiveSyncPromoter | None = None,
     ) -> None:
         self.database = database
@@ -44,6 +46,7 @@ class GatewayService:
         self.router = router
         self.memory = memory
         self.session_state = session_state
+        self.secret_resolver = secret_resolver
         self.selective_sync = selective_sync or SelectiveSyncPromoter()
 
     def dispatch_event(
@@ -118,7 +121,31 @@ class GatewayService:
         intent = self.router.envelope_to_intent(envelope)
         decision, trace, mission_run = self.router.route_intent(intent, persist=True)
         promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
-        reply = self._build_reply(event, envelope.envelope_id, decision, mission_run.mission_run_id if mission_run else None)
+
+        # For simple Discord chat routes, call GPT directly for an intelligent response
+        if decision.allowed and decision.route_reason == "discord_simple_route":
+            gpt_response = self._call_simple_chat(
+                message=event.message.text.strip(),
+            )
+            if gpt_response:
+                reply = OperatorReply(
+                    reply_id=new_id("reply"),
+                    channel=event.message.channel,
+                    envelope_id=envelope.envelope_id,
+                    thread_ref=event.message.thread_ref,
+                    summary=gpt_response,
+                    mission_run_id=mission_run.mission_run_id if mission_run else None,
+                    decision_id=decision.decision_id,
+                    reply_kind="chat_response",
+                    communication_mode=decision.communication_mode,
+                    operator_language=decision.operator_language,
+                    audience=decision.audience,
+                    metadata={"surface": event.surface, "speech_policy": decision.speech_policy.value},
+                )
+            else:
+                reply = self._build_reply(event, envelope.envelope_id, decision, mission_run.mission_run_id if mission_run else None)
+        else:
+            reply = self._build_reply(event, envelope.envelope_id, decision, mission_run.mission_run_id if mission_run else None)
         run_card = self._build_run_card(
             decision=decision,
             channel_class=channel_class,
@@ -547,6 +574,32 @@ class GatewayService:
         )
         promotion.memory_id = record.memory_id
         return [record.memory_id]
+
+    def _call_simple_chat(self, message: str, model: str = "claude-sonnet-4-20250514") -> str | None:
+        """Call Claude API directly for simple Discord chat messages. Returns the response text or None on failure."""
+        if not self.secret_resolver:
+            return None
+        try:
+            import anthropic
+            api_key = self.secret_resolver.get_required("ANTHROPIC_API_KEY")
+            client = anthropic.Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model=model,
+                max_tokens=500,
+                system=(
+                    "Tu es Project OS, un agent autonome qui gère des projets de développement. "
+                    "Tu réponds en français, de façon concise et directe. "
+                    "Tu es connecté via Discord et tu assistes le fondateur du projet. "
+                    "Sois utile, professionnel mais décontracté."
+                ),
+                messages=[
+                    {"role": "user", "content": message},
+                ],
+            )
+            return response.content[0].text
+        except Exception as exc:
+            logging.getLogger("project_os.gateway").warning("simple_chat Claude call failed: %s", exc)
+            return None
 
     def _build_reply(
         self,

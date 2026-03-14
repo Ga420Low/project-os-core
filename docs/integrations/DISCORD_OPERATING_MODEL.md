@@ -166,10 +166,15 @@ Pendant un gros run de code:
 
 Evenements minimums attendus dans `Discord` pour un gros run API:
 
-- `run_started`
+- `contract_proposed`
 - `clarification_required`
 - `run_completed`
 - `run_failed`
+
+Note:
+
+- `run_started` n'est pas emis sur `Discord`
+- il est filtre comme bruit pur (cf. ADR 0013 et `DAILY_OPERATOR_WORKFLOW`)
 
 Chaque carte doit rester courte et comprehensible par un humain non developpeur.
 Les artefacts runtime peuvent etre lies comme preuves, mais ne doivent pas etre la seule explication.

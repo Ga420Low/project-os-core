@@ -35,7 +35,7 @@ class RuntimeConfig:
 @dataclass(slots=True)
 class SecretConfig:
     mode: str = "infisical_first"
-    required_secret_names: list[str] = field(default_factory=lambda: ["OPENAI_API_KEY"])
+    required_secret_names: list[str] = field(default_factory=lambda: ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"])
     local_fallback_path: str = field(default_factory=lambda: _expand_path("%LOCALAPPDATA%/ProjectOS/secrets.json"))
     infisical_environment: str = "dev"
     infisical_project_id: str | None = None
@@ -108,7 +108,7 @@ def _runtime_policy_defaults() -> dict[str, object]:
     return {
         "secret_config": {
             "mode": "infisical_first",
-            "required_secret_names": ["OPENAI_API_KEY"],
+            "required_secret_names": ["OPENAI_API_KEY", "ANTHROPIC_API_KEY"],
             "local_fallback_path": _expand_path("%LOCALAPPDATA%/ProjectOS/secrets.json"),
             "infisical_environment": "dev",
             "infisical_project_id": None,

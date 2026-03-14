@@ -24,6 +24,7 @@ from project_os_core.api_runs.dashboard import (
     render_dashboard_html,
 )
 from project_os_core.models import ApiRunMode, ApiRunReview, ApiRunReviewVerdict, new_id
+from project_os_core.secrets import SecretLookup
 from project_os_core.services import build_app_services
 
 
@@ -98,6 +99,11 @@ def _build_services(tmp_path: Path):
     policy_path.write_text(json.dumps(policy_payload), encoding="utf-8")
 
     services = build_app_services(config_path=str(config_path), policy_path=str(policy_path))
+    services.secret_resolver._from_infisical = lambda name: SecretLookup(
+        value=None,
+        source="test_infisical_disabled",
+        available=False,
+    )
     services.secret_resolver.write_local_fallback("OPENAI_API_KEY", "sk-test-secret")
     services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "anthropic-test-secret")
     _install_stub_reviewer(services)

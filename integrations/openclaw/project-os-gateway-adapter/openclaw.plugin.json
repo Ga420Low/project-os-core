@@ -41,9 +41,36 @@
         },
         "default": ["discord", "webchat"]
       },
+      "discordAccountId": {
+        "type": "string",
+        "description": "Identifiant du compte Discord configure dans OpenClaw pour la boucle sortante."
+      },
+      "operatorTargets": {
+        "type": "object",
+        "description": "Map des channel hints Project OS vers les cibles Discord OpenClaw.",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "default": {}
+      },
+      "operatorPollingIntervalMs": {
+        "type": "integer",
+        "minimum": 5000,
+        "maximum": 300000,
+        "default": 60000
+      },
+      "enablePolling": {
+        "type": "boolean",
+        "default": true
+      },
+      "suppressNativeDiscordReplies": {
+        "type": "boolean",
+        "default": true,
+        "description": "Bloque les reponses natives d'OpenClaw sur Discord afin que Project OS reste l'unique voix operateur."
+      },
       "sendAckReplies": {
         "type": "boolean",
-        "default": false
+        "default": true
       },
       "timeoutMs": {
         "type": "integer",

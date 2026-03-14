@@ -4,8 +4,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+try:
+    from anthropic import Anthropic
+except ImportError:  # pragma: no cover - dependency is declared in pyproject but may be absent in local dev until installed
+    Anthropic = None
 from openai import OpenAI
 
+from .api_runs.service import REVIEWER_MODEL, TRANSLATOR_MODEL
 from .models import BootstrapState, HealthSnapshot, new_id, to_jsonable
 from .observability import write_health_snapshot
 from .services import build_app_services
@@ -129,11 +134,25 @@ def _collect_checks(services, *, strict: bool) -> dict[str, Any]:
     required_secrets_ok = all(item["available"] for item in secrets_report["required"].values())
     database_status = services.database.status()
     openai_probe = _probe_openai_access(services, strict=strict)
+    anthropic_reviewer_probe = _probe_anthropic_access(
+        services,
+        strict=strict,
+        capability="reviewer",
+        model_name=REVIEWER_MODEL,
+    )
+    anthropic_translator_probe = _probe_anthropic_access(
+        services,
+        strict=strict,
+        capability="translator",
+        model_name=TRANSLATOR_MODEL,
+    )
     return {
         "roots": roots_status,
         "database": database_status,
         "embedding_provider": services.embedding_strategy.provider,
         "openai_probe": openai_probe,
+        "anthropic_reviewer_probe": anthropic_reviewer_probe,
+        "anthropic_translator_probe": anthropic_translator_probe,
         "openmemory_db_exists": services.paths.openmemory_db_path.parent.exists(),
         "secrets": secrets_report,
         "required_secrets_ok": required_secrets_ok,
@@ -159,6 +178,10 @@ def _bootstrap_state(services, checks: dict[str, Any], *, strict: bool) -> Boots
         failures.append("required_secret_missing")
     if checks["embedding_provider"] == "openai" and checks["openai_probe"]["ok"] is False:
         failures.append("openai_provider_invalid")
+    if checks["anthropic_reviewer_probe"]["ok"] is False:
+        failures.append("anthropic_reviewer_invalid")
+    if checks["anthropic_translator_probe"]["ok"] is False:
+        failures.append("anthropic_translator_invalid")
     if checks["secrets"]["infisical"]["binary_present"] is False:
         warnings.append("infisical_cli_missing")
     if checks["secrets"]["infisical"]["auth_mode"] == "user_session_fallback":
@@ -220,6 +243,64 @@ def _probe_openai_access(services, *, strict: bool) -> dict[str, Any]:
             "skipped": False,
             "provider": "openai",
             "model": services.embedding_strategy.model,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+        }
+
+
+def _probe_anthropic_access(
+    services,
+    *,
+    strict: bool,
+    capability: str,
+    model_name: str,
+) -> dict[str, Any]:
+    if not strict:
+        return {
+            "ok": None,
+            "skipped": True,
+            "provider": "anthropic",
+            "capability": capability,
+            "model": model_name,
+            "reason": "strict_probe_only",
+        }
+
+    if Anthropic is None:
+        return {
+            "ok": False,
+            "skipped": False,
+            "provider": "anthropic",
+            "capability": capability,
+            "model": model_name,
+            "error_type": "ImportError",
+            "error": "anthropic package is not installed",
+        }
+
+    try:
+        api_key = services.secret_resolver.get_required("ANTHROPIC_API_KEY")
+        client = Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=model_name,
+            max_tokens=16,
+            temperature=0,
+            messages=[{"role": "user", "content": f"Strict health probe for Project OS {capability}. Reply with OK."}],
+        )
+        content = getattr(response, "content", None) or []
+        return {
+            "ok": True,
+            "skipped": False,
+            "provider": "anthropic",
+            "capability": capability,
+            "model": getattr(response, "model", model_name),
+            "content_blocks": len(content),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "skipped": False,
+            "provider": "anthropic",
+            "capability": capability,
+            "model": model_name,
             "error_type": type(exc).__name__,
             "error": str(exc),
         }

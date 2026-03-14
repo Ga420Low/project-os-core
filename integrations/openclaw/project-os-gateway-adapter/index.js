@@ -66,6 +66,8 @@ function resolveConfig(api) {
       ? Math.floor(raw.operatorPollingIntervalMs)
       : DEFAULT_OPERATOR_POLLING_INTERVAL_MS;
   const enablePolling = raw.enablePolling !== false;
+  const suppressNativeDiscordReplies = raw.suppressNativeDiscordReplies !== false;
+
   return {
     projectOsRepoRoot,
     configPath,
@@ -81,7 +83,27 @@ function resolveConfig(api) {
     operatorTargets,
     operatorPollingIntervalMs,
     enablePolling,
+    suppressNativeDiscordReplies,
   };
+}
+
+function shouldSuppressNativeDiscordReply(event, ctx, config) {
+  const channelId = String(ctx.channelId || event?.metadata?.channel || "").toLowerCase();
+  if (channelId !== "discord") {
+    return false;
+  }
+  if (!config.suppressNativeDiscordReplies || !config.enabledChannels.has("discord")) {
+    return false;
+  }
+  const accountId = String(ctx.accountId || event?.metadata?.accountId || "").trim();
+  if (config.discordAccountId && accountId && accountId !== config.discordAccountId) {
+    return false;
+  }
+  const target = typeof event?.to === "string" ? event.to.trim().toLowerCase() : "";
+  if (target.startsWith("user:")) {
+    return false;
+  }
+  return true;
 }
 
 function buildPayload(event, ctx, config) {
@@ -172,21 +194,24 @@ async function maybeSendDiscordAck(api, event, ctx, parsed) {
   if (!parsed?.operator_reply?.summary) {
     return;
   }
+
   const metadata = event.metadata && typeof event.metadata === "object" ? event.metadata : {};
   const senderId = typeof metadata.senderId === "string" && metadata.senderId ? metadata.senderId : event.from;
   const messageId = typeof metadata.messageId === "string" ? metadata.messageId : undefined;
   const isGroup = Boolean(metadata.guildId || metadata.threadId || metadata.channelName);
+
+  const conversationId = typeof ctx.conversationId === "string" ? ctx.conversationId.trim() : "";
   const target = isGroup
-    ? ctx.conversationId
-      ? `channel:${ctx.conversationId}`
-      : undefined
+    ? (conversationId || undefined)
     : senderId
       ? `user:${senderId}`
       : undefined;
+
   if (!target) {
     api.logger.warn("[project-os-gateway-adapter] Cannot resolve Discord ack target");
     return;
   }
+
   await api.runtime.channel.discord.sendMessageDiscord(target, parsed.operator_reply.summary, {
     cfg: api.config,
     accountId: ctx.accountId,
@@ -235,22 +260,27 @@ async function flushOperatorDeliveries(api, config) {
   if (!config.operatorTargets || Object.keys(config.operatorTargets).length === 0) {
     return;
   }
+
   const deliveries = await pullOperatorDeliveries(api, config);
   for (const delivery of deliveries) {
     const deliveryId = typeof delivery.delivery_id === "string" ? delivery.delivery_id : "";
     if (!deliveryId) {
       continue;
     }
+
     const payload = delivery.payload && typeof delivery.payload === "object" ? delivery.payload : {};
     const channelHint = typeof delivery.channel_hint === "string" ? delivery.channel_hint : "runs_live";
     const target = resolveOperatorTarget(config, channelHint);
+
     if (!target) {
       await ackOperatorDelivery(api, config, deliveryId, "skipped", "discord_target_not_configured", {
         channel_hint: channelHint,
       });
       continue;
     }
+
     const text = typeof payload.text === "string" && payload.text.trim() ? payload.text.trim() : `[Project OS] ${channelHint}`;
+
     try {
       await api.runtime.channel.discord.sendMessageDiscord(target, text, {
         cfg: api.config,
@@ -271,6 +301,7 @@ async function flushOperatorDeliveries(api, config) {
 
 function startOperatorDeliveryPolling(api) {
   let busy = false;
+
   const tick = async () => {
     if (busy) {
       return;
@@ -285,27 +316,32 @@ function startOperatorDeliveryPolling(api) {
       busy = false;
     }
   };
+
   const config = resolveConfig(api);
   if (!config.discordAccountId || !config.operatorTargets || Object.keys(config.operatorTargets).length === 0) {
     api.logger.info("[project-os-gateway-adapter] operator delivery polling disabled (missing discordAccountId/operatorTargets)");
     return;
   }
+
   const initialTick = setTimeout(() => {
     void tick();
   }, 1500);
   const recurringTick = setInterval(() => {
     void tick();
   }, config.operatorPollingIntervalMs);
+
   if (!api._projectOsIntervals) {
     api._projectOsIntervals = [];
   }
   api._projectOsIntervals.push(initialTick, recurringTick);
+
   detachTimer(initialTick);
   detachTimer(recurringTick);
 }
 
 function startSchedulerPolling(api) {
   let busy = false;
+
   const tick = async () => {
     if (busy) {
       return;
@@ -323,16 +359,19 @@ function startSchedulerPolling(api) {
       busy = false;
     }
   };
+
   const initialTick = setTimeout(() => {
     void tick();
   }, 2500);
   const recurringTick = setInterval(() => {
     void tick();
   }, 60000);
+
   if (!api._projectOsIntervals) {
     api._projectOsIntervals = [];
   }
   api._projectOsIntervals.push(initialTick, recurringTick);
+
   detachTimer(initialTick);
   detachTimer(recurringTick);
 }
@@ -343,39 +382,97 @@ const plugin = {
   description: "Forward operator channel events from OpenClaw into Project OS",
   register(api) {
     const config = resolveConfig(api);
+
     if (config.enablePolling) {
       startOperatorDeliveryPolling(api);
       startSchedulerPolling(api);
     } else {
       api.logger.info("[project-os-gateway-adapter] polling disabled (enablePolling=false)");
     }
-    api.registerHook("message_received", async (event, ctx) => {
+
+    const handleMessageReceived = async (event, ctx) => {
       const runtimeConfig = resolveConfig(api);
-      if (!runtimeConfig.enabledChannels.has(String(ctx.channelId || "").toLowerCase())) {
+      const liveChannelId = String(ctx.channelId || "").toLowerCase();
+
+      api.logger.info(
+        `[project-os-gateway-adapter] inbound message_received channel=${liveChannelId || "unknown"} account=${String(ctx.accountId || "unknown")} conversation=${String(ctx.conversationId || "unknown")}`
+      );
+
+      if (!runtimeConfig.enabledChannels.has(liveChannelId)) {
+        api.logger.info(
+          `[project-os-gateway-adapter] skipped inbound message_received for channel=${liveChannelId || "unknown"} enabledChannels=${Array.from(runtimeConfig.enabledChannels).join(",") || "none"}`
+        );
         return;
       }
+
       const payload = buildPayload(event, ctx, runtimeConfig);
+
       try {
         const { result, parsed } = await dispatchToProjectOs(api, payload, runtimeConfig);
+
         if (result.code !== 0 && !parsed) {
           api.logger.warn(
             `[project-os-gateway-adapter] Project OS dispatch failed with code ${String(result.code)}: ${result.stderr || "no stderr"}`
           );
-          return;
+          return { handled: true };
         }
+
         if (parsed) {
           api.logger.info(`CLI_STDOUT_JSON:${JSON.stringify(parsed)}`);
         }
+
         api.logger.info(
           `[project-os-gateway-adapter] forwarded ${ctx.channelId}:${ctx.conversationId || "no-conversation"} to Project OS`
         );
+
         if (runtimeConfig.sendAckReplies && String(ctx.channelId).toLowerCase() === "discord") {
           await maybeSendDiscordAck(api, event, ctx, parsed);
         }
+
+        return { handled: true };
       } catch (error) {
-        api.logger.warn(`[project-os-gateway-adapter] ${String(error)}`);
+        api.logger.warn(
+          `[project-os-gateway-adapter] ${error?.stack || error?.message || String(error)}`
+        );
+        return { handled: true };
       }
-    });
+    };
+
+    const handleMessageSending = async (event, ctx) => {
+      const runtimeConfig = resolveConfig(api);
+      if (!shouldSuppressNativeDiscordReply(event, ctx, runtimeConfig)) {
+        return;
+      }
+
+      const target = typeof event?.to === "string" ? event.to : "unknown";
+      api.logger.info(
+        `[project-os-gateway-adapter] suppressed native OpenClaw Discord reply account=${String(ctx.accountId || "unknown")} target=${target}`
+      );
+      return { cancel: true };
+    };
+
+    if (typeof api.on === "function") {
+      api.on("message_received", handleMessageReceived, {
+        priority: 0,
+      });
+    } else {
+      api.registerHook("message_received", handleMessageReceived, {
+        name: "project-os-gateway-adapter.message_received",
+        description: "Forward inbound operator channel messages to the Project OS gateway.",
+      });
+    }
+
+    // message_sending must use registerHook — api.on() does not support it in all versions
+    if (typeof api.registerHook === "function") {
+      api.registerHook("message_sending", handleMessageSending, {
+        name: "project-os-gateway-adapter.message_sending",
+        description: "Suppress native OpenClaw Discord auto-replies so Project OS remains the only operator voice.",
+      });
+    } else if (typeof api.on === "function") {
+      api.on("message_sending", handleMessageSending, {
+        priority: 100,
+      });
+    }
   },
 };
 

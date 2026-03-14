@@ -120,6 +120,7 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         router=router,
         memory=memory,
         session_state=session_state,
+        secret_resolver=secret_resolver,
     )
     openclaw = OpenClawLiveService(
         config=config,

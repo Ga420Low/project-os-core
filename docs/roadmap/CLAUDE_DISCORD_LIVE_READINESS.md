@@ -58,7 +58,7 @@ Etat reel:
 - `OpenClaw` replay et doctor existent
 - la validation live reste fail-closed tant qu'aucun vrai message entrant n'a ete prouve
 - la boucle sortante `Project OS -> OpenClaw -> Discord` depend encore de la config plugin `discordAccountId` + `operatorTargets`
-- le manifest `openclaw.plugin.json` n'expose pas encore ces champs, donc la config live complete reste a finir
+- le manifest `openclaw.plugin.json` doit exposer ces champs avant tout smoke test live complet
 
 Il manque encore la preuve du canal reel:
 
@@ -133,6 +133,11 @@ Le but est de prouver la boucle canonique.
 
 ### 2. Configurer `OpenClaw` pour le canal reel
 
+- mettre a jour `openclaw.plugin.json` pour exposer les champs runtime manquants:
+  - `discordAccountId`
+  - `operatorTargets`
+  - `operatorPollingIntervalMs`
+  - `enablePolling`
 - verifier le runtime `OpenClaw`
 - verifier le plugin `project-os-gateway-adapter`
 - verifier les ids et cibles de canal necessaires:
@@ -141,7 +146,27 @@ Le but est de prouver la boucle canonique.
   - `operatorPollingIntervalMs`
   - `enablePolling`
 - ne rien brancher qui contourne `Project OS`
-- verifier que le manifest plugin expose bien ces champs avant de declarer la boucle sortante "prete"
+
+#### Comment obtenir `discordAccountId`
+
+La CLI `OpenClaw` actuelle expose la surface `channels`, pas `accounts`.
+
+Commande verifiee sur le binaire local:
+
+```bash
+openclaw channels add --channel discord --token <DISCORD_BOT_TOKEN> --account discord-main
+```
+
+Puis:
+
+```bash
+openclaw channels list
+```
+
+Dans ce flux, `discord-main` devient le `discordAccountId`.
+Si un compte Discord existe deja dans `OpenClaw`, recuperer son identifiant via `openclaw channels list`.
+
+Si PowerShell bloque le shim `openclaw`, utiliser `openclaw.cmd` sur ce poste.
 
 ### 3. Rejouer les gardes-fous locaux
 
@@ -151,6 +176,17 @@ Avant live:
 - `py D:/ProjectOS/project-os-core/scripts/project_os_entry.py openclaw replay --all`
 
 Le replay reste obligatoire meme si `Claude` est deja pret.
+
+Note importante sur `validate_live()`:
+
+Aujourd'hui, `validate_live()` retourne toujours `success=false`.
+C'est une garde `fail_closed` volontaire:
+
+- tant qu'aucune vraie validation live n'a ete reconnue sur ce poste
+- le systeme refuse de se declarer pret
+
+Ce n'est pas un bug.
+C'est un verrou de securite a faire evoluer seulement apres preuve live reelle.
 
 ### 4. Prouver un vrai message entrant
 
@@ -163,19 +199,28 @@ Tant que ce point n'est pas prouve, le lot live n'est pas considere termine.
 
 ### 5. Prouver un vrai run avec review et traduction
 
-Objectif:
+Sequence exacte a derouler:
 
-- lancer un vrai run
-- faire passer le run par `GPT`
-- faire reviewer le resultat par `Claude Sonnet`
-- faire traduire le signal humain par `Claude Haiku`
-- faire revenir le message sur Discord
+1. envoyer un message Discord de type `tasking`
+   - exemple: `audite le fichier models.py`
+2. verifier que le gateway produit un `contract_proposed`
+3. repondre `go` sur Discord
+4. verifier que le run s'execute via `GPT`
+5. verifier que `Claude Sonnet` produit une review
+6. verifier que `Claude Haiku` traduit le signal humain
+7. verifier qu'un message retour arrive sur Discord
 
 La preuve attendue est:
 
 - un input reel
-- une decision runtime canonique
+- un contrat propose puis approuve
+- une execution `GPT` complete
+- une review `Claude`
+- une traduction `Claude`
 - une sortie Discord reelle
+
+Tant que cette sequence n'est pas prouvee de bout en bout,
+le lot live n'est pas considere termine.
 
 ## Definition of done
 
@@ -185,6 +230,7 @@ Le lot est considere `ready` seulement si les points suivants sont vrais:
 - les deux modeles Claude repondent reellement
 - le bot Discord de test recoit un vrai message
 - le pipeline `OpenClaw -> Gateway -> Mission Router` est prouve sur ce message
+- le manifest plugin expose les champs runtime de la boucle sortante Discord
 - la boucle sortante `Project OS -> OpenClaw -> Discord` est configuree avec `discordAccountId` et `operatorTargets`
 - un vrai run passe par `reviewer` puis `translator`
 - un vrai message retour est visible sur Discord
@@ -205,7 +251,7 @@ Une fois la preuve live faite, durcir immediatement:
 1. `doctor --strict` doit verifier `ANTHROPIC_API_KEY`
 2. `doctor --strict` doit verifier l'import `anthropic`
 3. `doctor --strict` doit verifier que le pipeline reviewer / translator est branchable
-4. le manifest `openclaw.plugin.json` doit exposer les champs runtime necessaires a la boucle sortante Discord
+4. `validate_live()` doit apprendre a reconnaitre une vraie preuve live au lieu de rester toujours `fail_closed`
 5. la readiness live doit distinguer clairement:
    - `OpenAI seulement`
    - `OpenAI + Claude`

@@ -2,7 +2,8 @@
   "secret_config": {
     "mode": "infisical_first",
     "required_secret_names": [
-      "OPENAI_API_KEY"
+      "OPENAI_API_KEY",
+      "ANTHROPIC_API_KEY"
     ],
     "local_fallback_path": "%LOCALAPPDATA%/ProjectOS/secrets.json",
     "infisical_environment": "dev",

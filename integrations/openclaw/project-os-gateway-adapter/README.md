@@ -48,6 +48,16 @@ Required plugin config to enable this loop:
 
 - `discordAccountId`: Discord account configured in OpenClaw
 - `operatorTargets`: map of logical channel hints to Discord targets
+- `suppressNativeDiscordReplies`: keep enabled so the native OpenClaw agent does not answer in guild channels
+
+Typical setup flow:
+
+```bash
+openclaw channels add --channel discord --token <DISCORD_BOT_TOKEN> --account discord-main
+openclaw channels list
+```
+
+If you create the account with `--account discord-main`, then `discord-main` is the value to reuse as `discordAccountId`.
 
 Example:
 
@@ -55,6 +65,7 @@ Example:
 {
   "discordAccountId": "discord-main",
   "operatorPollingIntervalMs": 8000,
+  "suppressNativeDiscordReplies": true,
   "operatorTargets": {
     "runs_live": "channel:1234567890",
     "approvals": "channel:2345678901",
@@ -66,10 +77,23 @@ Example:
 
 Delivery policy:
 
-- `run_started` -> `runs_live`
+- `contract_proposed` -> `approvals`
 - `clarification_required` -> `approvals`
 - `run_completed` -> `runs_live`
 - `run_failed` -> `incidents`
+- `run_reviewed` -> `runs_live`
+
+`run_started` is filtered as operator noise and is normally not delivered to Discord.
+
+## Discord ownership model
+
+For the live Discord server, the intended behavior is:
+
+- inbound guild messages go to `Project OS` through `message_received`
+- native OpenClaw Discord auto-replies are suppressed by the adapter through `message_sending`
+- outbound operator lifecycle messages still go to Discord through `sendMessageDiscord`
+
+This keeps Discord single-voiced: `Project OS` speaks, `OpenClaw` transports.
 
 ## Suggested install path
 
