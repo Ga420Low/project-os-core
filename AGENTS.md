@@ -142,6 +142,55 @@ Style:
 - planifier comme un joueur d'echecs avec 2 a 3 coups d'avance
 - signaler quand une option est localement pratique mais globalement faible
 
+Contrat supplementaire pour toute roadmap:
+
+- une roadmap doit dire explicitement `pourquoi` on fait chaque lot, phase ou pack
+- une roadmap doit citer ses sources externes et ses sources locales quand elles ont influence la direction
+- une roadmap doit distinguer clairement:
+  - `ce qu'on recupere`
+  - `ce qu'on n'importe pas`
+  - `ou ca entre dans Project OS`
+- quand une inspiration externe est importante, la roadmap doit donner une decision explicite `KEEP`, `ADAPT` ou `DEFER`
+- une roadmap doit partir du repo reel avant de proposer de nouvelles couches
+- si aucune source externe n'est utile ou necessaire, la roadmap doit le dire explicitement au lieu de laisser croire qu'une recherche a ete faite
+- reference de forme: `docs/workflow/ROADMAP_AUTHORING_STANDARD.md`
+
+Contrat supplementaire pour tout dossier systeme ou veille de stack:
+
+- quand la demande porte sur des systemes externes, des pepites GitHub, des forks, des benchmarks, des bridges ou des stacks produit, l'agent doit preferer un dossier canonique dans `docs/systems/`
+- un dossier systeme ne remplace pas une roadmap: il sert a classer `A faire`, `A etudier`, `A rejeter`
+- chaque entree doit nommer le `systeme`, dire `pourquoi il compte`, `ce qu'on recupere`, `ce qu'on n'importe pas`, `quelles preuves il faut obtenir`, `ou cela entre dans Project OS`, et citer ses `sources primaires`
+- l'agent ne doit pas mettre un systeme en `A faire` sans dire quelle preuve pratique doit etre obtenue sur la machine ou dans le repo
+- les dossiers systeme doivent partir des besoins reels de `Project OS`, pas d'un inventaire de hype
+- reference de forme: `docs/workflow/SYSTEM_DOSSIER_AUTHORING_STANDARD.md`
+
+Declencheurs de `deep research`:
+
+- `deep research`
+- `recherche approfondie`
+- `audit profond`
+- `fouille github`
+- `cherche les pepites`
+- `regarde les forks`
+- `va chercher plus loin`
+
+Quand un de ces declencheurs apparait, l'agent doit:
+
+- appliquer `docs/workflow/DEEP_RESEARCH_PROTOCOL.md`
+- inspecter le repo reel avant la veille externe
+- privilegier les sources primaires recentes
+- inspecter les repos GitHub centraux, leurs `README`, licences, activite et dependances si pertinent
+- verifier les forks et les satellites utiles, puis dire clairement s'il n'y a pas de vraie pepite
+- traduire la recherche en `KEEP / ADAPT / DEFER / REJECT`
+- produire un artefact canonique dans `docs/audits/` ou `docs/systems/` quand la recherche merite une trace durable
+- si la demande arrive via `Discord` ou `OpenClaw`, preparer le dossier puis lancer le job de recherche asynchrone
+- ecrire la synthese finale dans le `.md` du projet, puis renvoyer le resume final sur Discord avec le fichier Markdown joint
+
+Commande de scaffold recommandee:
+
+- `py scripts/project_os_entry.py docs scaffold-research --title "Nom du sujet" --kind audit`
+- `py scripts/project_os_entry.py docs scaffold-research --title "Nom du systeme" --kind system`
+
 ### Builder
 
 But:
@@ -403,9 +452,13 @@ Regles obligatoires:
   - reference: `docs/architecture/DOCUMENTATION_LANGUAGE_POLICY.md`
 - gate documentaire de cloture:
   - a la fin de toute issue, tout lot, toute roadmap step ou toute decision marquee comme `faite`, lancer `py scripts/project_os_entry.py docs audit`
-  - si la cloture touche aussi le runtime ou OpenClaw, preferer `powershell -File scripts/project_os_tests.ps1 -Suite full -WithStrictDoctor -WithOpenClawDoctor -WithDocAudit`
+  - si la cloture touche aussi le runtime ou OpenClaw, preferer `py scripts/project_os_tests.py --suite full --with-strict-doctor --with-openclaw-doctor --with-doc-audit`
   - ne jamais annoncer une cloture sans mentionner le verdict de l'audit doc
   - si l'audit doc echoue, corriger la doc ou enregistrer explicitement un defer canonique avant de fermer
+ - gate de qualite des roadmaps:
+   - toute roadmap canonique doit contenir au minimum `But`, `Point de depart reel`, `Pourquoi cet ordre`, `Sources` ou `Cartographie externe`
+   - si la roadmap depend d'inspirations externes, elle doit expliquer `chez qui on recupere quoi`
+   - si la roadmap depend d'un refactor, elle doit dire quels fichiers ou packages existants sont reutilises ou etendus
 
 ## Git et livraison
 
@@ -439,6 +492,8 @@ Regles:
 - [ADR 0013 - Dual Model Operating Model](D:/ProjectOS/project-os-core/docs/decisions/0013-dual-model-operating-model.md)
 - [HYBRID_LARGE_CONTEXT_WORKFLOW.md](D:/ProjectOS/project-os-core/docs/architecture/HYBRID_LARGE_CONTEXT_WORKFLOW.md)
 - [DAILY_OPERATOR_WORKFLOW.md](D:/ProjectOS/project-os-core/docs/workflow/DAILY_OPERATOR_WORKFLOW.md)
+- [ROADMAP_AUTHORING_STANDARD.md](D:/ProjectOS/project-os-core/docs/workflow/ROADMAP_AUTHORING_STANDARD.md)
+- [DEEP_RESEARCH_PROTOCOL.md](D:/ProjectOS/project-os-core/docs/workflow/DEEP_RESEARCH_PROTOCOL.md)
 - [ROLE_MAP.md](D:/ProjectOS/project-os-core/docs/workflow/ROLE_MAP.md)
 - [LANGUAGE_LEVELS.md](D:/ProjectOS/project-os-core/docs/workflow/LANGUAGE_LEVELS.md)
 - [AGENT_IDENTITY_AND_CHANNEL_MODEL.md](D:/ProjectOS/project-os-core/docs/architecture/AGENT_IDENTITY_AND_CHANNEL_MODEL.md)

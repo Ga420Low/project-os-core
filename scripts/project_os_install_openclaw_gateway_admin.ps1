@@ -16,6 +16,78 @@ function Read-JsonFile {
     return Get-Content -Path $Path -Raw -Encoding UTF8 | ConvertFrom-Json
 }
 
+function Write-JsonFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)]$Value
+    )
+    $Value | ConvertTo-Json -Depth 50 | Set-Content -Path $Path -Encoding UTF8
+}
+
+function Ensure-ObjectProperty {
+    param(
+        [Parameter(Mandatory = $true)]$Target,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)]$Value
+    )
+    if ($Target.PSObject.Properties.Name -contains $Name) {
+        $Target.$Name = $Value
+    } else {
+        $Target | Add-Member -NotePropertyName $Name -NotePropertyValue $Value
+    }
+}
+
+function Ensure-DiscordSingleVoiceSendPolicy {
+    param([Parameter(Mandatory = $true)]$Config)
+
+    if (-not $Config.session) {
+        Ensure-ObjectProperty -Target $Config -Name "session" -Value ([pscustomobject]@{})
+    }
+    if (-not $Config.session.sendPolicy) {
+        Ensure-ObjectProperty -Target $Config.session -Name "sendPolicy" -Value ([pscustomobject]@{
+            default = "allow"
+            rules = @()
+        })
+    }
+
+    if (-not ($Config.session.sendPolicy.PSObject.Properties.Name -contains "default") -or [string]::IsNullOrWhiteSpace([string]$Config.session.sendPolicy.default)) {
+        Ensure-ObjectProperty -Target $Config.session.sendPolicy -Name "default" -Value "allow"
+    } elseif ([string]$Config.session.sendPolicy.default -ne "allow") {
+        Ensure-ObjectProperty -Target $Config.session.sendPolicy -Name "default" -Value "allow"
+    }
+
+    $existingRules = @()
+    if ($Config.session.sendPolicy.PSObject.Properties.Name -contains "rules" -and $Config.session.sendPolicy.rules) {
+        $existingRules = @($Config.session.sendPolicy.rules)
+    }
+
+    $requiredChatTypes = @("group", "channel")
+    foreach ($chatType in $requiredChatTypes) {
+        $matched = $false
+        foreach ($rule in $existingRules) {
+            $action = [string]$rule.action
+            $channel = [string]$rule.match.channel
+            $candidateChatType = [string]$rule.match.chatType
+            if ($action -eq "deny" -and $channel -eq "discord" -and $candidateChatType -eq $chatType) {
+                $matched = $true
+                break
+            }
+        }
+        if (-not $matched) {
+            $existingRules += [pscustomobject]@{
+                action = "deny"
+                match = [pscustomobject]@{
+                    channel = "discord"
+                    chatType = $chatType
+                }
+            }
+        }
+    }
+
+    Ensure-ObjectProperty -Target $Config.session.sendPolicy -Name "rules" -Value $existingRules
+    return $Config
+}
+
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $openclawStateRoot = "D:\ProjectOS\runtime\openclaw"
 $openclawConfigPath = Join-Path $openclawStateRoot "openclaw.json"
@@ -37,6 +109,7 @@ if (-not (Test-Path $openclawConfigPath)) {
 }
 
 $config = Read-JsonFile -Path $openclawConfigPath
+$config = Ensure-DiscordSingleVoiceSendPolicy -Config $config
 $discordTokenRef = $config.channels.discord.accounts.'discord-main'.token
 $gatewayTokenRef = $config.gateway.auth.token
 if (-not ($discordTokenRef.source -eq "env" -and $discordTokenRef.id -eq "DISCORD_BOT_TOKEN")) {
@@ -51,6 +124,8 @@ if (-not [Environment]::GetEnvironmentVariable("DISCORD_BOT_TOKEN", "User")) {
 if (-not [Environment]::GetEnvironmentVariable("OPENCLAW_GATEWAY_TOKEN", "User")) {
     throw "OPENCLAW_GATEWAY_TOKEN n'est pas defini au niveau utilisateur Windows."
 }
+
+Write-JsonFile -Path $openclawConfigPath -Value $config
 
 $env:OPENCLAW_STATE_DIR = $openclawStateRoot
 $env:OPENCLAW_GATEWAY_PORT = "$Port"

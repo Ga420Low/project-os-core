@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import io
 import json
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
+from project_os_core.cli import main
 from project_os_core.scheduler.service import ScheduledTask
 from project_os_core.services import build_app_services
 
@@ -46,6 +49,11 @@ def _build_services(tmp_path: Path):
             "quality": "balanced",
             "local_model": "local-hash-v1",
             "local_dimensions": 64,
+        },
+        "memory": {
+            "curator": {
+                "llm_mode": "disabled",
+            }
         },
         "api_dashboard_config": {
             "auto_start": False,
@@ -185,6 +193,40 @@ class SchedulerServiceTests(unittest.TestCase):
                 self.assertEqual(calls, [])
             finally:
                 services.close()
+
+    def test_scheduler_tick_cli_serializes_curator_run_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            services = _build_services(tmp_path)
+            try:
+                services.database.execute(
+                    "UPDATE scheduled_tasks SET next_run_at = ?, enabled = 1 WHERE name = ?",
+                    ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), "memory_curator_sleeptime"),
+                )
+            finally:
+                services.close()
+
+            config_path = tmp_path / "storage_roots.json"
+            policy_path = tmp_path / "runtime_policy.json"
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                exit_code = main(
+                    [
+                        "--config-path",
+                        str(config_path),
+                        "--policy-path",
+                        str(policy_path),
+                        "scheduler",
+                        "tick",
+                    ]
+                )
+
+            payload = json.loads(stdout.getvalue())
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(payload[0]["name"], "memory_curator_sleeptime")
+            self.assertEqual(payload[0]["status"], "success")
+            self.assertIn("run", payload[0]["result"])
+            self.assertIn("curator_run_id", payload[0]["result"]["run"])
 
     def test_enable_and_disable_task_toggle_flag(self):
         with tempfile.TemporaryDirectory() as tmp:

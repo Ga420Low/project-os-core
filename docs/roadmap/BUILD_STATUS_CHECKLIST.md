@@ -177,6 +177,26 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
   - [ ] Table scheduled_runs
   - [ ] check_scheduled_runs() dans la boucle monitor
   - [ ] Guard 5 schedules max actifs
+- [ ] Lot Persona V2 + Context Integrity
+  - [x] `Pack 1 - Persona V2`
+  - [x] `Pack 2 - Context Integrity`
+  - [x] `Pack 3 - Prompt Ops And Evals`
+  - [x] Feuille de route canonique posee dans `docs/roadmap/PERSONA_V2_CONTEXT_INTEGRITY_PLAN.md`
+- [ ] Lot Discord Autonomy No-Loss
+  - [x] Feuille de route canonique posee dans `docs/roadmap/DISCORD_AUTONOMY_NO_LOSS_PLAN.md`
+  - [x] `Pack A - Lossless Input`
+  - [x] `Pack B - Long Context Workflow`
+  - [x] `Pack C - Artifact-First Output`
+  - [x] `Pack D - Delivery Guarantees`
+  - [x] `Pack E - UX And Observability`
+- [ ] Lot Natural Manager Mode
+  - [x] Feuille de route canonique posee dans `docs/roadmap/NATURAL_MANAGER_MODE_PLAN.md`
+  - [x] `Pack 1 - Intent Taxonomy And State Machine`
+  - [x] `Pack 2 - Natural Directive Extraction`
+  - [x] `Pack 3 - Action Contract And Clarification Gate`
+  - [ ] `Pack 4 - Execution Handoff And Reporting UX`
+  - [ ] `Pack 5 - Evals And Smoke Tests`
+  - [ ] Extension `Escalade cout-aware + go fondateur` integree au runtime
 - [ ] Sanctuary Security Layer v1
   - [ ] Approval Truth Hardening
   - [ ] Destructive Boundary Hardening

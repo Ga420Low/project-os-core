@@ -1,4 +1,6 @@
 import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 
 const DEFAULT_PROJECT_OS_REPO_ROOT = "D:/ProjectOS/project-os-core";
 const DEFAULT_PYTHON_COMMAND = process.platform === "win32" ? "py" : "python3";
@@ -6,6 +8,10 @@ const DEFAULT_CHANNELS = new Set(["discord", "webchat"]);
 const DEFAULT_OPERATOR_POLLING_INTERVAL_MS = 8000;
 const INGRESS_DEDUP_TTL_MS = 10 * 60 * 1000;
 const PENDING_DISCORD_REPLY_TTL_MS = 2 * 60 * 1000;
+const DISCORD_MESSAGE_MAX_LENGTH = 2000;
+const DISCORD_SAFE_CHUNK_LENGTH = 1850;
+const DISCORD_FAILURE_NOTICE_MAX_LENGTH = 320;
+const DISCORD_MAX_LINES_PER_MESSAGE = 17;
 const SAFE_ENV_KEYS = new Set([
   "APPDATA",
   "COMSPEC",
@@ -251,6 +257,39 @@ function parseDiscordTarget(target) {
   return /^\d+$/.test(raw) ? { kind: "channel", channelId: raw } : null;
 }
 
+function normalizeDiscordTarget(target) {
+  const parsed = parseDiscordTarget(target);
+  if (!parsed) {
+    const raw = typeof target === "string" ? target.trim() : "";
+    return raw || null;
+  }
+  if (parsed.kind === "channel") {
+    return `channel:${parsed.channelId}`;
+  }
+  return `user:${parsed.userId}`;
+}
+
+function resolveDiscordTarget(event, ctx) {
+  const candidates = [
+    typeof ctx?.conversationId === "string" ? ctx.conversationId : "",
+    typeof event?.metadata?.originatingTo === "string" ? event.metadata.originatingTo : "",
+    typeof event?.to === "string" ? event.to : "",
+  ];
+  for (const candidate of candidates) {
+    const normalized = parseDiscordTarget(candidate) ? normalizeDiscordTarget(candidate) : null;
+    if (normalized) {
+      return normalized;
+    }
+  }
+  for (const candidate of candidates) {
+    const raw = typeof candidate === "string" ? candidate.trim() : "";
+    if (raw) {
+      return raw;
+    }
+  }
+  return null;
+}
+
 async function resolveDiscordRestChannelId(target, token) {
   const parsed = parseDiscordTarget(target);
   if (!parsed) {
@@ -286,13 +325,130 @@ function normalizeDiscordComponents(components) {
   return Array.isArray(components) ? components : undefined;
 }
 
-async function sendDiscordMessageDirect(api, target, text, options = {}) {
-  const token = resolveDiscordRestToken();
-  if (!token) {
-    throw new Error("DISCORD_BOT_TOKEN is not available in the gateway process environment");
+function normalizeDiscordAttachmentFiles(files) {
+  if (!Array.isArray(files)) {
+    return [];
   }
+  return files
+    .map((entry) => {
+      if (!entry || typeof entry !== "object") {
+        return null;
+      }
+      const artifactPath = typeof entry.path === "string" ? entry.path.trim() : "";
+      if (!artifactPath) {
+        return null;
+      }
+      const name =
+        typeof entry.name === "string" && entry.name.trim()
+          ? entry.name.trim()
+          : path.basename(artifactPath);
+      return {
+        path: artifactPath,
+        name,
+        mimeType:
+          typeof entry.mime_type === "string" && entry.mime_type.trim()
+            ? entry.mime_type.trim()
+            : typeof entry.content_type === "string" && entry.content_type.trim()
+              ? entry.content_type.trim()
+              : "application/octet-stream",
+      };
+    })
+    .filter(Boolean);
+}
 
-  const channelId = await resolveDiscordRestChannelId(target, token);
+function splitDiscordChunkByLines(chunk) {
+  const lines = String(chunk || "").split("\n");
+  if (lines.length <= DISCORD_MAX_LINES_PER_MESSAGE) {
+    return [chunk];
+  }
+  const chunks = [];
+  let buffer = [];
+  for (const line of lines) {
+    buffer.push(line);
+    if (buffer.length >= DISCORD_MAX_LINES_PER_MESSAGE) {
+      chunks.push(buffer.join("\n").trim());
+      buffer = [];
+    }
+  }
+  if (buffer.length > 0) {
+    chunks.push(buffer.join("\n").trim());
+  }
+  return chunks.filter((item) => item);
+}
+
+function splitDiscordMessage(text) {
+  const normalized = String(text || "").replace(/\r\n/g, "\n").trim();
+  if (!normalized) {
+    return [""];
+  }
+  if (normalized.length <= DISCORD_MESSAGE_MAX_LENGTH) {
+    return [normalized];
+  }
+  const chunks = [];
+  let remaining = normalized;
+  while (remaining.length > DISCORD_SAFE_CHUNK_LENGTH) {
+    let splitAt = remaining.lastIndexOf("\n\n", DISCORD_SAFE_CHUNK_LENGTH);
+    if (splitAt < Math.floor(DISCORD_SAFE_CHUNK_LENGTH * 0.5)) {
+      splitAt = remaining.lastIndexOf("\n", DISCORD_SAFE_CHUNK_LENGTH);
+    }
+    if (splitAt < Math.floor(DISCORD_SAFE_CHUNK_LENGTH * 0.5)) {
+      splitAt = remaining.lastIndexOf(" ", DISCORD_SAFE_CHUNK_LENGTH);
+    }
+    if (splitAt <= 0) {
+      splitAt = DISCORD_SAFE_CHUNK_LENGTH;
+    }
+    chunks.push(remaining.slice(0, splitAt).trim());
+    remaining = remaining.slice(splitAt).trim();
+  }
+  if (remaining) {
+    chunks.push(remaining);
+  }
+  return chunks.flatMap((chunk) => splitDiscordChunkByLines(chunk)).filter((chunk) => chunk);
+}
+
+function formatDiscordChunk(chunk, index, total) {
+  if (total <= 1) {
+    return chunk;
+  }
+  return `[${index + 1}/${total}]\n${chunk}`;
+}
+
+function summarizeDiscordDeliveryError(error) {
+  const raw = String(error || "").replace(/\s+/g, " ").trim();
+  if (!raw) {
+    return "erreur inconnue";
+  }
+  if (raw.includes("BASE_TYPE_MAX_LENGTH")) {
+    return "reponse trop longue pour Discord";
+  }
+  if (raw.includes("DISCORD_BOT_TOKEN")) {
+    return "token Discord indisponible";
+  }
+  if (raw.includes("unsupported Discord target")) {
+    return "cible Discord invalide";
+  }
+  return raw.length <= DISCORD_FAILURE_NOTICE_MAX_LENGTH ? raw : `${raw.slice(0, DISCORD_FAILURE_NOTICE_MAX_LENGTH - 3)}...`;
+}
+
+function extractResponseManifest(replyLike) {
+  if (!replyLike || typeof replyLike !== "object") {
+    return null;
+  }
+  const directManifest =
+    replyLike.response_manifest && typeof replyLike.response_manifest === "object"
+      ? replyLike.response_manifest
+      : null;
+  if (directManifest) {
+    return directManifest;
+  }
+  const metadataManifest =
+    replyLike.metadata && typeof replyLike.metadata === "object" && replyLike.metadata.response_manifest
+      ? replyLike.metadata.response_manifest
+      : null;
+  return metadataManifest && typeof metadataManifest === "object" ? metadataManifest : null;
+}
+
+async function sendDiscordMessageDirectOnce(channelId, token, text, options = {}) {
   const payload = {
     content: String(text || ""),
     allowed_mentions: {
@@ -311,24 +467,82 @@ async function sendDiscordMessageDirect(api, target, text, options = {}) {
   if (components) {
     payload.components = components;
   }
-
-  const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+  const files = normalizeDiscordAttachmentFiles(options.attachments);
+  const request = {
     method: "POST",
     headers: {
       Authorization: `Bot ${token}`,
-      "Content-Type": "application/json",
     },
-    body: JSON.stringify(payload),
-  });
+  };
+  if (files.length > 0) {
+    const form = new FormData();
+    const attachmentRefs = [];
+    for (let index = 0; index < files.length; index += 1) {
+      const file = files[index];
+      const buffer = await fs.readFile(file.path);
+      form.append(`files[${index}]`, new Blob([buffer], { type: file.mimeType }), file.name);
+      attachmentRefs.push({
+        id: index,
+        filename: file.name,
+      });
+    }
+    payload.attachments = attachmentRefs;
+    form.append("payload_json", JSON.stringify(payload));
+    request.body = form;
+  } else {
+    request.headers["Content-Type"] = "application/json";
+    request.body = JSON.stringify(payload);
+  }
+
+  const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, request);
   if (!response.ok) {
     const body = await response.text();
     throw new Error(`discord message send failed (${response.status}): ${body}`);
   }
-  const result = await response.json();
+  return response.json();
+}
+
+async function sendDiscordMessageDirect(api, target, text, options = {}) {
+  const token = resolveDiscordRestToken();
+  if (!token) {
+    throw new Error("DISCORD_BOT_TOKEN is not available in the gateway process environment");
+  }
+
+  const channelId = await resolveDiscordRestChannelId(target, token);
+  const rawChunks = splitDiscordMessage(text);
+  const total = rawChunks.length;
+  const attachments = normalizeDiscordAttachmentFiles(options.attachments);
+  const results = [];
+  for (let index = 0; index < rawChunks.length; index += 1) {
+    const chunkText = formatDiscordChunk(rawChunks[index], index, total);
+    const result = await sendDiscordMessageDirectOnce(channelId, token, chunkText, {
+      replyTo: index === 0 ? options.replyTo : undefined,
+      components: index === total - 1 ? options.components : undefined,
+      attachments: index === total - 1 ? attachments : undefined,
+    });
+    results.push(result);
+  }
+  const lastResult = results[results.length - 1] || null;
   api.logger.info(
-    `[project-os-gateway-adapter] sent Project OS Discord reply target=${target} message_id=${String(result?.id || "unknown")}`
+    `[project-os-gateway-adapter] sent Project OS Discord reply target=${target} chunks=${String(total)} message_id=${String(lastResult?.id || "unknown")}`
   );
-  return result;
+  return lastResult;
+}
+
+async function sendDiscordDeliveryFailureNotice(api, target, error, options = {}) {
+  const reason = summarizeDiscordDeliveryError(error);
+  const notice = `[Project OS] Reponse calculee mais livraison Discord echouee: ${reason}. Regarde les logs gateway pour le detail.`;
+  try {
+    await sendDiscordMessageDirect(api, target, notice, {
+      replyTo: options.replyTo,
+    });
+    return true;
+  } catch (fallbackError) {
+    api.logger.warn(
+      `[project-os-gateway-adapter] failed to send Discord delivery error notice target=${target}: ${String(fallbackError)}`
+    );
+    return false;
+  }
 }
 
 async function runProjectOsJsonCommand(api, config, extraArgs, input) {
@@ -351,37 +565,43 @@ async function runProjectOsJsonCommand(api, config, extraArgs, input) {
 }
 
 async function maybeSendDiscordImmediateReply(api, event, ctx, parsed, config) {
-  const pendingKey = rememberPendingDiscordReply(api, ctx, parsed, config);
   const reply = parsed?.operator_reply;
   if (!reply?.summary) {
     return;
   }
+  const responseManifest = extractResponseManifest(reply);
   const replyKind = typeof reply.reply_kind === "string" ? reply.reply_kind.trim().toLowerCase() : "";
   if (replyKind === "ack" && !config.sendAckReplies) {
     return;
   }
-  const target =
-    typeof ctx?.conversationId === "string" && ctx.conversationId.trim()
-      ? ctx.conversationId.trim()
-      : typeof event?.metadata?.originatingTo === "string" && event.metadata.originatingTo.trim()
-        ? event.metadata.originatingTo.trim()
-        : null;
+  const target = resolveDiscordTarget(event, ctx);
   if (!target) {
     api.logger.warn("[project-os-gateway-adapter] missing Discord target for direct Project OS reply");
     return;
   }
+  const pendingKey = rememberPendingDiscordReply(api, ctx, event, parsed, config, target);
   const replyTo =
     typeof event?.metadata?.messageId === "string" && event.metadata.messageId.trim()
       ? event.metadata.messageId.trim()
       : undefined;
   try {
-    await sendDiscordMessageDirect(api, target, String(reply.summary), {
+    api.logger.info(
+      `[project-os-gateway-adapter] sending Project OS Discord reply account=${String(ctx?.accountId || "unknown")} target=${target} reply_kind=${replyKind || "unknown"}`
+    );
+    await sendDiscordMessageDirect(api, target, String(responseManifest?.discord_summary || reply.summary), {
       replyTo,
       components: reply.components,
+      attachments: responseManifest?.attachments,
     });
     forgetPendingDiscordReply(api, pendingKey);
   } catch (error) {
     api.logger.warn(`[project-os-gateway-adapter] direct Discord Project OS reply failed: ${String(error)}`);
+    const failureNotice = `[Project OS] Reponse calculee mais non livree completement. Cause: ${summarizeDiscordDeliveryError(error)}.`;
+    overwritePendingDiscordReply(api, pendingKey, failureNotice, "error");
+    const noticeSent = await sendDiscordDeliveryFailureNotice(api, target, error, { replyTo });
+    if (noticeSent) {
+      forgetPendingDiscordReply(api, pendingKey);
+    }
   }
 }
 
@@ -405,18 +625,19 @@ function prunePendingDiscordReplyCache(api, now = Date.now()) {
 function buildPendingDiscordReplyKey(channelId, accountId, conversationId) {
   const normalizedChannelId = String(channelId || "").trim().toLowerCase();
   const normalizedAccountId = String(accountId || "").trim().toLowerCase();
-  const normalizedConversationId = String(conversationId || "").trim();
+  const normalizedConversationId = normalizeDiscordTarget(conversationId);
   if (!normalizedChannelId || !normalizedConversationId) {
     return null;
   }
   return `${normalizedChannelId}|${normalizedAccountId || "default"}|${normalizedConversationId}`;
 }
 
-function rememberPendingDiscordReply(api, ctx, parsed, config) {
+function rememberPendingDiscordReply(api, ctx, event, parsed, config, targetOverride) {
   const reply = parsed?.operator_reply;
   if (!reply?.summary) {
     return null;
   }
+  const responseManifest = extractResponseManifest(reply);
   const replyKind = typeof reply.reply_kind === "string" ? reply.reply_kind.trim().toLowerCase() : "";
   if (!replyKind) {
     return null;
@@ -424,13 +645,17 @@ function rememberPendingDiscordReply(api, ctx, parsed, config) {
   if (replyKind === "ack" && !config.sendAckReplies) {
     return null;
   }
-  const key = buildPendingDiscordReplyKey("discord", ctx.accountId, ctx.conversationId);
+  const key = buildPendingDiscordReplyKey(
+    "discord",
+    ctx.accountId,
+    targetOverride || resolveDiscordTarget(event, ctx)
+  );
   if (!key) {
     api.logger.warn("[project-os-gateway-adapter] Cannot persist pending Discord reply without conversation target");
     return null;
   }
   prunePendingDiscordReplyCache(api).set(key, {
-    text: String(reply.summary),
+    text: String(responseManifest?.discord_summary || reply.summary),
     replyKind,
     storedAt: Date.now(),
   });
@@ -444,8 +669,25 @@ function forgetPendingDiscordReply(api, key) {
   pendingDiscordReplyCache(api).delete(key);
 }
 
+function overwritePendingDiscordReply(api, key, text, replyKind = "error") {
+  if (!key) {
+    return;
+  }
+  const cache = prunePendingDiscordReplyCache(api);
+  const entry = cache.get(key);
+  if (!entry) {
+    return;
+  }
+  cache.set(key, {
+    ...entry,
+    text: String(text || ""),
+    replyKind,
+    storedAt: Date.now(),
+  });
+}
+
 function consumePendingDiscordReply(api, ctx, event) {
-  const key = buildPendingDiscordReplyKey("discord", ctx.accountId, event?.to);
+  const key = buildPendingDiscordReplyKey("discord", ctx.accountId, resolveDiscordTarget(event, ctx));
   if (!key) {
     return null;
   }
@@ -579,16 +821,30 @@ async function flushOperatorDeliveries(api, config) {
 
     const payload = delivery.payload && typeof delivery.payload === "object" ? delivery.payload : {};
     const channelHint = typeof delivery.channel_hint === "string" ? delivery.channel_hint : "runs_live";
+    const deliveryGuarantee =
+      typeof delivery.delivery_guarantee === "string" && delivery.delivery_guarantee.trim()
+        ? delivery.delivery_guarantee.trim()
+        : typeof payload.delivery_guarantee === "string" && payload.delivery_guarantee.trim()
+          ? payload.delivery_guarantee.trim()
+          : "important";
     const target = resolveOperatorDeliveryTarget(config, payload, channelHint);
 
     if (!target) {
-      await ackOperatorDelivery(api, config, deliveryId, "skipped", "discord_target_not_configured", {
+      await ackOperatorDelivery(api, config, deliveryId, "pending", "discord_target_not_configured", {
         channel_hint: channelHint,
+        delivery_guarantee: deliveryGuarantee,
+        delivery_blocker: "discord_target_not_configured",
       });
       continue;
     }
 
-    const text = typeof payload.text === "string" && payload.text.trim() ? payload.text.trim() : `[Project OS] ${channelHint}`;
+    const responseManifest = extractResponseManifest(payload);
+    const text =
+      typeof responseManifest?.discord_summary === "string" && responseManifest.discord_summary.trim()
+        ? responseManifest.discord_summary.trim()
+        : typeof payload.text === "string" && payload.text.trim()
+          ? payload.text.trim()
+          : `[Project OS] ${channelHint}`;
     const replyTo = typeof payload.reply_to === "string" && payload.reply_to.trim() ? payload.reply_to.trim() : undefined;
     const components = payload.components && typeof payload.components === "object" ? payload.components : undefined;
     const accountId =
@@ -600,21 +856,28 @@ async function flushOperatorDeliveries(api, config) {
       await sendDiscordMessageDirect(api, target, text, {
         replyTo,
         components,
+        attachments: responseManifest?.attachments,
       });
       await ackOperatorDelivery(api, config, deliveryId, "delivered", undefined, {
         channel_hint: channelHint,
         target,
         reply_to: replyTo,
         components_enabled: Boolean(components),
+        attachment_count: Array.isArray(responseManifest?.attachments) ? responseManifest.attachments.length : 0,
         account_id: accountId,
+        delivery_guarantee: deliveryGuarantee,
       });
     } catch (error) {
+      const failureNoticeSent = await sendDiscordDeliveryFailureNotice(api, target, error, { replyTo });
       await ackOperatorDelivery(api, config, deliveryId, "pending", String(error), {
         channel_hint: channelHint,
         target,
         reply_to: replyTo,
         components_enabled: Boolean(components),
+        attachment_count: Array.isArray(responseManifest?.attachments) ? responseManifest.attachments.length : 0,
         account_id: accountId,
+        delivery_guarantee: deliveryGuarantee,
+        failure_notice_sent: failureNoticeSent,
       });
     }
   }
@@ -737,14 +1000,14 @@ const plugin = {
         api.logger.info(
           `[project-os-gateway-adapter] ignored inbound discord event for non-primary account=${ctx.accountId.trim()} primary=${runtimeConfig.discordAccountId}`
         );
-        return { handled: true };
+        return;
       }
 
       if (ingressDedupKey && isRecentIngressDuplicate(api, ingressDedupKey)) {
         api.logger.info(
           `[project-os-gateway-adapter] ignored recent duplicate ingress channel=${liveChannelId || "unknown"} conversation=${String(ctx.conversationId || "unknown")}`
         );
-        return { handled: true };
+        return;
       }
 
       const payload = buildPayload(event, ctx, runtimeConfig);
@@ -758,7 +1021,7 @@ const plugin = {
           api.logger.warn(
             `[project-os-gateway-adapter] Project OS dispatch failed with code ${String(result.code)}: ${result.stderr || "no stderr"}`
           );
-          return { handled: true };
+          return;
         }
 
         if (parsed) {
@@ -770,16 +1033,13 @@ const plugin = {
         );
 
         if (String(ctx.channelId).toLowerCase() === "discord") {
-          maybeSendDiscordImmediateReply(api, event, ctx, parsed, runtimeConfig);
+          await maybeSendDiscordImmediateReply(api, event, ctx, parsed, runtimeConfig);
         }
-
-        return { handled: true };
       } catch (error) {
         forgetIngressKey(api, ingressDedupKey);
         api.logger.warn(
           `[project-os-gateway-adapter] ${error?.stack || error?.message || String(error)}`
         );
-        return { handled: true };
       }
     };
 
@@ -789,20 +1049,22 @@ const plugin = {
         return;
       }
 
-      const target = typeof event?.to === "string" ? event.to : "unknown";
+      const target = resolveDiscordTarget(event, ctx) || "unknown";
       const pendingReply = consumePendingDiscordReply(api, ctx, event);
       if (pendingReply && pendingReply.text) {
         api.logger.info(
-          `[project-os-gateway-adapter] replaced native OpenClaw Discord reply account=${String(ctx.accountId || "unknown")} target=${target} reply_kind=${pendingReply.replyKind}`
+          `[project-os-gateway-adapter] guardrail replaced unexpected native OpenClaw Discord reply account=${String(ctx.accountId || "unknown")} target=${target} reply_kind=${pendingReply.replyKind}`
         );
         return { content: pendingReply.text };
       }
       api.logger.info(
-        `[project-os-gateway-adapter] suppressed native OpenClaw Discord reply account=${String(ctx.accountId || "unknown")} target=${target}`
+        `[project-os-gateway-adapter] guardrail suppressed unexpected native OpenClaw Discord reply account=${String(ctx.accountId || "unknown")} target=${target}`
       );
       return { cancel: true };
     };
 
+    // Upstream OpenClaw 2026.3.12 fires message_received as fire-and-forget.
+    // This handler is forward-only and cannot suppress native replies by itself.
     if (typeof api.on === "function") {
       api.on("message_received", handleMessageReceived, {
         priority: 0,
@@ -815,6 +1077,7 @@ const plugin = {
     }
 
     // message_sending must use registerHook — api.on() does not support it in all versions
+    // Guardrail only: direct REST send is the primary Project OS egress path.
     if (typeof api.registerHook === "function") {
       api.registerHook("message_sending", handleMessageSending, {
         name: "project-os-gateway-adapter.message_sending",

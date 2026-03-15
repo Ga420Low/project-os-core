@@ -21,6 +21,7 @@ from project_os_core.models import (
     DecisionStatus,
     LearningSignalKind,
     OperatorChannelHint,
+    OperatorDeliveryGuarantee,
     OperatorDeliveryStatus,
     RunLifecycleEvent,
     RunLifecycleEventKind,
@@ -599,6 +600,7 @@ class ApiRunServiceTests(unittest.TestCase):
                 latest = deliveries[0]
                 self.assertEqual(latest["event"]["run_id"], payload["result"].run_id)
                 self.assertEqual(latest["status"], "pending")
+                self.assertEqual(latest["delivery_guarantee"], OperatorDeliveryGuarantee.MUST_PERSIST.value)
                 ack = services.api_runs.mark_operator_delivery(
                     delivery_id=latest["delivery_id"],
                     status=OperatorDeliveryStatus.DELIVERED,
@@ -669,10 +671,16 @@ class ApiRunServiceTests(unittest.TestCase):
                         error="discord_still_down",
                     )
                 self.assertEqual(ack["status"], "failed")
+                self.assertTrue(Path(str(ack["metadata"]["dead_letter_artifact_path"])).exists())
+                self.assertEqual(ack["delivery_guarantee"], OperatorDeliveryGuarantee.MUST_PERSIST.value)
+                replayed = services.api_runs.requeue_operator_delivery(delivery_id=delivery["delivery_id"])
+                self.assertEqual(replayed["status"], "pending")
+                self.assertEqual(replayed["attempts"], 0)
+                self.assertEqual(replayed["metadata"]["replay_status"], "queued")
             finally:
                 services.close()
 
-    def test_operator_delivery_backlog_prunes_oldest_runs_live_when_limit_is_hit(self):
+    def test_operator_delivery_backlog_soft_limit_no_longer_skips_runs_live(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = _build_services(Path(tmp))
             try:
@@ -707,8 +715,62 @@ class ApiRunServiceTests(unittest.TestCase):
                         },
                     )
                 snapshot = services.api_runs.monitor_snapshot(limit=5)
-                self.assertLessEqual(snapshot["operator_delivery_counts"].get("pending", 0), 1)
-                self.assertGreaterEqual(snapshot["operator_delivery_counts"].get("skipped", 0), 1)
+                self.assertGreaterEqual(snapshot["operator_delivery_counts"].get("pending", 0), 2)
+                self.assertEqual(snapshot["operator_delivery_counts"].get("skipped", 0), 0)
+                deliveries = services.api_runs.list_operator_deliveries(limit=10)["deliveries"]
+                self.assertEqual(len(deliveries), 2)
+                self.assertTrue(any(item["metadata"]["backlog_soft_limit_exceeded"] for item in deliveries))
+                self.assertTrue(all(item["delivery_guarantee"] == OperatorDeliveryGuarantee.MUST_PERSIST.value for item in deliveries))
+            finally:
+                services.close()
+
+    def test_monitor_snapshot_exposes_no_loss_delivery_health(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier l'audit no-loss du dashboard.",
+                    branch_name="project-os/test-no-loss-audit",
+                    skill_tags=["audit", "observability"],
+                )
+                services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
+                    response_runner=lambda request, prompt, context: {
+                        "model": "gpt-5.4",
+                        "output_text": json.dumps(
+                            {
+                                "decision": "Le run est termine.",
+                                "why": "Le lot a produit un resultat complet.",
+                                "alternatives": [],
+                                "files_to_change": [],
+                                "interfaces": [],
+                                "patch_outline": [],
+                                "tests": [],
+                                "risks": [],
+                                "acceptance_criteria": [],
+                                "open_questions": [],
+                            }
+                        ),
+                        "usage": {"input_tokens": 20, "output_tokens": 20},
+                    },
+                )
+                delivery = services.api_runs.list_operator_deliveries(limit=10)["deliveries"][0]
+                services.api_runs.mark_operator_delivery(
+                    delivery_id=delivery["delivery_id"],
+                    status=OperatorDeliveryStatus.PENDING,
+                    error="discord_send_failed",
+                    metadata={"failure_notice_sent": False},
+                )
+
+                snapshot = services.api_runs.monitor_snapshot(limit=5)
+
+                self.assertEqual(snapshot["no_loss_audit"]["status"], "breach")
+                self.assertGreaterEqual(snapshot["no_loss_audit"]["silent_loss_risk_count"], 1)
+                self.assertEqual(snapshot["operator_delivery_health"]["status"], "breach")
+                self.assertEqual(snapshot["current_run"]["operator_delivery_no_loss_state"], "breach")
+                self.assertEqual(snapshot["current_run"]["operator_delivery_guarantee"], OperatorDeliveryGuarantee.MUST_PERSIST.value)
             finally:
                 services.close()
 

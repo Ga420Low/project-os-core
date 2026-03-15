@@ -13,6 +13,7 @@ from .config import repo_root as resolve_repo_root
 from .docs_audit import audit_docs
 from .gateway.openclaw_adapter import build_dispatch_from_openclaw_payload
 from .mission.chain import STANDARD_CHAINS
+from .research_scaffold import ResearchScaffoldRequest, scaffold_research
 from .models import (
     ActionRiskClass,
     ApiRunMode,
@@ -64,6 +65,19 @@ def main(argv: list[str] | None = None) -> int:
     docs_sub = docs_parser.add_subparsers(dest="docs_command", required=True)
     docs_audit_parser = docs_sub.add_parser("audit")
     docs_audit_parser.add_argument("--include-historical", action="store_true")
+    docs_research_parser = docs_sub.add_parser("scaffold-research")
+    docs_research_parser.add_argument("--title", required=True)
+    docs_research_parser.add_argument("--kind", choices=["audit", "system"], default="audit")
+    docs_research_parser.add_argument("--slug")
+    docs_research_parser.add_argument("--question")
+    docs_research_parser.add_argument("--keyword", action="append", default=[])
+    docs_research_parser.add_argument("--recent-days", type=int, default=30)
+    docs_research_parser.add_argument("--overwrite", action="store_true")
+
+    research_parser = subparsers.add_parser("research")
+    research_sub = research_parser.add_subparsers(dest="research_command", required=True)
+    research_run_job = research_sub.add_parser("run-job")
+    research_run_job.add_argument("--job-path", required=True)
 
     secrets_parser = subparsers.add_parser("secrets")
     secrets_sub = secrets_parser.add_subparsers(dest="secrets_command", required=True)
@@ -313,6 +327,9 @@ def main(argv: list[str] | None = None) -> int:
     api_ack_delivery.add_argument("--error")
     api_ack_delivery.add_argument("--metadata")
 
+    api_requeue_delivery = api_runs_sub.add_parser("requeue-operator-delivery")
+    api_requeue_delivery.add_argument("--delivery-id", required=True)
+
     api_monitor = api_runs_sub.add_parser("monitor")
     api_monitor.add_argument("--limit", type=int, default=5)
     api_monitor.add_argument("--watch", action="store_true")
@@ -424,9 +441,28 @@ def main(argv: list[str] | None = None) -> int:
         report = audit_docs(resolve_repo_root(), include_historical=bool(args.include_historical))
         print(json.dumps(report, indent=2, ensure_ascii=True, sort_keys=True))
         return 0 if report["verdict"] == "OK" else 1
+    if args.command == "docs" and args.docs_command == "scaffold-research":
+        payload = scaffold_research(
+            resolve_repo_root(),
+            ResearchScaffoldRequest(
+                title=args.title,
+                kind=args.kind,
+                slug=args.slug,
+                question=args.question,
+                keywords=list(args.keyword or []),
+                recent_days=args.recent_days,
+                overwrite=bool(args.overwrite),
+            ),
+        )
+        print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+        return 0
 
     services = build_app_services(config_path=args.config_path, policy_path=args.policy_path)
     try:
+        if args.command == "research" and args.research_command == "run-job":
+            payload = services.deep_research.run_job_path(job_path=args.job_path)
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0 if payload.get("status") == "completed" else 1
         if args.command == "secrets" and args.secrets_command == "doctor":
             print(json.dumps(services.secret_resolver.source_report(), indent=2, ensure_ascii=True, sort_keys=True))
             return 0
@@ -846,6 +882,10 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
                 return 0
+            if args.api_runs_command == "requeue-operator-delivery":
+                payload = services.api_runs.requeue_operator_delivery(delivery_id=args.delivery_id)
+                print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
             if args.api_runs_command == "monitor":
                 if args.watch:
                     return _watch_api_runs_monitor(services, interval=args.interval, iterations=args.iterations, limit=args.limit)
@@ -984,7 +1024,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "scheduler":
             if args.scheduler_command == "tick":
                 results = services.scheduler.tick(executor=lambda command, args_dict: _execute_scheduler_task(services, command, args_dict))
-                print(json.dumps(results, indent=2, ensure_ascii=True, sort_keys=True))
+                print(json.dumps(to_jsonable(results), indent=2, ensure_ascii=True, sort_keys=True))
                 return 0
             if args.scheduler_command == "list":
                 print(json.dumps([to_jsonable(item) for item in services.scheduler.list_tasks()], indent=2, ensure_ascii=True, sort_keys=True))

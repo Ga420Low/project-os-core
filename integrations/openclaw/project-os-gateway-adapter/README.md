@@ -75,6 +75,24 @@ Example:
 }
 ```
 
+Required runtime policy for Discord single voice:
+
+```json
+{
+  "session": {
+    "sendPolicy": {
+      "default": "allow",
+      "rules": [
+        { "action": "deny", "match": { "channel": "discord", "chatType": "group" } },
+        { "action": "deny", "match": { "channel": "discord", "chatType": "channel" } }
+      ]
+    }
+  }
+}
+```
+
+The gateway process must also expose `DISCORD_BOT_TOKEN`, because the adapter uses direct Discord REST send for the visible Project OS reply path.
+
 Delivery policy:
 
 - `contract_proposed` -> `approvals`
@@ -92,6 +110,12 @@ Optional outbound payload overrides:
 - `components`: forwards Discord components v2 as-is
 - `account_id`: overrides the default Discord account for that delivery
 
+Artifact-first payloads are also supported:
+
+- `response_manifest.discord_summary`: compact visible Discord text
+- `response_manifest.attachments`: local artifact files to attach on the last Discord chunk
+- `response_manifest.delivery_mode`: observability hint for `inline_text`, `thread_chunked_text`, or `artifact_summary`
+
 These overrides stay optional. The normal path remains compact `channel_hint` delivery.
 
 ## Discord ownership model
@@ -99,8 +123,10 @@ These overrides stay optional. The normal path remains compact `channel_hint` de
 For the live Discord server, the intended behavior is:
 
 - inbound guild messages go to `Project OS` through `message_received`
-- native OpenClaw Discord auto-replies are suppressed by the adapter through `message_sending`
-- outbound operator lifecycle messages still go to Discord through `sendMessageDiscord`
+- native OpenClaw Discord auto-replies are stopped structurally by `session.sendPolicy`
+- visible Project OS chat replies are sent by the adapter through direct Discord REST send
+- `message_sending` remains only as a secondary guardrail if a native egress still leaks through
+- outbound operator lifecycle messages still go to Discord through adapter-controlled delivery
 
 This keeps Discord single-voiced: `Project OS` speaks, `OpenClaw` transports.
 
@@ -117,6 +143,19 @@ The adapter itself stays thin:
 - it does not implement custom approval logic
 - it does not become the canonical thread store
 - it only forwards more precise outbound Discord targets when `Project OS` already decided them
+
+## Pack E UX and observability
+
+The adapter now exposes the output mode rather than hiding it:
+
+- docs-safe Discord chunking at `2000` chars max
+- line-aware chunking as the last safety net
+- artifact-first replies attach the full `markdown` review artifact when present
+- visible delivery failure notices stay mandatory when Discord send fails
+
+The operational UX reference lives in:
+
+- `docs/integrations/OPENCLAW_DISCORD_OPERATIONS_UX.md`
 
 ## Suggested install path
 

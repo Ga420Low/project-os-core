@@ -127,6 +127,17 @@ Un format que Claude API peut lire et traduire mecaniquement.
 Format stable et versionne. Chaque champ est semantique.
 Claude API doit pouvoir traduire mecaniquement sans avoir besoin du contexte complet du run.
 
+Implementation actuelle pour la voie operateur:
+
+- le niveau 2 ne se limite plus a `structured_question`
+- il inclut aussi un `handoff contract` minimal entre la voix gateway et le modele du tour
+- ce contrat contient l'intention brute, le modele cible, le snapshot de contexte et les questions encore pendantes
+
+References implementation:
+
+- `src/project_os_core/gateway/handoff.py`
+- `src/project_os_core/gateway/context_builder.py`
+
 ## Niveau 3 — Humain
 
 ### Qui parle
@@ -194,6 +205,20 @@ GPT va corriger automatiquement.
 Si un message serait difficile a comprendre pour quelqu'un qui n'a jamais code,
 il doit etre simplifie avant envoi.
 
+Regles supplementaires actuelles:
+
+- la voix publique est rendue depuis `config/project_os_persona.yaml`
+- la verite runtime est injectee a chaque tour
+- le ton s'adapte legerement au mood (`focused`, `brainstorming`, `casual`, `serious`, `urgent`, `frustrated`)
+- cet ajustement ne doit jamais casser la clarte, la verite ou la sobriete
+
+Golden checks retenus:
+
+- `qui es-tu ?` -> doit parler comme `Project OS`, jamais comme un assistant numerique generique
+- `quel modele utilises-tu ?` -> doit rester factuel selon le runtime du tour
+- une blague legere peut etre reconnue, sans transformer la discussion en sketch
+- un sujet sensible ou critique doit rendre le ton plus net, pas plus froidement robotique
+
 ## Regles de filtrage
 
 Claude API decide quoi envoyer au fondateur:
@@ -210,6 +235,19 @@ Claude API decide quoi envoyer au fondateur:
 | `budget_alert >= 80%` | Oui | Le fondateur peut ajuster |
 | `review_accepted` | Oui | Resume court |
 | `review_rejected` | Oui | Le fondateur doit savoir |
+
+## Prompt Ops
+
+Le comportement de la voix operateur n'est pas "artistique".
+Il est traite comme un composant versionne et teste.
+
+Cela implique:
+
+- spec persona versionnee dans le repo
+- renderers `Anthropic / OpenAI / local`
+- tests golden sur la voix, la verite et les overrides modele
+- tests de ton sur plusieurs moods
+- docs alignees sur le comportement reel
 
 ## References
 

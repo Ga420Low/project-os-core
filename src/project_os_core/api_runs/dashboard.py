@@ -27,6 +27,7 @@ def build_dashboard_payload(services, *, limit: int = 8) -> dict[str, Any]:
     current_blockage: dict[str, Any] | None = None
     current_clarification: dict[str, Any] | None = None
     terminal_text = services.api_runs.render_terminal_dashboard(limit=limit)
+    gateway_reply_audit = _build_gateway_reply_audit(services, limit=limit)
 
     if current_run and current_run.get("run_id"):
         current_artifacts = services.api_runs.show_artifacts(run_id=str(current_run["run_id"])).get("artifacts", [])
@@ -65,6 +66,9 @@ def build_dashboard_payload(services, *, limit: int = 8) -> dict[str, Any]:
         "status_counts": status_counts,
         "review_counts": review_counts,
         "operator_delivery_counts": operator_delivery_counts,
+        "operator_delivery_health": snapshot.get("operator_delivery_health", {}),
+        "no_loss_audit": snapshot.get("no_loss_audit", {}),
+        "gateway_reply_audit": gateway_reply_audit,
         "lane_policy": {
             "coding_lane": "repo_cli",
             "desktop_lane": "future_computer_use",
@@ -72,6 +76,88 @@ def build_dashboard_payload(services, *, limit: int = 8) -> dict[str, Any]:
             "voice_mode": "future_ready",
             "memory_sync": "selective_sync",
         },
+    }
+
+
+def _build_gateway_reply_audit(services, *, limit: int = 8) -> dict[str, Any]:
+    rows = services.database.fetchall(
+        """
+        SELECT
+            ce.created_at,
+            ce.channel,
+            gdr.reply_json,
+            gdr.metadata_json
+        FROM gateway_dispatch_results AS gdr
+        JOIN channel_events AS ce ON ce.event_id = gdr.channel_event_id
+        ORDER BY ce.created_at DESC
+        LIMIT ?
+        """,
+        (max(1, limit),),
+    )
+    items: list[dict[str, Any]] = []
+    mode_counts: dict[str, int] = {}
+    reply_kind_counts: dict[str, int] = {}
+    manifest_count = 0
+    artifact_summary_count = 0
+    manifest_gap_count = 0
+    for row in rows:
+        reply_payload = json.loads(row["reply_json"]) if row["reply_json"] else {}
+        reply_metadata = (
+            reply_payload.get("metadata")
+            if isinstance(reply_payload.get("metadata"), dict)
+            else {}
+        )
+        response_manifest = (
+            reply_payload.get("response_manifest")
+            if isinstance(reply_payload.get("response_manifest"), dict)
+            else {}
+        )
+        delivery_mode = str(
+            response_manifest.get("delivery_mode")
+            or reply_metadata.get("response_delivery_mode")
+            or "inline_text"
+        )
+        reply_kind = str(reply_payload.get("reply_kind") or "unknown")
+        attachment_count = (
+            len(response_manifest.get("attachments") or [])
+            if isinstance(response_manifest.get("attachments"), list)
+            else 0
+        )
+        response_manifest_id = str(
+            response_manifest.get("metadata", {}).get("manifest_artifact_id")
+            if isinstance(response_manifest.get("metadata"), dict)
+            else ""
+        ).strip() or None
+        review_artifact_id = str(response_manifest.get("review_artifact_id") or "").strip() or None
+        if response_manifest:
+            manifest_count += 1
+        if delivery_mode == "artifact_summary":
+            artifact_summary_count += 1
+            if not response_manifest_id or not review_artifact_id:
+                manifest_gap_count += 1
+        mode_counts[delivery_mode] = mode_counts.get(delivery_mode, 0) + 1
+        reply_kind_counts[reply_kind] = reply_kind_counts.get(reply_kind, 0) + 1
+        items.append(
+            {
+                "created_at": str(row["created_at"]),
+                "channel": str(row["channel"] or ""),
+                "reply_kind": reply_kind,
+                "delivery_mode": delivery_mode,
+                "summary": str(reply_payload.get("summary") or ""),
+                "manifest_artifact_id": response_manifest_id,
+                "review_artifact_id": review_artifact_id,
+                "attachment_count": attachment_count,
+            }
+        )
+    status = "breach" if manifest_gap_count > 0 else ("attention" if artifact_summary_count > 0 else "ok")
+    return {
+        "status": status,
+        "reply_kind_counts": reply_kind_counts,
+        "delivery_mode_counts": mode_counts,
+        "manifest_count": manifest_count,
+        "artifact_summary_count": artifact_summary_count,
+        "manifest_gap_count": manifest_gap_count,
+        "recent_replies": items,
     }
 
 
@@ -295,6 +381,9 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
     current_blockage = payload.get("current_blockage")
     current_clarification = payload.get("current_clarification")
     terminal_text = str(payload.get("terminal_text") or "").strip()
+    operator_delivery_health = payload.get("operator_delivery_health") or {}
+    no_loss_audit = payload.get("no_loss_audit") or {}
+    gateway_reply_audit = payload.get("gateway_reply_audit") or {}
 
     def badge(value: str | None, *, kind: str = "status") -> str:
         safe = (value or "pending").lower()
@@ -317,6 +406,7 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
           <span class="pill">garde {_html_escape(str(current_run.get("operator_guard_reason") or "unknown"))}</span>
           <span class="pill">signal {_html_escape(str(current_run.get("lifecycle_event_kind") or "n/a"))}</span>
           <span class="pill">livraison {_html_escape(str(current_run.get("operator_delivery_status") or "none"))}</span>
+          <span class="pill">no-loss {_html_escape(str(current_run.get("operator_delivery_no_loss_state") or "none"))}</span>
         </div>
         <div class="objective">{_html_escape(str(current_run.get("objective") or ""))}</div>
         <div class="meta-grid">
@@ -327,6 +417,7 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
           <div><strong>Garde</strong><span class="mono-small">{_html_escape(str(current_run.get("operator_guard_reason") or "unknown"))}</span></div>
           <div><strong>Canal humain</strong><span class="mono-small">{_html_escape(str(current_run.get("operator_channel_hint") or "n/a"))}</span></div>
           <div><strong>Livraison</strong><span class="mono-small">{_html_escape(str(current_run.get("operator_delivery_status") or "none"))}</span></div>
+          <div><strong>No-loss</strong><span class="mono-small">{_html_escape(str(current_run.get("operator_delivery_no_loss_state") or "none"))}</span></div>
         </div>
         <div class="meta" style="margin-top:10px;">{_html_escape(str(current_run.get("machine_summary") or "Le dashboard attend un nouvel evenement machine."))}</div>
         {('<div class="meta" style="margin-top:10px;"><strong>Question bloquante:</strong> ' + _html_escape(str(current_run.get("clarification_question") or "")) + '</div>') if current_run.get("status") == "clarification_required" else ''}
@@ -412,6 +503,28 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
     operator_delivery_counts = "<br>".join(
         f"{_html_escape(key)}: {value}" for key, value in sorted(payload.get("operator_delivery_counts", {}).items())
     ) or "aucune livraison"
+    operator_delivery_health_counts = "<br>".join(
+        f"{_html_escape(key)}: {value}"
+        for key, value in sorted((operator_delivery_health.get("counts") or {}).items())
+    ) or "aucun signal"
+    gateway_reply_modes = "<br>".join(
+        f"{_html_escape(key)}: {value}"
+        for key, value in sorted((gateway_reply_audit.get("delivery_mode_counts") or {}).items())
+    ) or "aucune reponse"
+    gateway_reply_items = "".join(
+        f"""
+        <li class="history-card">
+          <div class="history-row">
+            {badge(str(item.get('reply_kind') or 'unknown'))}
+            <span class="pill">mode {_html_escape(str(item.get('delivery_mode') or 'inline_text'))}</span>
+            <span class="pill">pieces {int(item.get('attachment_count') or 0)}</span>
+          </div>
+          <div class="meta">{_html_escape(str(item.get('created_at') or ''))} · {_html_escape(str(item.get('channel') or ''))}</div>
+          <div class="history-objective">{_html_escape(str(item.get('summary') or ''))}</div>
+        </li>
+        """
+        for item in (gateway_reply_audit.get("recent_replies") or [])
+    ) or '<li class="empty">Aucune reponse Discord recente.</li>'
     lane_policy = payload["lane_policy"]
 
     return f"""<!doctype html>
@@ -574,6 +687,7 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
           <a href="#budget">Budget</a>
           <a href="#contract">Contrat</a>
           <a href="#preview">Apercu</a>
+          <a href="#no-loss">No-loss</a>
           <a href="#completion">Rapport final</a>
           <a href="#clarification">Clarification</a>
           <a href="#blockage">Blocage</a>
@@ -601,6 +715,7 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
               <div class="mini-card"><div class="label">Statuts</div><div class="meta">{status_counts}</div></div>
               <div class="mini-card"><div class="label">Verdicts</div><div class="meta">{review_counts}</div></div>
               <div class="mini-card"><div class="label">Livraisons</div><div class="meta">{operator_delivery_counts}</div></div>
+              <div class="mini-card"><div class="label">Sante delivery</div><div class="meta">{operator_delivery_health_counts}</div></div>
             </div>
           </div>
         </details>
@@ -613,6 +728,18 @@ def render_dashboard_html(payload: dict[str, Any], *, refresh_seconds: int = 4) 
         <details class="compact" id="preview" open>
           <summary>Apercu structure <span class="meta">decision, tests, risques</span></summary>
           <div class="compact-body"><ul class="preview-list">{preview_html}</ul></div>
+        </details>
+        <details class="compact" id="no-loss" open>
+          <summary>No-loss et UX Discord <span class="meta">publication, artefacts, replays</span></summary>
+          <div class="compact-body">
+            <div class="policy-grid" style="margin-bottom: 12px;">
+              <div class="mini-card"><div class="label">Audit no-loss</div><div class="value">{_html_escape(str(no_loss_audit.get('status') or 'unknown'))}</div><div class="meta">silent risks {int(no_loss_audit.get('silent_loss_risk_count') or 0)}</div></div>
+              <div class="mini-card"><div class="label">Dead letters</div><div class="value">{int(no_loss_audit.get('dead_letter_count') or 0)}</div><div class="meta">replayables {int(no_loss_audit.get('replayable_count') or 0)}</div></div>
+              <div class="mini-card"><div class="label">Artifacts Discord</div><div class="value">{int(gateway_reply_audit.get('artifact_summary_count') or 0)}</div><div class="meta">manifest gaps {int(gateway_reply_audit.get('manifest_gap_count') or 0)}</div></div>
+              <div class="mini-card"><div class="label">Modes de reponse</div><div class="meta">{gateway_reply_modes}</div></div>
+            </div>
+            <ul class="history-list">{gateway_reply_items}</ul>
+          </div>
         </details>
         <details class="compact" id="completion">
           <summary>Rapport final <span class="meta">francais simple</span></summary>

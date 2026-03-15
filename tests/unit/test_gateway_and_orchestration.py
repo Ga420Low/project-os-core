@@ -189,6 +189,255 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
             finally:
                 services.close()
 
+    def test_gateway_keeps_recall_and_light_humor_questions_on_inline_chat_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                captured_messages: list[str] = []
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    captured_messages.append(message)
+                    return "ok"
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+
+                recall_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="Rappelle-moi exactement les deux contraintes",
+                        thread_ref=ConversationThreadRef(thread_id="thread_inline", channel="discord"),
+                    ),
+                )
+                humor_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="petite blague avant de bosser: si je dis Theo, tu fais quoi ?",
+                        thread_ref=ConversationThreadRef(thread_id="thread_inline", channel="discord"),
+                    ),
+                )
+
+                recall_dispatch = services.gateway.dispatch_event(recall_event, target_profile="core")
+                humor_dispatch = services.gateway.dispatch_event(humor_event, target_profile="core")
+
+                self.assertEqual(recall_dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(humor_dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(recall_dispatch.metadata["model_provider"], "anthropic")
+                self.assertEqual(humor_dispatch.metadata["model_provider"], "anthropic")
+                self.assertEqual(len(captured_messages), 2)
+            finally:
+                services.close()
+
+    def test_gateway_surfaces_intent_taxonomy_for_implicit_directive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="j'aimerais qu'on garde une trace de ca dans un md",
+                        thread_ref=ConversationThreadRef(thread_id="thread_manager_mode", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.metadata["classification"], "tasking")
+                self.assertEqual(dispatch.metadata["intent_kind"], "directive_implicit")
+                self.assertEqual(dispatch.metadata["delegation_level"], "prepare")
+                self.assertEqual(dispatch.metadata["interaction_state"], "directive")
+                self.assertEqual(dispatch.metadata["suggested_next_state"], "execution")
+                self.assertEqual(dispatch.metadata["state_transition"], "directive->execution")
+                self.assertTrue(dispatch.metadata["directive_detection"]["likely_directive"])
+                self.assertEqual(dispatch.metadata["directive_detection"]["directive_form"], "implicit")
+                self.assertEqual(dispatch.metadata["communication_mode"], "builder")
+                self.assertEqual(dispatch.operator_reply.reply_kind, "ack")
+            finally:
+                services.close()
+
+    def test_gateway_builds_action_contract_for_clear_directive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="fais un fichier test.md dans le repo",
+                        thread_ref=ConversationThreadRef(thread_id="thread_contract", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+                contract = dispatch.metadata["action_contract"]
+
+                self.assertEqual(contract["intent_kind"], "directive_explicit")
+                self.assertEqual(contract["delegation_level"], "execute")
+                self.assertEqual(contract["expected_output"], "markdown_document")
+                self.assertEqual(contract["scope"], "repo")
+                self.assertEqual(contract["risk_class"], "safe_write")
+                self.assertTrue(contract["execution_ready"])
+                self.assertFalse(contract["needs_clarification"])
+                self.assertFalse(contract["needs_approval"])
+                self.assertEqual(dispatch.operator_reply.reply_kind, "ack")
+            finally:
+                services.close()
+
+    def test_gateway_asks_one_short_question_for_ambiguous_directive(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="on part la dessus, lance proprement",
+                        thread_ref=ConversationThreadRef(thread_id="thread_contract", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+                contract = dispatch.metadata["action_contract"]
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "clarification_required")
+                self.assertTrue(dispatch.metadata["clarification_gate"])
+                self.assertTrue(contract["needs_clarification"])
+                self.assertFalse(contract["execution_ready"])
+                self.assertIn("livrable concret", dispatch.operator_reply.summary.lower())
+                self.assertIsNone(dispatch.decision_id)
+                self.assertIsNone(dispatch.mission_run_id)
+            finally:
+                services.close()
+
+    def test_gateway_marks_destructive_directive_as_needing_approval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="supprime les anciens brouillons du repo",
+                        thread_ref=ConversationThreadRef(thread_id="thread_contract", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+                contract = dispatch.metadata["action_contract"]
+
+                self.assertEqual(contract["risk_class"], "destructive")
+                self.assertTrue(contract["needs_approval"])
+                self.assertFalse(contract["execution_ready"])
+                self.assertEqual(dispatch.operator_reply.reply_kind, "blocked")
+                self.assertIn("validation fondateur", dispatch.operator_reply.summary.lower())
+            finally:
+                services.close()
+
+    def test_gateway_persists_ingress_artifacts_for_long_text_and_attachments(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="plan detaille " * 450,
+                        thread_ref=ConversationThreadRef(thread_id="thread_ingress", channel="discord"),
+                        attachments=[
+                            OperatorAttachment(
+                                attachment_id=new_id("attachment"),
+                                name="meeting-transcript.m4a",
+                                kind="audio",
+                                mime_type="audio/mp4",
+                            ),
+                            OperatorAttachment(
+                                attachment_id=new_id("attachment"),
+                                name="brief.pdf",
+                                kind="document",
+                                mime_type="application/pdf",
+                            ),
+                        ],
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                artifact_rows = services.database.fetchall(
+                    "SELECT artifact_kind, owner_id, path FROM artifact_pointers WHERE owner_type = ? ORDER BY artifact_kind",
+                    ("channel_event",),
+                )
+                self.assertEqual(len(artifact_rows), 4)
+                artifact_kinds = {str(row["artifact_kind"]) for row in artifact_rows}
+                self.assertEqual(
+                    artifact_kinds,
+                    {"ingress_attachment_manifest", "ingress_input", "long_context_segments", "long_context_workflow"},
+                )
+                for row in artifact_rows:
+                    self.assertTrue(Path(str(row["path"])).exists())
+
+                candidate_row = services.database.fetchone(
+                    "SELECT payload_json FROM conversation_memory_candidates WHERE candidate_id = ?",
+                    (dispatch.memory_candidate_id,),
+                )
+                self.assertIsNotNone(candidate_row)
+                payload = json.loads(str(candidate_row["payload_json"]))
+                self.assertEqual(payload["input_profile"], "transcript")
+                self.assertEqual(payload["source_artifact_count"], 2)
+                self.assertEqual(len(payload["source_artifact_ids"]), 2)
+                self.assertEqual(payload["long_context_phase_status"], "ready")
+                self.assertTrue(payload["long_context_summary"].startswith("Input transcript traite"))
+                self.assertEqual(len(payload["long_context_artifact_ids"]), 2)
+                self.assertIn("workflow_id", payload["long_context_digest"])
+                self.assertGreaterEqual(payload["long_context_digest"]["segment_count"], 2)
+                self.assertEqual(dispatch.metadata["input_profile"], "transcript")
+                self.assertEqual(len(dispatch.metadata["source_artifact_ids"]), 2)
+                self.assertEqual(len(dispatch.metadata["long_context_artifact_ids"]), 2)
+                self.assertEqual(dispatch.metadata["long_context_workflow_id"], payload["long_context_workflow_id"])
+            finally:
+                services.close()
+
     def test_gateway_dispatch_survives_memory_provider_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = self._build_services(Path(tmp))
@@ -246,7 +495,13 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 )
                 captured_messages: list[str] = []
 
-                def _stub_simple_chat(message: str, model: str = "claude-sonnet-4-20250514") -> str:
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
                     captured_messages.append(message)
                     return "ok"
 
@@ -481,14 +736,22 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
             services = self._build_services(Path(tmp))
             try:
                 system_prompt = services.gateway._simple_chat_system_prompt()
+                anthropic_blocks = services.gateway._simple_chat_system_blocks()
                 user_prompt = services.gateway._simple_chat_user_message(
-                    "et tu connecter au projet vois tu les dossier ? quelle api utilise tu"
+                    "et tu connecter au projet vois tu les dossier ? quelle api utilise tu",
+                    provider="anthropic",
+                    model="claude-opus-4-1",
+                    route_reason="operator_forced_opus_route",
                 )
 
-                self.assertIn("voix operateur de Project OS", system_prompt)
-                self.assertIn("Ne te presente pas comme Claude", system_prompt)
+                self.assertIn("role: Voix operateur de Project OS", system_prompt)
+                self.assertIn("Pote solide", system_prompt)
+                self.assertIn("<truth_rules>", system_prompt)
+                self.assertEqual(anthropic_blocks[0]["cache_control"], {"type": "ephemeral"})
                 self.assertIn("managed_workspace: D:/ProjectOS/project-os-core", user_prompt)
-                self.assertIn("Message fondateur:", user_prompt)
+                self.assertIn("current_provider: anthropic", user_prompt)
+                self.assertIn("current_model: claude-opus-4-1", user_prompt)
+                self.assertIn("Message fondateur pour ce tour:", user_prompt)
                 self.assertIn("quelle api utilise tu", user_prompt)
             finally:
                 services.close()
@@ -501,9 +764,16 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self._mark_runtime_ready(services, "core")
                 captured: dict[str, str] = {}
 
-                def _stub_simple_chat(message: str, model: str = "claude-sonnet-4-20250514") -> str:
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
                     captured["message"] = message
                     captured["model"] = model
+                    captured["route_reason"] = route_reason or ""
                     return "Claude override ok."
 
                 services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
@@ -528,6 +798,54 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self.assertEqual(dispatch.discord_run_card["metadata"]["route_reason"], "operator_forced_anthropic_route")
                 self.assertEqual(captured["message"], "qui est tu ?")
                 self.assertEqual(captured["model"], services.config.execution_policy.discord_simple_model)
+                self.assertEqual(captured["route_reason"], "operator_forced_anthropic_route")
+            finally:
+                services.close()
+
+    def test_discord_prefix_opus_forces_opus_model_and_strips_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "sk-ant-test")
+                self._mark_runtime_ready(services, "core")
+                captured: dict[str, str] = {}
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    captured["message"] = message
+                    captured["model"] = model
+                    captured["route_reason"] = route_reason or ""
+                    return "Opus override ok."
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="OPUS challenge mon idee de naming",
+                        thread_ref=ConversationThreadRef(thread_id="thread_opus", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(dispatch.metadata["requested_provider"], "anthropic")
+                self.assertEqual(dispatch.metadata["message_prefix_consumed"], "OPUS")
+                self.assertEqual(dispatch.discord_run_card["metadata"]["route_reason"], "operator_forced_opus_route")
+                self.assertEqual(dispatch.discord_run_card["metadata"]["model"], services.config.execution_policy.discord_opus_model)
+                self.assertEqual(captured["message"], "challenge mon idee de naming")
+                self.assertEqual(captured["model"], services.config.execution_policy.discord_opus_model)
+                self.assertEqual(captured["route_reason"], "operator_forced_opus_route")
             finally:
                 services.close()
 
@@ -538,10 +856,18 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self._mark_runtime_ready(services, "core")
                 captured: dict[str, str] = {}
 
-                def _stub_openai_chat(message: str, *, model: str | None, reasoning_effort: str | None) -> str:
+                def _stub_openai_chat(
+                    message: str,
+                    *,
+                    model: str | None,
+                    reasoning_effort: str | None,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
                     captured["message"] = message
                     captured["model"] = model or ""
                     captured["reasoning_effort"] = reasoning_effort or ""
+                    captured["route_reason"] = route_reason or ""
                     return "GPT override ok."
 
                 services.gateway._call_openai_chat = _stub_openai_chat  # type: ignore[method-assign]
@@ -566,6 +892,7 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self.assertEqual(dispatch.discord_run_card["metadata"]["route_reason"], "operator_forced_openai_route")
                 self.assertEqual(captured["message"], "propose trois options concretes")
                 self.assertEqual(captured["model"], services.config.execution_policy.default_model)
+                self.assertEqual(captured["route_reason"], "operator_forced_openai_route")
             finally:
                 services.close()
 
@@ -599,7 +926,9 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
 
                 self.assertEqual(dispatch.operator_reply.reply_kind, "chat_response")
                 self.assertEqual(dispatch.discord_run_card["metadata"]["route_reason"], "operator_forced_local_route")
-                self.assertEqual(stub_local.messages, ["parle moi de ce sujet"])
+                self.assertEqual(len(stub_local.messages), 1)
+                self.assertIn("Message fondateur pour ce tour:\nparle moi de ce sujet", stub_local.messages[0])
+                self.assertIn("Contexte session recent:", stub_local.messages[0])
                 self.assertTrue(dispatch.operator_reply.summary.startswith("[Local / Ollama]"))
             finally:
                 services.close()
@@ -645,7 +974,14 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self._mark_runtime_ready(services, "core")
                 openai_calls: list[str] = []
 
-                def _stub_openai_chat(message: str, *, model: str | None, reasoning_effort: str | None) -> str:
+                def _stub_openai_chat(
+                    message: str,
+                    *,
+                    model: str | None,
+                    reasoning_effort: str | None,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
                     openai_calls.append(message)
                     return "should_not_happen"
 
@@ -681,7 +1017,13 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self._mark_runtime_ready(services, "core")
                 captured_messages: list[str] = []
 
-                def _stub_simple_chat(message: str, model: str = "claude-sonnet-4-20250514") -> str:
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
                     captured_messages.append(message)
                     return "route par defaut"
 

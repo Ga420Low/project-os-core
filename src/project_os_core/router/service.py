@@ -449,6 +449,7 @@ class MissionRouter:
         forced_provider = str(intent.metadata.get("requested_provider") or "").strip().lower()
         if forced_provider:
             return self._forced_provider_route(
+                intent=intent,
                 requested_provider=forced_provider,
                 mission_cost_class=mission_cost_class,
                 budget_state=budget_state,
@@ -555,17 +556,25 @@ class MissionRouter:
     def _forced_provider_route(
         self,
         *,
+        intent: MissionIntent,
         requested_provider: str,
         mission_cost_class: CostClass,
         budget_state: BudgetState,
         approval_gate: ApprovalGate,
         model_health: dict[str, Any],
     ) -> ModelRoute:
+        requested_model = str(intent.metadata.get("requested_model") or "").strip() or None
+        requested_model_mode = str(intent.metadata.get("requested_model_mode") or "").strip().lower()
         if requested_provider == "anthropic":
+            model_name = requested_model or self.execution_policy.discord_simple_model
+            route_reason = {
+                "opus": "operator_forced_opus_route",
+                "sonnet": "operator_forced_sonnet_route",
+            }.get(requested_model_mode, "operator_forced_anthropic_route")
             if not self.secret_resolver.get_optional("ANTHROPIC_API_KEY"):
                 return ModelRoute(
                     provider="anthropic",
-                    model=self.execution_policy.discord_simple_model,
+                    model=model_name,
                     reasoning_effort=self.execution_policy.discord_simple_reasoning_effort,
                     route_class=mission_cost_class,
                     route_tier=ModelRouteClass.API,
@@ -574,12 +583,12 @@ class MissionRouter:
                 )
             return ModelRoute(
                 provider="anthropic",
-                model=self.execution_policy.discord_simple_model,
+                model=model_name,
                 reasoning_effort=self.execution_policy.discord_simple_reasoning_effort,
                 route_class=mission_cost_class,
                 route_tier=ModelRouteClass.API,
                 allowed=True,
-                reason="operator_forced_anthropic_route",
+                reason=route_reason,
             )
         if requested_provider == "openai":
             if not self.secret_resolver.get_optional("OPENAI_API_KEY"):

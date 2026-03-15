@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -262,6 +263,154 @@ class OpenClawGatewayAdapterTests(unittest.TestCase):
                 self.assertEqual(row["status"], "active")
             finally:
                 reopened.close()
+
+    def test_openclaw_ingest_cli_prepares_research_scaffold_for_deep_research(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services, config_path, policy_path = self._build_services(Path(tmp))
+            try:
+                session = services.runtime.open_session(profile_name="browser", owner="founder")
+                services.runtime.record_runtime_state(
+                    RuntimeState(
+                        runtime_state_id=new_id("runtime_state"),
+                        session_id=session.session_id,
+                        verdict=RuntimeVerdict.READY,
+                        active_profile="browser",
+                    )
+                )
+            finally:
+                services.close()
+
+            payload = {
+                "source": "openclaw",
+                "surface": "discord",
+                "event_type": "message.received",
+                "event": {
+                    "from": "discord-user-42",
+                    "content": "Deep research sur les meilleurs systemes de memoire pour le projet, regarde les forks et va chercher les pepites.",
+                    "timestamp": 1770000003,
+                    "metadata": {
+                        "source": "openclaw",
+                        "senderId": "42",
+                        "senderName": "Founder",
+                        "messageId": "discord-message-deep-research",
+                        "threadId": "discord-thread-deep-research",
+                        "originatingChannel": "discord",
+                        "originatingTo": "123456",
+                        "channelName": "project-os",
+                    },
+                },
+                "context": {
+                    "channelId": "discord",
+                    "accountId": "default",
+                    "conversationId": "123456",
+                },
+                "config": {
+                    "target_profile": "browser",
+                    "requested_worker": "browser",
+                    "metadata": {"source": "unit-test"},
+                },
+            }
+
+            scaffold_payload = {
+                "path": "D:\\ProjectOS\\project-os-core\\docs\\systems\\MEMORY_SYSTEMS_DOSSIER.md",
+                "kind": "system",
+                "title": "Memory Systems",
+                "keywords": ["deep research", "regarde les forks"],
+                "recent_days": 30,
+                "core_packages": ["memory", "learning"],
+                "created": True,
+            }
+            job_payload = {
+                "job_id": "deep_research_123",
+                "job_path": "D:\\ProjectOS\\runtime\\deep_research\\deep_research_123\\request.json",
+                "launched": True,
+            }
+            with patch("project_os_core.gateway.service.scaffold_research", return_value=scaffold_payload), patch(
+                "project_os_core.gateway.service.GatewayService._maybe_launch_deep_research_job",
+                return_value=job_payload,
+            ):
+                exit_code, parsed = self._run_ingest_cli(config_path, policy_path, payload)
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(parsed["metadata"]["research_scaffold_title"], "Memory Systems")
+            self.assertEqual(parsed["metadata"]["research_scaffold_kind"], "system")
+            self.assertEqual(parsed["metadata"]["research_scaffold_doc_name"], "MEMORY_SYSTEMS_DOSSIER.md")
+            self.assertEqual(parsed["metadata"]["deep_research_job_id"], "deep_research_123")
+            self.assertIn("Recherche approfondie lancee", parsed["operator_reply"]["summary"])
+            self.assertIn("MEMORY_SYSTEMS_DOSSIER.md", parsed["operator_reply"]["summary"])
+
+    def test_openclaw_ingest_cli_detects_deep_research_with_common_typo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services, config_path, policy_path = self._build_services(Path(tmp))
+            try:
+                session = services.runtime.open_session(profile_name="browser", owner="founder")
+                services.runtime.record_runtime_state(
+                    RuntimeState(
+                        runtime_state_id=new_id("runtime_state"),
+                        session_id=session.session_id,
+                        verdict=RuntimeVerdict.READY,
+                        active_profile="browser",
+                    )
+                )
+            finally:
+                services.close()
+
+            payload = {
+                "source": "openclaw",
+                "surface": "discord",
+                "event_type": "message.received",
+                "event": {
+                    "from": "discord-user-42",
+                    "content": "recherche appronfondie legeres sur les tomates",
+                    "timestamp": 1770000004,
+                    "metadata": {
+                        "source": "openclaw",
+                        "senderId": "42",
+                        "senderName": "Founder",
+                        "messageId": "discord-message-deep-research-typo",
+                        "threadId": "discord-thread-deep-research-typo",
+                        "originatingChannel": "discord",
+                        "originatingTo": "123456",
+                        "channelName": "project-os",
+                    },
+                },
+                "context": {
+                    "channelId": "discord",
+                    "accountId": "default",
+                    "conversationId": "123456",
+                },
+                "config": {
+                    "target_profile": "browser",
+                    "requested_worker": "browser",
+                    "metadata": {"source": "unit-test"},
+                },
+            }
+
+            scaffold_payload = {
+                "path": "D:\\ProjectOS\\project-os-core\\docs\\audits\\LEGERES_SUR_LES_TOMATES_AUDIT_2026-03-15.md",
+                "kind": "audit",
+                "title": "Legeres Sur Les Tomates",
+                "keywords": ["recherche approfondie"],
+                "recent_days": 30,
+                "core_packages": ["memory", "learning"],
+                "created": True,
+            }
+            job_payload = {
+                "job_id": "deep_research_typo_123",
+                "job_path": "D:\\ProjectOS\\runtime\\deep_research\\deep_research_typo_123\\request.json",
+                "launched": True,
+            }
+            with patch("project_os_core.gateway.service.scaffold_research", return_value=scaffold_payload), patch(
+                "project_os_core.gateway.service.GatewayService._maybe_launch_deep_research_job",
+                return_value=job_payload,
+            ):
+                exit_code, parsed = self._run_ingest_cli(config_path, policy_path, payload)
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(parsed["metadata"]["research_scaffold_title"], "Legeres Sur Les Tomates")
+            self.assertEqual(parsed["metadata"]["research_scaffold_kind"], "audit")
+            self.assertEqual(parsed["metadata"]["deep_research_job_id"], "deep_research_typo_123")
+            self.assertIn("Recherche approfondie lancee", parsed["operator_reply"]["summary"])
 
 
 if __name__ == "__main__":

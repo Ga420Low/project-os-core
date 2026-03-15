@@ -57,11 +57,19 @@ Corollaires:
 - `OpenClaw` ne doit pas improviser une personnalite ou une memoire paralleles
 - `Claude API` peut etre le moteur principal de discussion Discord sans devenir la verite du systeme
 
+Implementation actuelle:
+
+- la voix publique Discord est rendue depuis `config/project_os_persona.yaml`
+- le gateway reconstruit un prompt par tour via `src/project_os_core/gateway/context_builder.py`
+- le contexte inclut la verite runtime, le contexte session recent, l'historique recent du thread et un `handoff contract` minimal
+
 ## Overrides operateur
 
 Le fondateur peut forcer ponctuellement le provider de discussion au tout debut du message:
 
 - `CLAUDE <message>`
+- `SONNET <message>`
+- `OPUS <message>`
 - `GPT <message>`
 - `LOCAL <message>`
 - `OLLAMA <message>`
@@ -69,6 +77,8 @@ Le fondateur peut forcer ponctuellement le provider de discussion au tout debut 
 Variantes acceptees:
 
 - `CLAUDE: <message>`
+- `SONNET: <message>`
+- `OPUS: <message>`
 - `GPT: <message>`
 - `LOCAL: <message>`
 - `OLLAMA: <message>`
@@ -77,8 +87,15 @@ Regles canoniques:
 
 - le prefixe est reconnu uniquement au debut du message
 - le prefixe est retire avant classification, routage et memoire canonique
+- `CLAUDE` et `SONNET` gardent la lane Anthropic discussion standard
+- `OPUS` force la lane Anthropic haut de gamme pour les questions plus difficiles
 - le texte brut d'origine reste trace dans les metadata runtime
 - la voix publique reste `Project OS`, quel que soit le provider force
+
+Regle supplementaire:
+
+- l'override change le modele du tour, pas la personnalite ni la verite runtime
+- le `handoff contract` garde le message brut d'origine et le message normalise pour eviter le telephone arabe
 
 Priorite stricte:
 
@@ -119,6 +136,12 @@ Les deliberations multi-angles se branchent sur cette topologie existante:
 - la verite machine
 - l'endroit ou les workers decident eux-memes
 - un contournement du `Mission Router`
+
+`Discord` n'est pas non plus:
+
+- un endroit ou la persona est improvisee
+- une couche qui cache le vrai provider du tour
+- une surface qui perd l'intention brute du fondateur entre deux appels modele
 
 ## Types de messages
 
@@ -170,6 +193,15 @@ Route recommandee:
 - si LLM necessaire: `Claude API` pour discussion/traduction compacte
 - si le message ouvre un vrai travail de fond: escalade vers `GPT API`
 
+Contexte reconstruit pour chaque tour:
+
+- persona canonique
+- provider / modele reels du tour
+- contexte session recent
+- historique recent du thread
+- hint de mood leger
+- handoff contract minimal
+
 ### Cas operateur standard
 
 Exemples:
@@ -218,6 +250,18 @@ Le but est:
 - economiser le budget
 - ne pas surpayer les banalites
 - reserver le raisonnement maximal aux moments qui le meritent
+
+## Verrou de qualite
+
+La voie Discord est maintenant protegee par des checks de non-regression.
+
+Exemples de checks:
+
+- `qui es-tu ?` ne doit jamais rebasculer vers "assistant numerique nomme Theo"
+- `quelle api / quel modele ?` doit suivre le runtime du tour
+- `OPUS <message>` doit forcer le modele sans changer la voix publique
+- les sujets legers peuvent relacher un peu le ton, sans perdre le cadre de travail
+- les sujets sensibles doivent redevenir tres nets
 
 ## Voix
 

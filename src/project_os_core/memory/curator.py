@@ -119,6 +119,7 @@ class SleeptimeCuratorService:
             plan = self._llm_plan(sources)
             if plan is None:
                 plan = self._deterministic_plan(sources)
+            plan = self._normalize_plan(plan, sources)
             thought_results = self._apply_thoughts(plan.get("thoughts", []))
             block_results = self._apply_block_updates(plan.get("block_updates", []))
             graph_results = self._apply_graph_facts(plan.get("graph_facts", []))
@@ -418,6 +419,23 @@ class SleeptimeCuratorService:
             "thoughts": thoughts,
             "graph_facts": graph_facts,
         }
+
+    def _normalize_plan(self, plan: dict[str, Any] | None, sources: dict[str, Any]) -> dict[str, Any]:
+        deterministic = self._deterministic_plan(sources)
+        if not isinstance(plan, dict):
+            return deterministic
+        normalized: dict[str, Any] = dict(deterministic)
+        for key in ("thoughts", "block_updates", "graph_facts"):
+            value = plan.get(key)
+            if isinstance(value, list):
+                normalized[key] = [item for item in value if isinstance(item, dict)]
+        summary = plan.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            normalized["summary"] = summary.strip()
+        model = plan.get("model")
+        if isinstance(model, str) and model.strip():
+            normalized["model"] = model.strip()
+        return normalized
 
     def _apply_thoughts(self, thought_specs: list[dict[str, Any]]) -> list[str]:
         created_ids: list[str] = []

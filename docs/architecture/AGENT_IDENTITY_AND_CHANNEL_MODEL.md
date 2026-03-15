@@ -22,6 +22,8 @@ Le systeme doit donc separer:
 2. l'adaptation par canal
 3. le mode de travail
 4. la memoire partagee
+5. la verite runtime
+6. la continuite de contexte
 
 ## Couche 1 - Identite canonique
 
@@ -54,6 +56,18 @@ Cette identite doit rester la meme:
 - dans `Discord`
 - dans les futures interfaces
 
+Implementation canonique actuelle:
+
+- spec versionnee: `config/project_os_persona.yaml`
+- loader + renderers: `src/project_os_core/gateway/persona.py`
+- injection gateway: `src/project_os_core/gateway/service.py`
+
+Regle:
+
+- la personnalite n'est plus un prompt eparpille
+- c'est une spec canonique rendue par provider
+- `Anthropic`, `OpenAI` et la voie locale gardent la meme identite agent
+
 ## Couche 2 - Overlay canal
 
 Le canal ne change pas l'identite.
@@ -63,6 +77,12 @@ Il change seulement:
 - la longueur
 - la vitesse de reponse
 - la densite d'information
+
+Implementation actuelle:
+
+- renderer `Anthropic` -> bloc system cacheable
+- renderer `OpenAI` -> message `developer`
+- renderer local -> prompt local aligne sur la meme spec
 
 ## Regle de langue
 
@@ -137,6 +157,17 @@ Regle:
 - il ne change ni l'identite canonique, ni la voix publique
 - `S3` garde toujours la priorite sur un override cloud
 
+Contexte Discord actuel:
+
+- un `context builder` dedie reconstruit le contexte de chaque tour
+- le prompt inclut la verite runtime, le contexte recent et un hint de mood
+- un `handoff contract` structure porte le minimum utile entre les modeles
+
+References implementation:
+
+- `src/project_os_core/gateway/context_builder.py`
+- `src/project_os_core/gateway/handoff.py`
+
 ### Voix transcrite
 
 But:
@@ -205,6 +236,12 @@ Discord, Claude API et les gros runs GPT API doivent tous se brancher sur:
 - les memes signaux de learning
 - les memes handoffs
 
+Regle operative supplementaire:
+
+- le message brut fondateur doit rester tracable
+- les resumes ne remplacent jamais l'intention brute
+- le handoff entre modeles ne doit pas etre du texte libre seulement
+
 ## Regles du meme agent
 
 - pas de personnalite differente entre `Claude API`, `GPT API` et `Discord`
@@ -227,6 +264,46 @@ alors il doit:
 - recharger les decisions confirmees
 - recharger les contraintes de canal
 - produire un `refresh` recommande
+
+## Verite runtime
+
+La voix agent et la verite runtime sont deux couches differentes.
+
+La persona fixe:
+
+- la posture
+- le ton
+- les anti-patterns
+
+La verite runtime fixe:
+
+- quel provider est utilise dans ce tour
+- quel modele est utilise dans ce tour
+- quel workspace est gere
+- quelles actions ont reellement ete executees
+
+Regle dure:
+
+- si le runtime contredit la vibe, le runtime gagne
+- la voix ne peut jamais inventer une capacite, une inspection ou une execution
+
+## Continuite de contexte
+
+Le meme agent n'est reel que si le contexte est reconstruit proprement a chaque appel.
+
+Le systeme doit donc toujours rehydrater:
+
+- la persona canonique
+- le contexte session recent
+- l'historique recent du thread
+- le hint de mood
+- le handoff contract precedent si pertinent
+
+Corollaire:
+
+- pas de "memoire magique" cote provider
+- pas de telephone arabe entre scripts
+- pas de derive silencieuse du ton quand le modele change
 
 ## Cible
 

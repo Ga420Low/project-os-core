@@ -298,6 +298,14 @@ class OpenClawLiveService:
                 f"La boucle Discord live doit rester en allowlist stricte avec {mention_requirement} selon la policy retenue."
             )
 
+        single_voice_check = self._doctor_discord_single_voice_ready(runtime_config)
+        checks.append(single_voice_check)
+        blocking = blocking or single_voice_check["status"] == "bloque"
+        if single_voice_check["status"] == "bloque":
+            actionable_fixes.append(
+                "Ajoute `session.sendPolicy` pour deny `discord/group` et `discord/channel`, garde `default=allow`, conserve `suppressNativeDiscordReplies=true`, et expose `DISCORD_BOT_TOKEN` au process gateway."
+            )
+
         discord_operations_check = self._doctor_discord_operations_ux(runtime_config)
         checks.append(discord_operations_check)
         blocking = blocking or discord_operations_check["status"] == "bloque"
@@ -418,6 +426,13 @@ class OpenClawLiveService:
         if gateway_check["status"] == "bloque":
             actionable_fixes.append("Le gateway doit rester charge, avec listener local ou RPC sain, avant toute conclusion live.")
 
+        single_voice_check = self._doctor_discord_single_voice_ready(runtime_config)
+        checks.append(single_voice_check)
+        if single_voice_check["status"] == "bloque":
+            actionable_fixes.append(
+                "Verifie `session.sendPolicy` (deny Discord guild/channel), `suppressNativeDiscordReplies=true` et `DISCORD_BOT_TOKEN` pour garantir une seule voix publique."
+            )
+
         self._refresh_discord_thread_binding_projection()
 
         live_check, live_refs, live_fix = self._truth_health_live_proof_check(
@@ -461,6 +476,7 @@ class OpenClawLiveService:
             metadata={
                 "doctor_report_id": doctor_report.report_id,
                 "max_age_hours": effective_max_age_hours,
+                "discord_single_voice_ready": single_voice_check["status"] == "ok",
             },
         )
         self._write_report(self.paths.openclaw_truth_health_report_path, report)
@@ -595,6 +611,21 @@ class OpenClawLiveService:
             self._write_report(self.paths.openclaw_live_validation_report_path, result)
             return result
 
+        runtime_config = self._load_json_payload(self.paths.openclaw_state_root / "openclaw.json")
+        single_voice_check = self._doctor_discord_single_voice_ready(runtime_config if isinstance(runtime_config, dict) else None)
+        if single_voice_check["status"] != "ok":
+            result = OpenClawLiveValidationResult(
+                validation_id=new_id("openclaw_live"),
+                channel=normalized_channel,
+                success=False,
+                failure_reason="Le contrat Discord single voice n'est pas garanti sur ce runtime.",
+                metadata={
+                    "single_voice_check": single_voice_check,
+                },
+            )
+            self._write_report(self.paths.openclaw_live_validation_report_path, result)
+            return result
+
         binary_path = self._resolve_openclaw_binary()
         if not binary_path:
             result = OpenClawLiveValidationResult(
@@ -647,6 +678,7 @@ class OpenClawLiveService:
                     "payload_file": str(payload_path) if payload_path else None,
                     "max_age_hours": effective_max_age_hours,
                     "live_mode": "truth_proof_required",
+                    "single_voice_check": single_voice_check,
                 },
             )
             self._write_report(self.paths.openclaw_live_validation_report_path, result)
@@ -661,6 +693,7 @@ class OpenClawLiveService:
                 "payload_file": str(payload_path) if payload_path else None,
                 "max_age_hours": effective_max_age_hours,
                 "live_mode": "proof_recorded",
+                "single_voice_check": single_voice_check,
             },
         )
         self._write_report(self.paths.openclaw_live_validation_report_path, result)
@@ -817,9 +850,21 @@ class OpenClawLiveService:
             )
 
         operator_reply = dispatch_result.get("operator_reply") or {}
+        response_manifest = (
+            operator_reply.get("response_manifest")
+            if isinstance(operator_reply.get("response_manifest"), dict)
+            else {}
+        )
         promoted_memory_ids = dispatch_result.get("promoted_memory_ids") or []
         metadata["dispatch_result"] = dispatch_result
         metadata["human_readable_summary"] = operator_reply.get("summary")
+        metadata["response_delivery_mode"] = response_manifest.get("delivery_mode")
+        metadata["response_manifest_present"] = bool(response_manifest)
+        metadata["response_attachment_count"] = (
+            len(response_manifest.get("attachments") or [])
+            if isinstance(response_manifest.get("attachments"), list)
+            else 0
+        )
 
         dispatch_status = str(operator_reply.get("reply_kind") or "unknown")
         router_verdict = "allowed" if dispatch_status != "blocked" else "blocked"
@@ -1285,26 +1330,131 @@ class OpenClawLiveService:
             return bool(parsed.get("ok"))
         return False
 
+    def _runtime_adapter_entry(self, runtime_config: dict[str, Any] | None) -> dict[str, Any] | None:
+        if runtime_config is None:
+            return None
+        plugins = runtime_config.get("plugins")
+        entries = plugins.get("entries") if isinstance(plugins, dict) else None
+        adapter = entries.get(self.config.openclaw_config.plugin_id) if isinstance(entries, dict) else None
+        return adapter if isinstance(adapter, dict) else None
+
+    def _runtime_adapter_config(self, runtime_config: dict[str, Any] | None) -> dict[str, Any] | None:
+        adapter = self._runtime_adapter_entry(runtime_config)
+        adapter_config = adapter.get("config") if isinstance(adapter, dict) else None
+        return adapter_config if isinstance(adapter_config, dict) else None
+
     def _runtime_enabled_channels(self, runtime_config: dict[str, Any] | None) -> list[str]:
-        if runtime_config is not None:
-            plugins = runtime_config.get("plugins")
-            entries = plugins.get("entries") if isinstance(plugins, dict) else None
-            adapter = entries.get(self.config.openclaw_config.plugin_id) if isinstance(entries, dict) else None
-            adapter_config = adapter.get("config") if isinstance(adapter, dict) else None
-            enabled = adapter_config.get("enabledChannels") if isinstance(adapter_config, dict) else None
+        adapter_config = self._runtime_adapter_config(runtime_config)
+        if adapter_config is not None:
+            enabled = adapter_config.get("enabledChannels")
             if isinstance(enabled, list):
                 return [str(item).strip().lower() for item in enabled if str(item).strip()]
         return [item.lower() for item in self.config.openclaw_config.enabled_channels]
 
     def _runtime_send_ack_replies(self, runtime_config: dict[str, Any] | None) -> bool:
-        if runtime_config is not None:
-            plugins = runtime_config.get("plugins")
-            entries = plugins.get("entries") if isinstance(plugins, dict) else None
-            adapter = entries.get(self.config.openclaw_config.plugin_id) if isinstance(entries, dict) else None
-            adapter_config = adapter.get("config") if isinstance(adapter, dict) else None
-            if isinstance(adapter_config, dict) and isinstance(adapter_config.get("sendAckReplies"), bool):
-                return bool(adapter_config.get("sendAckReplies"))
+        adapter_config = self._runtime_adapter_config(runtime_config)
+        if adapter_config is not None and isinstance(adapter_config.get("sendAckReplies"), bool):
+            return bool(adapter_config.get("sendAckReplies"))
         return bool(self.config.openclaw_config.send_ack_replies)
+
+    def _doctor_discord_single_voice_ready(self, runtime_config: dict[str, Any] | None) -> dict[str, Any]:
+        if runtime_config is None:
+            return self._blocked_check(
+                "discord_single_voice_ready",
+                "Impossible de verifier le contrat single voice Discord sans snapshot runtime OpenClaw.",
+            )
+
+        if "discord" not in self._runtime_enabled_channels(runtime_config):
+            return self._ok_check("discord_single_voice_ready", "Discord n'est pas actif: contrat single voice non applicable.")
+
+        issues: list[dict[str, Any]] = []
+        session_config = runtime_config.get("session")
+        send_policy = session_config.get("sendPolicy") if isinstance(session_config, dict) else None
+        if not isinstance(send_policy, dict):
+            issues.append({"path": "session.sendPolicy", "reason": "missing"})
+        else:
+            default_action = str(send_policy.get("default") or "").strip().lower()
+            if default_action != "allow":
+                issues.append(
+                    {
+                        "path": "session.sendPolicy.default",
+                        "reason": "must_remain_allow",
+                        "actual": default_action or None,
+                    }
+                )
+            rules = send_policy.get("rules")
+            normalized_rules = rules if isinstance(rules, list) else []
+            for chat_type in ("group", "channel"):
+                matched = False
+                for rule in normalized_rules:
+                    if not isinstance(rule, dict):
+                        continue
+                    action = str(rule.get("action") or "").strip().lower()
+                    match = rule.get("match") if isinstance(rule.get("match"), dict) else {}
+                    channel = str(match.get("channel") or "").strip().lower()
+                    candidate_chat_type = str(match.get("chatType") or match.get("chat_type") or "").strip().lower()
+                    if action == "deny" and channel == "discord" and candidate_chat_type == chat_type:
+                        matched = True
+                        break
+                if not matched:
+                    issues.append(
+                        {
+                            "path": "session.sendPolicy.rules",
+                            "reason": "missing_deny_rule",
+                            "expected": {"channel": "discord", "chatType": chat_type, "action": "deny"},
+                        }
+                    )
+
+        adapter = self._runtime_adapter_entry(runtime_config)
+        if not isinstance(adapter, dict) or adapter.get("enabled") is not True:
+            issues.append(
+                {
+                    "path": f"plugins.entries.{self.config.openclaw_config.plugin_id}.enabled",
+                    "reason": "missing_or_disabled",
+                }
+            )
+        adapter_config = self._runtime_adapter_config(runtime_config)
+        if adapter_config is None:
+            issues.append(
+                {
+                    "path": f"plugins.entries.{self.config.openclaw_config.plugin_id}.config",
+                    "reason": "missing",
+                }
+            )
+        else:
+            if adapter_config.get("suppressNativeDiscordReplies") is not True:
+                issues.append(
+                    {
+                        "path": f"plugins.entries.{self.config.openclaw_config.plugin_id}.config.suppressNativeDiscordReplies",
+                        "reason": "must_remain_true",
+                        "actual": adapter_config.get("suppressNativeDiscordReplies"),
+                    }
+                )
+            if not str(adapter_config.get("discordAccountId") or "").strip():
+                issues.append(
+                    {
+                        "path": f"plugins.entries.{self.config.openclaw_config.plugin_id}.config.discordAccountId",
+                        "reason": "missing_primary_account",
+                    }
+                )
+
+        if not self._lookup_process_or_windows_env("DISCORD_BOT_TOKEN"):
+            issues.append({"path": "env.DISCORD_BOT_TOKEN", "reason": "missing"})
+
+        if issues:
+            return self._blocked_check(
+                "discord_single_voice_ready",
+                "La voix publique Discord n'est pas encore bornee a Project OS.",
+                issues,
+            )
+        return self._ok_check(
+            "discord_single_voice_ready",
+            "Le runtime Discord est borne en single voice: sendPolicy upstream, guardrail plugin et token direct-send sont prets.",
+            {
+                "protected_chat_types": ["group", "channel"],
+                "adapter_plugin_id": self.config.openclaw_config.plugin_id,
+            },
+        )
 
     @staticmethod
     def _secret_input_mode(value: Any, *, env_var_names: tuple[str, ...] = ()) -> str:

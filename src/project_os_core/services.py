@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from .api_runs.service import ApiRunService
 from .config import RuntimeConfig, load_runtime_config
 from .database import CanonicalDatabase
+from .deep_research import DeepResearchService
 from .gateway.openclaw_live import OpenClawLiveService
 from .github.service import GitHubLearningService
 from .embedding import EmbeddingStrategy, choose_embedding_strategy
@@ -53,6 +54,7 @@ class AppServices:
     router: MissionRouter
     session_state: PersistentSessionState
     gateway: GatewayService
+    deep_research: DeepResearchService
     openclaw: OpenClawLiveService
     orchestration: CanonicalMissionGraph
     api_runs: ApiRunService
@@ -190,14 +192,29 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         default_openai_model=config.execution_policy.default_model,
     )
     session_state = PersistentSessionState(database=database, api_runs=api_runs)
+    deep_research = DeepResearchService(
+        paths=paths,
+        path_policy=path_policy,
+        secret_resolver=secret_resolver,
+        journal=journal,
+        logger=logger,
+        api_runs=api_runs,
+        config_path=config.storage_config_path,
+        policy_path=config.runtime_policy_path,
+        default_model=config.execution_policy.default_model,
+        default_reasoning_effort=config.execution_policy.default_reasoning_effort,
+    )
     gateway = GatewayService(
         database=database,
         journal=journal,
         router=router,
         memory=memory,
         session_state=session_state,
+        paths=paths,
+        path_policy=path_policy,
         secret_resolver=secret_resolver,
         local_model_client=local_model_client,
+        deep_research=deep_research,
     )
     openclaw = OpenClawLiveService(
         config=config,
@@ -234,6 +251,7 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         router=router,
         session_state=session_state,
         gateway=gateway,
+        deep_research=deep_research,
         openclaw=openclaw,
         orchestration=orchestration,
         api_runs=api_runs,

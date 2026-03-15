@@ -56,7 +56,14 @@ class OpenClawLiveTests(unittest.TestCase):
                     "enabled": True,
                     "idleHours": 24,
                     "maxAgeHours": 0,
-                }
+                },
+                "sendPolicy": {
+                    "default": "allow",
+                    "rules": [
+                        {"action": "deny", "match": {"channel": "discord", "chatType": "group"}},
+                        {"action": "deny", "match": {"channel": "discord", "chatType": "channel"}},
+                    ],
+                },
             },
             "channels": {
                 "discord": {
@@ -125,6 +132,7 @@ class OpenClawLiveTests(unittest.TestCase):
                             "enabledChannels": ["discord", "webchat"],
                             "discordAccountId": "discord-main",
                             "sendAckReplies": False,
+                            "suppressNativeDiscordReplies": True,
                         },
                     },
                     "discord": {
@@ -209,6 +217,9 @@ class OpenClawLiveTests(unittest.TestCase):
     def _stub_openclaw_binary_and_status(services) -> None:
         services.openclaw._resolve_openclaw_binary = lambda: "openclaw"  # type: ignore[method-assign]
         services.openclaw._plugin_visible = lambda: (True, {"id": "project-os-gateway-adapter"})  # type: ignore[method-assign]
+        services.openclaw._lookup_process_or_windows_env = (  # type: ignore[method-assign]
+            lambda name: f"{name.lower()}-value" if name in {"OPENCLAW_GATEWAY_TOKEN", "DISCORD_BOT_TOKEN"} else None
+        )
 
         def _fake_command(args, *, timeout_ms):
             if args[:2] == ["plugins", "doctor"]:
@@ -285,6 +296,56 @@ class OpenClawLiveTests(unittest.TestCase):
             metadata=adapted.metadata,
         )
 
+    def test_openclaw_adapter_preserves_rich_attachment_metadata(self):
+        payload = {
+            "source": "openclaw",
+            "surface": "discord",
+            "event_type": "message.received",
+            "event": {
+                "from": "discord-user-42",
+                "content": "Voici le vocal et le brief.",
+                "timestamp": 1770000100,
+                "metadata": {
+                    "senderId": "42",
+                    "messageId": "discord-attach-1",
+                    "originatingChannel": "discord",
+                    "attachments": [
+                        {
+                            "name": "voice-note.m4a",
+                            "mimeType": "audio/mp4",
+                            "url": "https://example.test/voice-note.m4a",
+                            "sizeBytes": 2048,
+                            "durationSecs": 92,
+                        },
+                        {
+                            "fileName": "brief.pdf",
+                            "contentType": "application/pdf",
+                            "path": "D:/captures/brief.pdf",
+                            "size": 4096,
+                        },
+                    ],
+                },
+            },
+            "context": {
+                "channelId": "discord",
+                "accountId": "default",
+                "conversationId": "123456",
+            },
+            "config": {},
+        }
+
+        adapted = build_dispatch_from_openclaw_payload(payload)
+
+        self.assertEqual(len(adapted.event.message.attachments), 2)
+        first, second = adapted.event.message.attachments
+        self.assertEqual(first.kind, "audio")
+        self.assertEqual(first.url, "https://example.test/voice-note.m4a")
+        self.assertEqual(first.size_bytes, 2048)
+        self.assertEqual(first.metadata["duration_secs"], 92)
+        self.assertEqual(second.kind, "document")
+        self.assertEqual(second.path, "D:/captures/brief.pdf")
+        self.assertEqual(second.size_bytes, 4096)
+
     def test_openclaw_bootstrap_blocks_cleanly_when_binary_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = self._build_services(Path(tmp))
@@ -322,12 +383,14 @@ class OpenClawLiveTests(unittest.TestCase):
                 insecure_payload["channels"]["discord"]["accounts"]["discord-main"]["groupPolicy"] = "open"  # type: ignore[index]
                 insecure_payload["channels"]["discord"]["guilds"]["*"]["channels"]["1482231737361891368"]["requireMention"] = False  # type: ignore[index]
                 insecure_payload["session"].pop("threadBindings", None)  # type: ignore[index]
+                insecure_payload["session"].pop("sendPolicy", None)  # type: ignore[index]
                 insecure_payload["channels"]["discord"].pop("threadBindings", None)  # type: ignore[index]
                 insecure_payload["channels"]["discord"].pop("autoPresence", None)  # type: ignore[index]
                 insecure_payload["channels"]["discord"].pop("execApprovals", None)  # type: ignore[index]
                 insecure_payload["gateway"]["auth"]["token"] = "gateway-plaintext-token"  # type: ignore[index]
                 insecure_payload["plugins"]["allow"] = []  # type: ignore[index]
                 insecure_payload["plugins"]["entries"]["project-os-gateway-adapter"]["config"]["sendAckReplies"] = True  # type: ignore[index]
+                insecure_payload["plugins"]["entries"]["project-os-gateway-adapter"]["config"]["suppressNativeDiscordReplies"] = False  # type: ignore[index]
                 (services.paths.openclaw_state_root / "openclaw.json").write_text(
                     json.dumps(insecure_payload),
                     encoding="utf-8",
@@ -335,6 +398,11 @@ class OpenClawLiveTests(unittest.TestCase):
 
                 services.openclaw._resolve_openclaw_binary = lambda: "openclaw"  # type: ignore[method-assign]
                 services.openclaw._plugin_visible = lambda: (True, {"id": "project-os-gateway-adapter"})  # type: ignore[method-assign]
+                services.openclaw._lookup_process_or_windows_env = (  # type: ignore[method-assign]
+                    lambda name: "gateway-token-from-user-env"
+                    if name == "OPENCLAW_GATEWAY_TOKEN"
+                    else ("discord-token-from-user-env" if name == "DISCORD_BOT_TOKEN" else None)
+                )
 
                 def _fake_command(args, *, timeout_ms):
                     if args[:2] == ["plugins", "doctor"]:
@@ -366,6 +434,7 @@ class OpenClawLiveTests(unittest.TestCase):
                 by_name = {item["name"]: item for item in report.checks}
                 self.assertEqual(by_name["runtime_secrets"]["status"], "bloque")
                 self.assertEqual(by_name["discord_policy"]["status"], "bloque")
+                self.assertEqual(by_name["discord_single_voice_ready"]["status"], "bloque")
                 self.assertEqual(by_name["discord_operations_ux"]["status"], "bloque")
                 self.assertEqual(by_name["plugins_allowlist"]["status"], "bloque")
                 self.assertEqual(by_name["speech_policy"]["status"], "bloque")
@@ -425,6 +494,7 @@ class OpenClawLiveTests(unittest.TestCase):
                 self.assertEqual(report.verdict, "OK")
                 by_name = {item["name"]: item for item in report.checks}
                 self.assertEqual(by_name["discord_policy"]["status"], "ok")
+                self.assertEqual(by_name["discord_single_voice_ready"]["status"], "ok")
             finally:
                 services.close()
 
@@ -482,6 +552,34 @@ class OpenClawLiveTests(unittest.TestCase):
             finally:
                 services.close()
 
+    def test_openclaw_validate_live_blocks_when_single_voice_contract_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            services = self._build_services(tmp_path)
+            try:
+                self._stub_openclaw_binary_and_status(services)
+                services.openclaw._write_json(  # type: ignore[attr-defined]
+                    services.paths.openclaw_replay_report_path,
+                    {"verdict": "OK", "total": 1, "passed": 1, "failed": 0, "results": []},
+                )
+                runtime_payload = self._runtime_config_payload(
+                    tmp_path,
+                    Path(__file__).resolve().parents[2] / "integrations" / "openclaw" / "project-os-gateway-adapter",
+                )
+                runtime_payload["session"].pop("sendPolicy", None)  # type: ignore[index]
+                (services.paths.openclaw_state_root / "openclaw.json").write_text(
+                    json.dumps(runtime_payload),
+                    encoding="utf-8",
+                )
+
+                result = services.openclaw.validate_live(channel="discord")
+
+                self.assertFalse(result.success)
+                self.assertIn("single voice", result.failure_reason or "")
+                self.assertEqual(result.metadata["single_voice_check"]["name"], "discord_single_voice_ready")
+            finally:
+                services.close()
+
     def test_openclaw_truth_health_accepts_windows_unknown_runtime_when_listener_and_rpc_are_healthy(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = self._build_services(Path(tmp))
@@ -497,6 +595,7 @@ class OpenClawLiveTests(unittest.TestCase):
                 self.assertEqual(report.verdict, "OK")
                 checks_by_name = {item["name"]: item for item in report.checks}
                 self.assertEqual(checks_by_name["gateway_status"]["status"], "ok")
+                self.assertEqual(checks_by_name["discord_single_voice_ready"]["status"], "ok")
                 self.assertEqual(checks_by_name["live_bridge_proof"]["status"], "ok")
             finally:
                 services.close()

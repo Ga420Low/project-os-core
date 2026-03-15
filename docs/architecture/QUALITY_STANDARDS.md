@@ -104,12 +104,12 @@ Verdicts possibles:
 
 ### Verification actuelle
 
-- boucle rapide fiable: `powershell -File scripts/project_os_tests.ps1 -Suite smoke`
+- boucle rapide fiable: `py scripts/project_os_tests.py --suite smoke`
   - couvre seulement les surfaces critiques (`router`, `mission chain`, `api runs`, `dashboard`)
-- gateway/OpenClaw: `powershell -File scripts/project_os_tests.ps1 -Suite gateway`
-- validation complete fiable: `powershell -File scripts/project_os_tests.ps1 -Suite full -WithStrictDoctor -WithOpenClawDoctor`
+- gateway/OpenClaw: `py scripts/project_os_tests.py --suite gateway`
+- validation complete fiable: `py scripts/project_os_tests.py --suite full --with-strict-doctor --with-openclaw-doctor`
 - audit documentaire canonique: `py scripts/project_os_entry.py docs audit`
-- cloture d'issue / lot / roadmap step: `powershell -File scripts/project_os_tests.ps1 -Suite full -WithStrictDoctor -WithOpenClawDoctor -WithDocAudit` quand la surface touche runtime, policy, interfaces, docs ou OpenClaw
+- cloture d'issue / lot / roadmap step: `py scripts/project_os_tests.py --suite full --with-strict-doctor --with-openclaw-doctor --with-doc-audit` quand la surface touche runtime, policy, interfaces, docs ou OpenClaw
 - `py -m pytest -q` doit rester borne au coeur du repo via `pytest.ini` et ne plus collecter `third_party`
 - completer au besoin avec des suites ciblees par sous-systeme
 - garder les chiffres de tests hors de cette doc pour eviter le drift
@@ -117,7 +117,8 @@ Verdicts possibles:
 ### Outil
 
 - `pytest` avec fixtures locales
-- `scripts/project_os_tests.ps1` comme entree canonique pour eviter les faux timeouts et standardiser les suites
+- `scripts/project_os_tests.py` comme entree canonique pour eviter la dependance a la policy PowerShell et standardiser les suites
+- `scripts/project_os_tests.cmd` comme wrapper Windows sans policy; `scripts/project_os_tests.ps1` reste un wrapper de compatibilite
 - Pas de CI/CD externe en v1 - les tests tournent localement avant merge
 
 ## Performance
@@ -150,4 +151,3 @@ Verdicts possibles:
 - `docs/decisions/0013-dual-model-operating-model.md`
 - `docs/integrations/API_RUN_CONTRACT.md`
 - `config/api_run_templates.json`
-

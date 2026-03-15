@@ -279,6 +279,7 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "escalation_reasoning_effort": "xhigh",
             "exceptional_model": "gpt-5.4-pro",
             "discord_simple_model": "claude-sonnet-4-20250514",
+            "discord_opus_model": "claude-opus-4-1",
             "daily_soft_limit_eur": 1.5,
             "monthly_limit_eur": 50.0,
             "daily_budget_limit_eur": 5.0,

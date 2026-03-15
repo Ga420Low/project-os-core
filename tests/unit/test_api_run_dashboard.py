@@ -23,7 +23,17 @@ from project_os_core.api_runs.dashboard import (
     ensure_dashboard_running,
     render_dashboard_html,
 )
-from project_os_core.models import ApiRunMode, ApiRunReview, ApiRunReviewVerdict, new_id
+from project_os_core.models import (
+    ApiRunMode,
+    ApiRunReview,
+    ApiRunReviewVerdict,
+    ChannelEvent,
+    ConversationThreadRef,
+    OperatorMessage,
+    RuntimeState,
+    RuntimeVerdict,
+    new_id,
+)
 from project_os_core.secrets import SecretLookup
 from project_os_core.services import build_app_services
 
@@ -108,6 +118,18 @@ def _build_services(tmp_path: Path):
     services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "anthropic-test-secret")
     _install_stub_reviewer(services)
     return services
+
+
+def _mark_runtime_ready(services, profile_name: str = "core") -> None:
+    session = services.runtime.open_session(profile_name=profile_name, owner="founder")
+    services.runtime.record_runtime_state(
+        RuntimeState(
+            runtime_state_id=new_id("runtime_state"),
+            session_id=session.session_id,
+            verdict=RuntimeVerdict.READY,
+            active_profile=profile_name,
+        )
+    )
 
 
 class ApiRunDashboardTests(unittest.TestCase):
@@ -253,6 +275,60 @@ class ApiRunDashboardTests(unittest.TestCase):
                 self.assertEqual(snapshot["snapshot"]["current_run"]["run_id"], payload["result"].run_id)
                 self.assertEqual(snapshot["current_preview"]["decision"], "Build the local dashboard in a single lot.")
                 self.assertGreaterEqual(len(snapshot["current_artifacts"]), 4)
+                self.assertIn("no_loss_audit", snapshot)
+                self.assertIn("operator_delivery_health", snapshot)
+            finally:
+                services.close()
+
+    def test_dashboard_payload_exposes_gateway_reply_audit_for_artifact_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                _mark_runtime_ready(services)
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    del message, model, route_reason, context_bundle
+                    return (
+                        "Decision: basculer en artifact-first.\n"
+                        "Action: livrer un resume Discord.\n"
+                        "Action: joindre le document complet.\n\n"
+                        + ("Plan detaille a relire " * 180)
+                    )
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
+
+                services.gateway.dispatch_event(
+                    ChannelEvent(
+                        event_id=new_id("channel_event"),
+                        surface="discord",
+                        event_type="message.created",
+                        message=OperatorMessage(
+                            message_id=new_id("message"),
+                            actor_id="founder",
+                            channel="discord",
+                            text=("fais moi un plan complet a verifier " * 80),
+                            thread_ref=ConversationThreadRef(
+                                thread_id="thread_dashboard_gateway_audit",
+                                channel="discord",
+                                external_thread_id="channel:thread_dashboard_gateway_audit",
+                            ),
+                        ),
+                    ),
+                    target_profile="core",
+                )
+
+                payload = build_dashboard_payload(services, limit=5)
+                self.assertEqual(payload["gateway_reply_audit"]["artifact_summary_count"], 1)
+                self.assertEqual(payload["gateway_reply_audit"]["manifest_gap_count"], 0)
+                self.assertEqual(payload["gateway_reply_audit"]["status"], "attention")
+                self.assertEqual(payload["gateway_reply_audit"]["recent_replies"][0]["delivery_mode"], "artifact_summary")
             finally:
                 services.close()
 
@@ -299,6 +375,8 @@ class ApiRunDashboardTests(unittest.TestCase):
                         }
                     ],
                     "operator_delivery_counts": {"pending": 1},
+                    "operator_delivery_health": {"counts": {"queued": 1}, "status": "ok"},
+                    "no_loss_audit": {"status": "ok", "silent_loss_risk_count": 0, "dead_letter_count": 0, "replayable_count": 1},
                 },
                 "current_artifacts": [],
                 "current_preview": None,
@@ -308,6 +386,24 @@ class ApiRunDashboardTests(unittest.TestCase):
                     "question_for_founder": "Confirme le perimetre du lot.",
                     "recommended_contract_change": "Amender l'objectif.",
                     "requires_reapproval": True,
+                },
+                "operator_delivery_health": {"counts": {"queued": 1}, "status": "ok"},
+                "no_loss_audit": {"status": "ok", "silent_loss_risk_count": 0, "dead_letter_count": 0, "replayable_count": 1},
+                "gateway_reply_audit": {
+                    "status": "ok",
+                    "delivery_mode_counts": {"artifact_summary": 1},
+                    "artifact_summary_count": 1,
+                    "manifest_gap_count": 0,
+                    "recent_replies": [
+                        {
+                            "reply_kind": "chat_response",
+                            "delivery_mode": "artifact_summary",
+                            "attachment_count": 1,
+                            "summary": "Plan complet pret.",
+                            "created_at": "2026-03-13T12:00:00+00:00",
+                            "channel": "discord",
+                        }
+                    ],
                 },
                 "status_counts": {},
                 "review_counts": {},
@@ -329,6 +425,9 @@ class ApiRunDashboardTests(unittest.TestCase):
         self.assertIn("Clarification", html)
         self.assertIn("signal run_started", html)
         self.assertIn("livraison pending", html)
+        self.assertIn("No-loss et UX Discord", html)
+        self.assertIn("silent risks 0", html)
+        self.assertIn("mode artifact_summary", html)
 
     def test_dashboard_http_500_hides_internal_exception_detail(self):
         with tempfile.TemporaryDirectory() as tmp:

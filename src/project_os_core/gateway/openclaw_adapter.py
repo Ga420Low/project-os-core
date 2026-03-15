@@ -121,13 +121,70 @@ def build_dispatch_from_openclaw_payload(payload: dict[str, Any]) -> OpenClawDis
 
 def _build_attachments_from_metadata(metadata: dict[str, Any]) -> list[OperatorAttachment]:
     attachments: list[OperatorAttachment] = []
+    attachment_payloads = metadata.get("attachments")
+    seen_keys: set[tuple[str | None, str | None, str | None]] = set()
+
+    if isinstance(attachment_payloads, list):
+        for index, item in enumerate(attachment_payloads):
+            if not isinstance(item, dict):
+                continue
+            name = (
+                _as_text(item.get("name"))
+                or _as_text(item.get("filename"))
+                or _as_text(item.get("fileName"))
+                or _as_text(item.get("title"))
+                or f"attachment-{index + 1}"
+            )
+            mime_type = (
+                _as_text(item.get("mimeType"))
+                or _as_text(item.get("mime_type"))
+                or _as_text(item.get("contentType"))
+                or _as_text(item.get("content_type"))
+                or _as_text(metadata.get("mediaType"))
+            )
+            path = _as_text(item.get("path")) or _as_text(item.get("filePath")) or _as_text(item.get("localPath"))
+            url = _as_text(item.get("url")) or _as_text(item.get("downloadUrl")) or _as_text(item.get("download_url"))
+            size_bytes = _as_int(item.get("sizeBytes") or item.get("size_bytes") or item.get("size"))
+            attachment_key = (name, path, url)
+            if attachment_key in seen_keys:
+                continue
+            seen_keys.add(attachment_key)
+            attachments.append(
+                OperatorAttachment(
+                    attachment_id=new_id("attachment"),
+                    name=name,
+                    kind=_attachment_kind(name=name, mime_type=mime_type, metadata=item),
+                    mime_type=mime_type,
+                    path=path,
+                    url=url,
+                    size_bytes=size_bytes,
+                    metadata={
+                        "source": "openclaw",
+                        "kind": "attachments_array",
+                        "duration_secs": _as_int(item.get("durationSecs") or item.get("duration_secs")),
+                        "is_transcript": bool(item.get("isTranscript") or item.get("is_transcript")),
+                    },
+                )
+            )
+
     media_path = _as_text(metadata.get("mediaPath"))
     if media_path:
+        attachment_key = (
+            media_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1],
+            media_path,
+            None,
+        )
+        if attachment_key in seen_keys:
+            return attachments
         attachments.append(
             OperatorAttachment(
                 attachment_id=new_id("attachment"),
                 name=media_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1],
-                kind="file",
+                kind=_attachment_kind(
+                    name=media_path.rsplit("\\", 1)[-1].rsplit("/", 1)[-1],
+                    mime_type=_as_text(metadata.get("mediaType")),
+                    metadata=metadata,
+                ),
                 mime_type=_as_text(metadata.get("mediaType")),
                 path=media_path,
                 metadata={"source": "openclaw", "kind": "media_path"},
@@ -148,3 +205,32 @@ def _as_risk_class(value: Any) -> ActionRiskClass | None:
     if text is None:
         return None
     return ActionRiskClass(text)
+
+
+def _as_int(value: Any) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _attachment_kind(*, name: str, mime_type: str | None, metadata: dict[str, Any]) -> str:
+    normalized_name = name.lower()
+    normalized_mime = (mime_type or "").lower()
+    if bool(metadata.get("isTranscript") or metadata.get("is_transcript")):
+        return "transcript"
+    if normalized_mime.startswith("audio/") or normalized_name.endswith((".mp3", ".wav", ".ogg", ".m4a", ".flac")):
+        return "audio"
+    if normalized_mime.startswith("image/") or normalized_name.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
+        return "image"
+    if normalized_mime in {
+        "application/pdf",
+        "text/plain",
+        "text/markdown",
+        "application/msword",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    } or normalized_name.endswith((".pdf", ".txt", ".md", ".doc", ".docx")):
+        return "document"
+    return "file"

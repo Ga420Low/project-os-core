@@ -103,6 +103,32 @@ class OperatorMessageKind(str, Enum):
     ARTIFACT_REF = "artifact_ref"
 
 
+class IntentKind(str, Enum):
+    DISCUSSION = "discussion"
+    STATUS_REQUEST = "status_request"
+    DECISION_SIGNAL = "decision_signal"
+    DIRECTIVE_IMPLICIT = "directive_implicit"
+    DIRECTIVE_EXPLICIT = "directive_explicit"
+    APPROVAL_RESPONSE = "approval_response"
+    EXECUTION_REPORT_FOLLOWUP = "execution_report_followup"
+
+
+class DelegationLevel(str, Enum):
+    NONE = "none"
+    EXPLORE = "explore"
+    PREPARE = "prepare"
+    EXECUTE = "execute"
+    APPROVE = "approve"
+
+
+class InteractionState(str, Enum):
+    DISCUSSION = "discussion"
+    DIRECTIVE = "directive"
+    APPROVAL = "approval"
+    EXECUTION = "execution"
+    REPORTING = "reporting"
+
+
 class PromotionAction(str, Enum):
     PROMOTE = "promote"
     SKIP = "skip"
@@ -227,6 +253,13 @@ class OperatorDeliveryStatus(str, Enum):
     FAILED = "failed"
     SKIPPED = "skipped"
     EXPIRED = "expired"
+
+
+class OperatorDeliveryGuarantee(str, Enum):
+    BEST_EFFORT = "best_effort"
+    IMPORTANT = "important"
+    MUST_NOTIFY = "must_notify"
+    MUST_PERSIST = "must_persist"
 
 
 def to_jsonable(value: Any) -> Any:
@@ -476,6 +509,32 @@ class OperatorEnvelope:
 
 
 @dataclass(slots=True)
+class OperatorReplyArtifact:
+    artifact_id: str
+    artifact_kind: str
+    path: str
+    name: str
+    mime_type: str | None = None
+    label: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class OperatorResponseManifest:
+    delivery_mode: str
+    discord_summary: str
+    discord_next_action: str | None = None
+    full_artifact_id: str | None = None
+    review_artifact_id: str | None = None
+    segments_artifact_id: str | None = None
+    decision_extract_artifact_id: str | None = None
+    action_extract_artifact_id: str | None = None
+    source_artifact_id: str | None = None
+    attachments: list[OperatorReplyArtifact] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class OperatorReply:
     reply_id: str
     channel: str
@@ -488,6 +547,7 @@ class OperatorReply:
     communication_mode: CommunicationMode = CommunicationMode.DISCUSSION
     operator_language: str = "fr"
     audience: OperatorAudience = OperatorAudience.NON_DEVELOPER
+    response_manifest: OperatorResponseManifest | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
 
@@ -562,6 +622,35 @@ class ConversationMemoryCandidate:
     should_promote: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class IntentTaxonomyResult:
+    intent_kind: IntentKind
+    delegation_level: DelegationLevel
+    interaction_state: InteractionState
+    suggested_next_state: InteractionState
+    confidence: float = 1.0
+    signals: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ActionContract:
+    contract_id: str
+    intent_kind: IntentKind
+    delegation_level: DelegationLevel
+    objective: str
+    scope: str | None = None
+    expected_output: str | None = None
+    confidence: float = 0.0
+    risk_class: ActionRiskClass = ActionRiskClass.READ_ONLY
+    needs_clarification: bool = False
+    clarification_question: str | None = None
+    needs_approval: bool = False
+    approval_reason: str | None = None
+    execution_ready: bool = False
+    signals: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -749,6 +838,7 @@ class ExecutionPolicy:
     allow_pro_default: bool = False
     secret_mode: str = "infisical_first"
     discord_simple_model: str = "claude-sonnet-4-20250514"
+    discord_opus_model: str = "claude-opus-4-1"
     discord_simple_reasoning_effort: str = "medium"
     operator_language: str = "fr"
     operator_audience: OperatorAudience = OperatorAudience.NON_DEVELOPER

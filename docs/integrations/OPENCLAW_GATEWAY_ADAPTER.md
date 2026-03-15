@@ -34,6 +34,13 @@ Puis le plugin:
 3. appelle `Project OS` via CLI
 4. laisse `Project OS` prendre toutes les decisions
 
+Point important:
+
+- sur `OpenClaw 2026.3.12`, `message_received` est fire-and-forget et ne bloque pas la reponse native
+- la neutralisation de la voix native Discord doit donc passer par `session.sendPolicy`
+- `message_sending` reste seulement un garde-fou secondaire
+- la reponse publique visible doit sortir par l'envoi direct Discord du plugin Project OS
+
 Diagramme canonique:
 
 ```mermaid
@@ -64,6 +71,8 @@ Lecture imposee:
 L'adapter d'entree accepte maintenant des prefixes operateur simples au debut du message:
 
 - `CLAUDE`
+- `SONNET`
+- `OPUS`
 - `GPT`
 - `LOCAL`
 - `OLLAMA`
@@ -86,6 +95,7 @@ Cette grammaire ne cree pas une seconde personnalite:
 - `OpenClaw` ne pense toujours pas a cote
 - `Project OS` reste la seule voix publique
 - le prefixe ne fait que choisir la lane de modele pour ce tour
+- `OPUS` force explicitement la voie Anthropic premium pour ce tour
 
 ## Fichiers du lot
 
@@ -161,6 +171,11 @@ Le doctor verifie:
   - `threadBindings`
   - `autoPresence`
   - `execApprovals`
+- contrat `single voice` Discord:
+  - `session.sendPolicy` deny pour `discord/group` et `discord/channel`
+  - `default = allow`
+  - `suppressNativeDiscordReplies = true`
+  - `DISCORD_BOT_TOKEN` disponible pour le direct-send REST
 - voie locale Windows-first:
   - `local_model_route`
 - plugin visible dans `OpenClaw`
@@ -199,9 +214,9 @@ Le verdict doit rester comprehensible pour un non-developpeur:
 Le workflow canonique de verification locale passe par:
 
 ```powershell
-powershell -File scripts/project_os_tests.ps1 -Suite smoke
-powershell -File scripts/project_os_tests.ps1 -Suite gateway
-powershell -File scripts/project_os_tests.ps1 -Suite full -WithStrictDoctor -WithOpenClawDoctor
+py scripts/project_os_tests.py --suite smoke
+py scripts/project_os_tests.py --suite gateway
+py scripts/project_os_tests.py --suite full --with-strict-doctor --with-openclaw-doctor
 ```
 
 Regles:
@@ -226,10 +241,11 @@ Ce script:
 
 1. exige une session admin
 2. verifie que `openclaw.json` utilise deja des SecretRefs `env`
-3. verifie la presence de `DISCORD_BOT_TOKEN` et `OPENCLAW_GATEWAY_TOKEN` au niveau utilisateur Windows
-4. installe le gateway gere via `openclaw gateway install --force`
-5. relance le service
-6. supprime le fallback `Startup` si le service gere est sain
+3. force la presence de `session.sendPolicy` pour couper la voix native Discord sur `group/channel`
+4. verifie la presence de `DISCORD_BOT_TOKEN` et `OPENCLAW_GATEWAY_TOKEN` au niveau utilisateur Windows
+5. installe le gateway gere via `openclaw gateway install --force`
+6. relance le service
+7. supprime le fallback `Startup` si le service gere est sain
 
 Tant que ce script n'a pas tourne en admin avec succes, le fallback `Startup` peut rester en place pour maintenir un runtime vivant, mais ce n'est pas l'etat final cible.
 
@@ -334,6 +350,7 @@ La policy retenue reste sobre:
 - `execApprovals` en `dm`
 - `threadBindings` actifs
 - `autoPresence` actif
+- `session.sendPolicy` deny pour `discord/group` et `discord/channel`
 - pas de components metier riches tant qu'ils ne sont pas prouvables sans ambiguite
 
 ## Validation live

@@ -38,6 +38,7 @@ from ..models import (
     MegaPromptTemplate,
     OperatorChannelHint,
     OperatorDelivery,
+    OperatorDeliveryGuarantee,
     OperatorDeliveryStatus,
     OperatorAudience,
     RunContract,
@@ -66,6 +67,13 @@ DEFAULT_CONTEXT_SOURCE_LIMIT = 12_000
 DEFAULT_CONTEXT_FILE_COUNT = 10
 REVIEWER_MODEL = "claude-sonnet-4-20250514"
 TRANSLATOR_MODEL = "claude-haiku-4-5-20251001"
+
+_DELIVERY_GUARANTEE_RANK: dict[OperatorDeliveryGuarantee, int] = {
+    OperatorDeliveryGuarantee.BEST_EFFORT: 0,
+    OperatorDeliveryGuarantee.IMPORTANT: 1,
+    OperatorDeliveryGuarantee.MUST_NOTIFY: 2,
+    OperatorDeliveryGuarantee.MUST_PERSIST: 3,
+}
 
 
 class ApiRunService:
@@ -1422,6 +1430,99 @@ class ApiRunService:
                 )
         return {"run_id": run_id, "artifacts": [to_jsonable(item) for item in artifacts]}
 
+    def publish_operator_update(
+        self,
+        *,
+        title: str,
+        summary: str,
+        text: str | None = None,
+        kind: RunLifecycleEventKind = RunLifecycleEventKind.RUN_COMPLETED,
+        status: ApiRunStatus | None = None,
+        channel_hint: OperatorChannelHint = OperatorChannelHint.RUNS_LIVE,
+        mode: ApiRunMode | None = None,
+        branch_name: str | None = None,
+        target: str | None = None,
+        reply_to: str | None = None,
+        attachments: list[dict[str, Any]] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        event = RunLifecycleEvent(
+            lifecycle_event_id=new_id("lifecycle_event"),
+            run_id=new_id("external_run"),
+            run_request_id=new_id("external_request"),
+            kind=kind,
+            title=title.strip(),
+            summary=summary.strip(),
+            branch_name=branch_name,
+            mode=mode,
+            channel_hint=channel_hint,
+            status=status,
+            phase="external_update",
+            metadata=dict(metadata or {}),
+        )
+        with self.database.transaction() as connection:
+            self._persist_lifecycle_event(event, connection=connection)
+            self._prune_pending_operator_deliveries(incoming_channel_hint=event.channel_hint, connection=connection)
+            delivery_guarantee = self._delivery_guarantee_for_kind(kind, channel_hint=event.channel_hint)
+            backlog_state = self._operator_delivery_backlog_state(connection=connection)
+            payload = self._build_operator_delivery_payload(
+                event,
+                translated_message=(text or self._render_operator_delivery_text(event)),
+                delivery_guarantee=delivery_guarantee,
+                backlog_state=backlog_state,
+            )
+            if target:
+                payload["target"] = target
+            if reply_to:
+                payload["reply_to"] = reply_to
+            if attachments:
+                payload["response_manifest"] = {
+                    "delivery_mode": "direct_attachment",
+                    "discord_summary": str(text or summary),
+                    "attachments": attachments,
+                    "metadata": {"source": "publish_operator_update"},
+                }
+            delivery = OperatorDelivery(
+                delivery_id=new_id("operator_delivery"),
+                lifecycle_event_id=event.lifecycle_event_id,
+                adapter="openclaw",
+                surface="discord",
+                channel_hint=event.channel_hint,
+                status=OperatorDeliveryStatus.PENDING,
+                payload=payload,
+                metadata={
+                    "run_id": event.run_id,
+                    "kind": kind.value,
+                    "delivery_guarantee": delivery_guarantee.value,
+                    "delivery_priority_rank": self._operator_delivery_guarantee_rank(delivery_guarantee),
+                    "replayable": True,
+                    "backlog_soft_limit_exceeded": backlog_state["soft_limit_exceeded"],
+                    "pending_backlog_count": backlog_state["pending_count"],
+                    "pending_backlog_limit": backlog_state["max_pending"],
+                    "external_update": True,
+                },
+                next_attempt_at=event.created_at,
+            )
+            self._persist_operator_delivery(delivery, connection=connection)
+        self.journal.append(
+            "api_run_external_operator_update_published",
+            "api_runs",
+            {
+                "lifecycle_event_id": event.lifecycle_event_id,
+                "delivery_id": delivery.delivery_id,
+                "kind": kind.value,
+                "channel_hint": channel_hint.value,
+            },
+        )
+        self._refresh_live_snapshot()
+        return {
+            "lifecycle_event_id": event.lifecycle_event_id,
+            "delivery_id": delivery.delivery_id,
+            "delivery_guarantee": delivery_guarantee.value,
+            "target": target,
+            "reply_to": reply_to,
+        }
+
     def list_operator_deliveries(
         self,
         *,
@@ -1456,45 +1557,115 @@ class ApiRunService:
             if status is OperatorDeliveryStatus.PENDING:
                 sql += " AND COALESCE(d.next_attempt_at, d.updated_at, d.created_at) <= ?"
                 params.append(now_iso)
-        sql += " ORDER BY COALESCE(d.next_attempt_at, d.created_at) ASC, d.created_at ASC LIMIT ?"
-        params.append(limit)
+        sql += " ORDER BY COALESCE(d.next_attempt_at, d.created_at) ASC, d.created_at ASC"
         rows = self.database.fetchall(sql, tuple(params))
-        deliveries: list[dict[str, Any]] = []
+        deliveries_with_sort_keys: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
         for row in rows:
             payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
             metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
-            deliveries.append(
-                {
-                    "delivery_id": str(row["delivery_id"]),
-                    "lifecycle_event_id": str(row["lifecycle_event_id"]),
-                    "adapter": str(row["adapter"]),
-                    "surface": str(row["surface"]),
-                    "channel_hint": str(row["channel_hint"]),
-                    "status": str(row["status"]),
-                    "attempts": int(row["attempts"]),
-                    "last_error": str(row["last_error"]) if row["last_error"] else None,
-                    "next_attempt_at": str(row["next_attempt_at"]) if row["next_attempt_at"] else None,
-                    "payload": payload,
-                    "metadata": metadata,
-                    "event": {
-                        "run_id": str(row["run_id"]),
-                        "run_request_id": str(row["run_request_id"]),
-                        "contract_id": str(row["contract_id"]) if row["contract_id"] else None,
-                        "kind": str(row["kind"]),
-                        "title": str(row["title"]),
-                        "summary": str(row["summary"]),
-                        "branch_name": str(row["branch_name"]) if row["branch_name"] else None,
-                        "mode": str(row["mode"]) if row["mode"] else None,
-                        "status": str(row["run_status"]) if row["run_status"] else None,
-                        "phase": str(row["phase"]) if row["phase"] else None,
-                        "blocking_question": str(row["blocking_question"]) if row["blocking_question"] else None,
-                        "recommended_action": str(row["recommended_action"]) if row["recommended_action"] else None,
-                        "requires_reapproval": bool(row["requires_reapproval"]),
-                        "artifact_path": str(row["artifact_path"]) if row["artifact_path"] else None,
-                    },
-                }
+            guarantee = self._coerce_operator_delivery_guarantee(
+                metadata.get("delivery_guarantee")
+                or payload.get("delivery_guarantee")
+                or self._delivery_guarantee_for_kind(
+                    RunLifecycleEventKind(str(row["kind"])) if row["kind"] else None,
+                    channel_hint=OperatorChannelHint(str(row["channel_hint"])),
+                ).value
             )
+            priority_rank = self._operator_delivery_guarantee_rank(guarantee)
+            delivery = {
+                "delivery_id": str(row["delivery_id"]),
+                "lifecycle_event_id": str(row["lifecycle_event_id"]),
+                "adapter": str(row["adapter"]),
+                "surface": str(row["surface"]),
+                "channel_hint": str(row["channel_hint"]),
+                "status": str(row["status"]),
+                "attempts": int(row["attempts"]),
+                "last_error": str(row["last_error"]) if row["last_error"] else None,
+                "next_attempt_at": str(row["next_attempt_at"]) if row["next_attempt_at"] else None,
+                "created_at": str(row["created_at"]),
+                "updated_at": str(row["updated_at"]),
+                "delivery_guarantee": guarantee.value,
+                "delivery_priority_rank": priority_rank,
+                "payload": payload,
+                "metadata": metadata,
+                "event": {
+                    "run_id": str(row["run_id"]),
+                    "run_request_id": str(row["run_request_id"]),
+                    "contract_id": str(row["contract_id"]) if row["contract_id"] else None,
+                    "kind": str(row["kind"]),
+                    "title": str(row["title"]),
+                    "summary": str(row["summary"]),
+                    "branch_name": str(row["branch_name"]) if row["branch_name"] else None,
+                    "mode": str(row["mode"]) if row["mode"] else None,
+                    "status": str(row["run_status"]) if row["run_status"] else None,
+                    "phase": str(row["phase"]) if row["phase"] else None,
+                    "blocking_question": str(row["blocking_question"]) if row["blocking_question"] else None,
+                    "recommended_action": str(row["recommended_action"]) if row["recommended_action"] else None,
+                    "requires_reapproval": bool(row["requires_reapproval"]),
+                    "artifact_path": str(row["artifact_path"]) if row["artifact_path"] else None,
+                },
+            }
+            deliveries_with_sort_keys.append(
+                (
+                    self._operator_delivery_sort_key(
+                        status=str(row["status"]),
+                        next_attempt_at=str(row["next_attempt_at"]) if row["next_attempt_at"] else None,
+                        created_at=str(row["created_at"]),
+                        guarantee=guarantee,
+                    ),
+                    delivery,
+                )
+            )
+        deliveries = [item for _, item in sorted(deliveries_with_sort_keys, key=lambda entry: entry[0])[:limit]]
         return {"deliveries": deliveries}
+
+    def _coerce_operator_delivery_guarantee(self, value: Any) -> OperatorDeliveryGuarantee:
+        if isinstance(value, OperatorDeliveryGuarantee):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            for candidate in OperatorDeliveryGuarantee:
+                if candidate.value == normalized:
+                    return candidate
+        return OperatorDeliveryGuarantee.IMPORTANT
+
+    def _operator_delivery_guarantee_rank(self, guarantee: OperatorDeliveryGuarantee | str | None) -> int:
+        resolved = self._coerce_operator_delivery_guarantee(guarantee)
+        return _DELIVERY_GUARANTEE_RANK.get(resolved, _DELIVERY_GUARANTEE_RANK[OperatorDeliveryGuarantee.IMPORTANT])
+
+    def _operator_delivery_sort_key(
+        self,
+        *,
+        status: str,
+        next_attempt_at: str | None,
+        created_at: str,
+        guarantee: OperatorDeliveryGuarantee | str | None,
+    ) -> tuple[Any, ...]:
+        priority_rank = self._operator_delivery_guarantee_rank(guarantee)
+        due_marker = next_attempt_at or created_at
+        status_marker = 0 if status == OperatorDeliveryStatus.PENDING.value else 1
+        return (status_marker, -priority_rank, due_marker, created_at)
+
+    def _delivery_guarantee_for_kind(
+        self,
+        kind: RunLifecycleEventKind | None,
+        *,
+        channel_hint: OperatorChannelHint,
+    ) -> OperatorDeliveryGuarantee:
+        if kind is RunLifecycleEventKind.RUN_COMPLETED:
+            return OperatorDeliveryGuarantee.MUST_PERSIST
+        if kind in {
+            RunLifecycleEventKind.CLARIFICATION_REQUIRED,
+            RunLifecycleEventKind.CONTRACT_PROPOSED,
+            RunLifecycleEventKind.CONTRACT_APPROVED,
+            RunLifecycleEventKind.CONTRACT_REJECTED,
+            RunLifecycleEventKind.RUN_FAILED,
+            RunLifecycleEventKind.BUDGET_ALERT,
+        }:
+            return OperatorDeliveryGuarantee.MUST_NOTIFY
+        if channel_hint is OperatorChannelHint.RUNS_LIVE:
+            return OperatorDeliveryGuarantee.IMPORTANT
+        return OperatorDeliveryGuarantee.IMPORTANT
 
     def mark_operator_delivery(
         self,
@@ -1510,9 +1681,16 @@ class ApiRunService:
         )
         if row is None:
             raise KeyError(f"Unknown operator delivery: {delivery_id}")
+        payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
         delivery_metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
         if metadata:
             delivery_metadata.update(metadata)
+        guarantee = self._coerce_operator_delivery_guarantee(
+            delivery_metadata.get("delivery_guarantee") or payload.get("delivery_guarantee")
+        )
+        delivery_metadata["delivery_guarantee"] = guarantee.value
+        delivery_metadata["delivery_priority_rank"] = self._operator_delivery_guarantee_rank(guarantee)
+        delivery_metadata["replayable"] = True
         attempts = int(row["attempts"] or 0) + 1
         updated_at = datetime.now(timezone.utc).isoformat()
         final_status = status
@@ -1530,6 +1708,45 @@ class ApiRunService:
                 delivery_metadata["retry_backoff_seconds"] = delay_seconds + jitter_seconds
         else:
             delivery_metadata.pop("retry_backoff_seconds", None)
+        attempt_history = delivery_metadata.get("attempt_history")
+        if not isinstance(attempt_history, list):
+            attempt_history = []
+        attempt_history.append(
+            {
+                "attempt": attempts,
+                "requested_status": status.value,
+                "applied_status": final_status.value,
+                "error": error,
+                "at": updated_at,
+            }
+        )
+        delivery_metadata["attempt_history"] = attempt_history[-10:]
+        delivery_metadata["last_transition_at"] = updated_at
+        if final_status is OperatorDeliveryStatus.DELIVERED:
+            delivery_metadata["delivered_at"] = updated_at
+            delivery_metadata["replay_status"] = "delivered"
+        elif final_status is OperatorDeliveryStatus.PENDING:
+            delivery_metadata["replay_status"] = "queued"
+        else:
+            delivery_metadata["replay_status"] = "manual_requeue_available"
+        dead_letter_artifact_path: str | None = None
+        if final_status in {OperatorDeliveryStatus.FAILED, OperatorDeliveryStatus.SKIPPED, OperatorDeliveryStatus.EXPIRED}:
+            delivery_metadata["delivery_terminal_reason"] = error or final_status.value
+            dead_letter_artifact_path = self._persist_operator_delivery_dead_letter(
+                delivery_id=delivery_id,
+                row=row,
+                payload=payload,
+                metadata=delivery_metadata,
+                final_status=final_status,
+                error=error,
+                attempts=attempts,
+                updated_at=updated_at,
+            )
+            if dead_letter_artifact_path:
+                delivery_metadata["dead_letter_artifact_path"] = dead_letter_artifact_path
+                delivery_metadata["dead_letter_created_at"] = updated_at
+        else:
+            delivery_metadata.pop("delivery_terminal_reason", None)
         self.database.execute(
             """
             UPDATE api_run_operator_deliveries
@@ -1554,6 +1771,8 @@ class ApiRunService:
                 "status": final_status.value,
                 "attempts": attempts,
                 "last_error": error or "",
+                "delivery_guarantee": guarantee.value,
+                "dead_letter_artifact_path": dead_letter_artifact_path or "",
             },
         )
         self._refresh_live_snapshot()
@@ -1563,7 +1782,124 @@ class ApiRunService:
             "attempts": attempts,
             "last_error": error,
             "next_attempt_at": next_attempt_at,
+            "delivery_guarantee": guarantee.value,
             "metadata": delivery_metadata,
+        }
+
+    def _persist_operator_delivery_dead_letter(
+        self,
+        *,
+        delivery_id: str,
+        row: Any,
+        payload: dict[str, Any],
+        metadata: dict[str, Any],
+        final_status: OperatorDeliveryStatus,
+        error: str | None,
+        attempts: int,
+        updated_at: str,
+    ) -> str | None:
+        try:
+            event_row = self.database.fetchone(
+                "SELECT * FROM api_run_lifecycle_events WHERE lifecycle_event_id = ?",
+                (str(row["lifecycle_event_id"]),),
+            )
+            artifact_path = self._write_runtime_json(
+                self.paths.api_runs_root / "operator_delivery_dead_letters",
+                delivery_id,
+                {
+                    "delivery_id": delivery_id,
+                    "lifecycle_event_id": str(row["lifecycle_event_id"]),
+                    "adapter": str(row["adapter"]),
+                    "surface": str(row["surface"]),
+                    "channel_hint": str(row["channel_hint"]),
+                    "status": final_status.value,
+                    "attempts": attempts,
+                    "last_error": error or (str(row["last_error"]) if row["last_error"] else None),
+                    "payload": payload,
+                    "metadata": metadata,
+                    "updated_at": updated_at,
+                    "event": {
+                        "kind": str(event_row["kind"]) if event_row else None,
+                        "title": str(event_row["title"]) if event_row else None,
+                        "summary": str(event_row["summary"]) if event_row else None,
+                        "run_id": str(event_row["run_id"]) if event_row and event_row["run_id"] else None,
+                        "branch_name": str(event_row["branch_name"]) if event_row and event_row["branch_name"] else None,
+                    },
+                    "requeue_command": f"project-os api-runs requeue-operator-delivery --delivery-id {delivery_id}",
+                },
+            )
+            self.journal.append(
+                "api_run_operator_delivery_dead_lettered",
+                "api_runs",
+                {
+                    "delivery_id": delivery_id,
+                    "status": final_status.value,
+                    "artifact_path": str(artifact_path),
+                },
+            )
+            return str(artifact_path)
+        except Exception as exc:
+            self.logger.log(
+                "WARNING",
+                "api_run_operator_delivery_dead_letter_failed",
+                delivery_id=delivery_id,
+                error=str(exc),
+            )
+            return None
+
+    def requeue_operator_delivery(self, *, delivery_id: str) -> dict[str, Any]:
+        row = self.database.fetchone(
+            "SELECT * FROM api_run_operator_deliveries WHERE delivery_id = ?",
+            (delivery_id,),
+        )
+        if row is None:
+            raise KeyError(f"Unknown operator delivery: {delivery_id}")
+        current_status = OperatorDeliveryStatus(str(row["status"]))
+        if current_status not in {
+            OperatorDeliveryStatus.FAILED,
+            OperatorDeliveryStatus.SKIPPED,
+            OperatorDeliveryStatus.EXPIRED,
+        }:
+            raise ValueError(f"Operator delivery {delivery_id} is not replayable from status {current_status.value}")
+        metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+        updated_at = datetime.now(timezone.utc).isoformat()
+        metadata["replayable"] = True
+        metadata["requeue_count"] = int(metadata.get("requeue_count") or 0) + 1
+        metadata["last_requeued_at"] = updated_at
+        metadata["replay_status"] = "queued"
+        metadata.pop("retry_backoff_seconds", None)
+        self.database.execute(
+            """
+            UPDATE api_run_operator_deliveries
+            SET status = ?, attempts = 0, last_error = NULL, next_attempt_at = ?, metadata_json = ?, updated_at = ?
+            WHERE delivery_id = ?
+            """,
+            (
+                OperatorDeliveryStatus.PENDING.value,
+                updated_at,
+                dump_json(metadata),
+                updated_at,
+                delivery_id,
+            ),
+        )
+        self.journal.append(
+            "api_run_operator_delivery_requeued",
+            "api_runs",
+            {
+                "delivery_id": delivery_id,
+                "previous_status": current_status.value,
+                "requeue_count": metadata["requeue_count"],
+            },
+        )
+        self._refresh_live_snapshot()
+        return {
+            "delivery_id": delivery_id,
+            "status": OperatorDeliveryStatus.PENDING.value,
+            "attempts": 0,
+            "last_error": None,
+            "next_attempt_at": updated_at,
+            "delivery_guarantee": str(metadata.get("delivery_guarantee") or OperatorDeliveryGuarantee.IMPORTANT.value),
+            "metadata": metadata,
         }
 
     def monitor_snapshot(self, *, limit: int = 5) -> dict[str, Any]:
@@ -1683,6 +2019,26 @@ class ApiRunService:
             request_metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
             guard_reason = self._normalize_operator_guard_reason(request_metadata.get("operator_dashboard_reason"))
             clarification_metadata = json.loads(clarification_row["metadata_json"]) if clarification_row else {}
+            delivery_payload = json.loads(delivery_row["payload_json"]) if delivery_row and delivery_row["payload_json"] else {}
+            delivery_metadata = json.loads(delivery_row["metadata_json"]) if delivery_row and delivery_row["metadata_json"] else {}
+            delivery_manifest = (
+                delivery_payload.get("response_manifest")
+                if isinstance(delivery_payload.get("response_manifest"), dict)
+                else {}
+            )
+            delivery_contract = (
+                delivery_payload.get("delivery_contract")
+                if isinstance(delivery_payload.get("delivery_contract"), dict)
+                else {}
+            )
+            no_loss_state = self._operator_delivery_no_loss_state(
+                status=str(delivery_row["status"]) if delivery_row else None,
+                last_error=str(delivery_row["last_error"]) if delivery_row and delivery_row["last_error"] else None,
+                delivery_guarantee=str(delivery_metadata.get("delivery_guarantee") or delivery_payload.get("delivery_guarantee") or ""),
+                visible_failure_required=bool(delivery_contract.get("visible_failure_required")),
+                failure_notice_sent=bool(delivery_metadata.get("failure_notice_sent")),
+                dead_letter_artifact_path=str(delivery_metadata.get("dead_letter_artifact_path") or "").strip() or None,
+            )
             items.append(
                 {
                     "run_id": run_id,
@@ -1719,6 +2075,35 @@ class ApiRunService:
                     "operator_delivery_next_attempt_at": (
                         str(delivery_row["next_attempt_at"]) if delivery_row and delivery_row["next_attempt_at"] else None
                     ),
+                    "operator_delivery_guarantee": (
+                        str(delivery_metadata.get("delivery_guarantee") or delivery_payload.get("delivery_guarantee") or "")
+                        if delivery_row
+                        else None
+                    ),
+                    "operator_delivery_replayable": bool(delivery_metadata.get("replayable")) if delivery_row else False,
+                    "operator_delivery_failure_notice_sent": (
+                        bool(delivery_metadata.get("failure_notice_sent")) if delivery_row else False
+                    ),
+                    "operator_delivery_dead_letter_artifact_path": (
+                        str(delivery_metadata.get("dead_letter_artifact_path") or "").strip() or None
+                        if delivery_row
+                        else None
+                    ),
+                    "operator_delivery_visible_failure_required": (
+                        bool(delivery_contract.get("visible_failure_required")) if delivery_row else False
+                    ),
+                    "operator_delivery_must_persist": bool(delivery_contract.get("must_persist")) if delivery_row else False,
+                    "operator_delivery_no_loss_state": no_loss_state,
+                    "operator_delivery_response_mode": (
+                        str(delivery_manifest.get("delivery_mode") or "").strip() or None
+                        if delivery_row
+                        else None
+                    ),
+                    "operator_delivery_attachment_count": (
+                        len(delivery_manifest.get("attachments") or [])
+                        if isinstance(delivery_manifest.get("attachments"), list)
+                        else 0
+                    ),
                     "clarification_report_id": str(clarification_row["report_id"]) if clarification_row else None,
                     "clarification_reason": str(clarification_row["cause"]) if clarification_row else None,
                     "clarification_question": str(clarification_row["question_for_founder"]) if clarification_row else None,
@@ -1753,6 +2138,11 @@ class ApiRunService:
         status_counts: dict[str, int] = {}
         review_counts: dict[str, int] = {}
         operator_delivery_counts: dict[str, int] = {}
+        operator_delivery_health_counts: dict[str, int] = {}
+        dead_letter_count = 0
+        replayable_count = 0
+        visible_failure_gap_count = 0
+        artifact_delivery_count = 0
         for item in items:
             status_key = str(item.get("status") or "unknown")
             status_counts[status_key] = status_counts.get(status_key, 0) + 1
@@ -1760,6 +2150,16 @@ class ApiRunService:
             review_counts[review_key] = review_counts.get(review_key, 0) + 1
             delivery_key = str(item.get("operator_delivery_status") or "none")
             operator_delivery_counts[delivery_key] = operator_delivery_counts.get(delivery_key, 0) + 1
+            health_key = str(item.get("operator_delivery_no_loss_state") or "none")
+            operator_delivery_health_counts[health_key] = operator_delivery_health_counts.get(health_key, 0) + 1
+            if item.get("operator_delivery_dead_letter_artifact_path"):
+                dead_letter_count += 1
+            if item.get("operator_delivery_replayable"):
+                replayable_count += 1
+            if health_key == "breach":
+                visible_failure_gap_count += 1
+            if item.get("operator_delivery_response_mode") == "artifact_summary":
+                artifact_delivery_count += 1
 
         snapshot = {
             "schema_version": "2",
@@ -1775,6 +2175,25 @@ class ApiRunService:
             "status_counts": status_counts,
             "review_counts": review_counts,
             "operator_delivery_counts": operator_delivery_counts,
+            "operator_delivery_health": {
+                "status": "breach"
+                if visible_failure_gap_count > 0
+                else ("attention" if operator_delivery_health_counts.get("attention", 0) > 0 else "ok"),
+                "counts": operator_delivery_health_counts,
+                "dead_letter_count": dead_letter_count,
+                "replayable_count": replayable_count,
+                "visible_failure_gap_count": visible_failure_gap_count,
+                "artifact_delivery_count": artifact_delivery_count,
+            },
+            "no_loss_audit": {
+                "status": "breach"
+                if visible_failure_gap_count > 0
+                else ("attention" if dead_letter_count > 0 else "ok"),
+                "silent_loss_risk_count": visible_failure_gap_count,
+                "dead_letter_count": dead_letter_count,
+                "replayable_count": replayable_count,
+                "artifact_delivery_count": artifact_delivery_count,
+            },
             "latest_runs": items,
         }
         return self._sanitize_monitor_snapshot(snapshot)
@@ -1794,6 +2213,38 @@ class ApiRunService:
             "dashboard_disabled": "dashboard_disabled",
         }
         return mapping.get(normalized, normalized or "unknown")
+
+    @staticmethod
+    def _operator_delivery_no_loss_state(
+        *,
+        status: str | None,
+        last_error: str | None,
+        delivery_guarantee: str | None,
+        visible_failure_required: bool,
+        failure_notice_sent: bool,
+        dead_letter_artifact_path: str | None,
+    ) -> str:
+        normalized_status = str(status or "none").strip().lower()
+        normalized_guarantee = str(delivery_guarantee or "").strip().lower()
+        if normalized_status in {"", "none"}:
+            return "none"
+        if normalized_status == OperatorDeliveryStatus.DELIVERED.value:
+            return "ok"
+        if normalized_status == OperatorDeliveryStatus.PENDING.value and not last_error:
+            return "queued"
+        if normalized_status in {
+            OperatorDeliveryStatus.FAILED.value,
+            OperatorDeliveryStatus.SKIPPED.value,
+            OperatorDeliveryStatus.EXPIRED.value,
+        }:
+            if dead_letter_artifact_path:
+                return "attention"
+            return "breach" if normalized_guarantee in {"must_notify", "must_persist"} else "attention"
+        if visible_failure_required and last_error and not failure_notice_sent:
+            return "breach"
+        if last_error:
+            return "attention"
+        return "ok"
 
     def _is_legacy_api_run_branch(self, branch_name: Any) -> bool:
         normalized = str(branch_name or "").strip()
@@ -1840,6 +2291,11 @@ class ApiRunService:
         status_counts: dict[str, int] = {}
         review_counts: dict[str, int] = {}
         operator_delivery_counts: dict[str, int] = {}
+        operator_delivery_health_counts: dict[str, int] = {}
+        dead_letter_count = 0
+        replayable_count = 0
+        visible_failure_gap_count = 0
+        artifact_delivery_count = 0
         for item in visible_runs:
             status_key = str(item.get("status") or "unknown")
             status_counts[status_key] = status_counts.get(status_key, 0) + 1
@@ -1847,6 +2303,16 @@ class ApiRunService:
             review_counts[review_key] = review_counts.get(review_key, 0) + 1
             delivery_key = str(item.get("operator_delivery_status") or "none")
             operator_delivery_counts[delivery_key] = operator_delivery_counts.get(delivery_key, 0) + 1
+            health_key = str(item.get("operator_delivery_no_loss_state") or "none")
+            operator_delivery_health_counts[health_key] = operator_delivery_health_counts.get(health_key, 0) + 1
+            if item.get("operator_delivery_dead_letter_artifact_path"):
+                dead_letter_count += 1
+            if item.get("operator_delivery_replayable"):
+                replayable_count += 1
+            if health_key == "breach":
+                visible_failure_gap_count += 1
+            if item.get("operator_delivery_response_mode") == "artifact_summary":
+                artifact_delivery_count += 1
 
         sanitized = dict(snapshot)
         sanitized["current_run"] = current_run
@@ -1855,6 +2321,25 @@ class ApiRunService:
         sanitized["status_counts"] = status_counts
         sanitized["review_counts"] = review_counts
         sanitized["operator_delivery_counts"] = operator_delivery_counts
+        sanitized["operator_delivery_health"] = {
+            "status": "breach"
+            if visible_failure_gap_count > 0
+            else ("attention" if operator_delivery_health_counts.get("attention", 0) > 0 else "ok"),
+            "counts": operator_delivery_health_counts,
+            "dead_letter_count": dead_letter_count,
+            "replayable_count": replayable_count,
+            "visible_failure_gap_count": visible_failure_gap_count,
+            "artifact_delivery_count": artifact_delivery_count,
+        }
+        sanitized["no_loss_audit"] = {
+            "status": "breach"
+            if visible_failure_gap_count > 0
+            else ("attention" if dead_letter_count > 0 else "ok"),
+            "silent_loss_risk_count": visible_failure_gap_count,
+            "dead_letter_count": dead_letter_count,
+            "replayable_count": replayable_count,
+            "artifact_delivery_count": artifact_delivery_count,
+        }
         sanitized["legacy_hidden"] = {
             "run_count": hidden_run_count,
             "contract_count": hidden_contract_count,
@@ -3392,8 +3877,15 @@ class ApiRunService:
             )
         else:
             self._prune_pending_operator_deliveries(incoming_channel_hint=event.channel_hint, connection=connection)
-        if translated_message is not None and self._should_enqueue_operator_delivery(incoming_channel_hint=event.channel_hint, connection=connection):
-            delivery_payload = self._build_operator_delivery_payload(event, translated_message=translated_message)
+        if translated_message is not None:
+            delivery_guarantee = self._delivery_guarantee_for_kind(kind, channel_hint=event.channel_hint)
+            backlog_state = self._operator_delivery_backlog_state(connection=connection)
+            delivery_payload = self._build_operator_delivery_payload(
+                event,
+                translated_message=translated_message,
+                delivery_guarantee=delivery_guarantee,
+                backlog_state=backlog_state,
+            )
             delivery = OperatorDelivery(
                 delivery_id=new_id("operator_delivery"),
                 lifecycle_event_id=event.lifecycle_event_id,
@@ -3402,22 +3894,19 @@ class ApiRunService:
                 channel_hint=event.channel_hint,
                 status=OperatorDeliveryStatus.PENDING,
                 payload=delivery_payload,
-                metadata={"run_id": run_id, "kind": kind.value},
+                metadata={
+                    "run_id": run_id,
+                    "kind": kind.value,
+                    "delivery_guarantee": delivery_guarantee.value,
+                    "delivery_priority_rank": self._operator_delivery_guarantee_rank(delivery_guarantee),
+                    "replayable": True,
+                    "backlog_soft_limit_exceeded": backlog_state["soft_limit_exceeded"],
+                    "pending_backlog_count": backlog_state["pending_count"],
+                    "pending_backlog_limit": backlog_state["max_pending"],
+                },
                 next_attempt_at=event.created_at,
             )
             self._persist_operator_delivery(delivery, connection=connection)
-        elif translated_message is not None:
-            self.journal.append(
-                "api_run_operator_delivery_skipped",
-                "api_runs",
-                {
-                    "lifecycle_event_id": event.lifecycle_event_id,
-                    "run_id": run_id,
-                    "kind": kind.value,
-                    "channel_hint": event.channel_hint.value,
-                    "reason": "pending_backlog_limit",
-                },
-            )
         self.journal.append(
             "api_run_lifecycle_event_created",
             "api_runs",
@@ -3448,14 +3937,30 @@ class ApiRunService:
             return OperatorChannelHint.INCIDENTS
         return OperatorChannelHint.RUNS_LIVE
 
-    def _build_operator_delivery_payload(self, event: RunLifecycleEvent, *, translated_message: str | None = None) -> dict[str, Any]:
+    def _build_operator_delivery_payload(
+        self,
+        event: RunLifecycleEvent,
+        *,
+        translated_message: str | None = None,
+        delivery_guarantee: OperatorDeliveryGuarantee,
+        backlog_state: dict[str, Any],
+    ) -> dict[str, Any]:
         text = translated_message or self._render_operator_delivery_text(event)
         return {
-            "version": "v1",
+            "version": "v2",
             "surface": "discord",
             "channel_hint": event.channel_hint.value,
             "text": text,
             "translated_message": text,
+            "delivery_guarantee": delivery_guarantee.value,
+            "delivery_priority_rank": self._operator_delivery_guarantee_rank(delivery_guarantee),
+            "delivery_contract": {
+                "replayable": True,
+                "visible_failure_required": delivery_guarantee
+                in {OperatorDeliveryGuarantee.MUST_NOTIFY, OperatorDeliveryGuarantee.MUST_PERSIST},
+                "must_persist": delivery_guarantee is OperatorDeliveryGuarantee.MUST_PERSIST,
+                "soft_backlog_limit_exceeded": bool(backlog_state.get("soft_limit_exceeded")),
+            },
             "card": {
                 "title": event.title,
                 "summary": event.summary,
@@ -3500,11 +4005,17 @@ class ApiRunService:
         incoming_channel_hint: OperatorChannelHint,
         connection: sqlite3.Connection | None = None,
     ) -> bool:
+        del incoming_channel_hint, connection
+        return True
+
+    def _operator_delivery_backlog_state(self, *, connection: sqlite3.Connection | None = None) -> dict[str, Any]:
         max_pending = max(1, int(getattr(self.execution_policy, "operator_delivery_max_pending", 64)))
         pending_count = self._pending_operator_delivery_count(connection=connection)
-        if pending_count < max_pending:
-            return True
-        return incoming_channel_hint is not OperatorChannelHint.RUNS_LIVE
+        return {
+            "soft_limit_exceeded": pending_count >= max_pending,
+            "pending_count": pending_count,
+            "max_pending": max_pending,
+        }
 
     def _prune_pending_operator_deliveries(
         self,
@@ -3512,45 +4023,19 @@ class ApiRunService:
         incoming_channel_hint: OperatorChannelHint,
         connection: sqlite3.Connection | None = None,
     ) -> int:
-        max_pending = max(1, int(getattr(self.execution_policy, "operator_delivery_max_pending", 64)))
-        pending_count = self._pending_operator_delivery_count(connection=connection)
-        if pending_count < max_pending:
+        backlog_state = self._operator_delivery_backlog_state(connection=connection)
+        if not backlog_state["soft_limit_exceeded"]:
             return 0
-        overflow = pending_count - max_pending + 1
-        prune_rows = self.database.fetchall(
-            """
-            SELECT delivery_id
-            FROM api_run_operator_deliveries
-            WHERE status = ? AND channel_hint = ?
-            ORDER BY created_at ASC
-            LIMIT ?
-            """,
-            (
-                OperatorDeliveryStatus.PENDING.value,
-                OperatorChannelHint.RUNS_LIVE.value,
-                overflow,
-            ),
-            connection=connection,
+        self.journal.append(
+            "api_run_operator_delivery_backlog_soft_limit_exceeded",
+            "api_runs",
+            {
+                "incoming_channel_hint": incoming_channel_hint.value,
+                "pending_count": backlog_state["pending_count"],
+                "pending_limit": backlog_state["max_pending"],
+            },
         )
-        if not prune_rows:
-            return 0
-        pruned_at = datetime.now(timezone.utc).isoformat()
-        for row in prune_rows:
-            self.database.execute(
-                """
-                UPDATE api_run_operator_deliveries
-                SET status = ?, last_error = ?, next_attempt_at = NULL, updated_at = ?
-                WHERE delivery_id = ?
-                """,
-                (
-                    OperatorDeliveryStatus.SKIPPED.value,
-                    f"pending_backlog_limit:{incoming_channel_hint.value}",
-                    pruned_at,
-                    str(row["delivery_id"]),
-                ),
-                connection=connection,
-            )
-        return len(prune_rows)
+        return 0
 
     def _refresh_live_snapshot(self, *, limit: int = 8) -> None:
         try:
