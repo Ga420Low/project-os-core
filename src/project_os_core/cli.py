@@ -22,6 +22,7 @@ from .models import (
     ChannelEvent,
     ConversationThreadRef,
     DecisionStatus,
+    MemoryLayer,
     MemoryTier,
     MemoryType,
     MissionIntent,
@@ -32,6 +33,7 @@ from .models import (
     RetrievalContext,
     RuntimeState,
     RuntimeVerdict,
+    ThoughtMemoryStatus,
     new_id,
     to_jsonable,
 )
@@ -87,15 +89,72 @@ def main(argv: list[str] | None = None) -> int:
     memory_search.add_argument("--query", required=True)
     memory_search.add_argument("--project-id")
     memory_search.add_argument("--mission-id")
+    memory_search.add_argument("--branch-name")
+    memory_search.add_argument("--target-profile")
+    memory_search.add_argument("--requested-worker")
+    memory_search.add_argument("--channel")
+    memory_search.add_argument("--surface")
+    memory_search.add_argument("--thread-id")
+    memory_search.add_argument("--external-thread-id")
+    memory_search.add_argument("--conversation-key")
     memory_search.add_argument("--tag", action="append", default=[])
     memory_search.add_argument("--limit", type=int, default=5)
     memory_search.add_argument("--include-private-full", action="store_true")
+    memory_search.add_argument("--metadata")
 
     memory_sub.add_parser("reindex")
     memory_sub.add_parser("tier-report")
     memory_compact = memory_sub.add_parser("compact-tiers")
     memory_compact.add_argument("--dry-run", action="store_true")
     memory_compact.add_argument("--trigger", default="manual")
+    memory_blocks_list = memory_sub.add_parser("blocks-list")
+    memory_blocks_list.add_argument("--limit", type=int, default=50)
+    memory_block_get = memory_sub.add_parser("block-get")
+    memory_block_get.add_argument("--block-name", required=True)
+    memory_block_write = memory_sub.add_parser("block-write")
+    memory_block_write.add_argument("--block-name", required=True)
+    memory_block_write.add_argument("--content", required=True)
+    memory_block_write.add_argument("--owner-role", default="memory_curator")
+    memory_block_write.add_argument("--updated-by-role", default="system")
+    memory_block_write.add_argument("--updated-by-run-id")
+    memory_block_write.add_argument("--reason", default="manual")
+    memory_block_write.add_argument("--metadata")
+    memory_recall_plan = memory_sub.add_parser("recall-plan")
+    memory_recall_plan.add_argument("--user-id", required=True)
+    memory_recall_plan.add_argument("--query", required=True)
+    memory_recall_plan.add_argument("--project-id")
+    memory_recall_plan.add_argument("--mission-id")
+    memory_recall_plan.add_argument("--branch-name")
+    memory_recall_plan.add_argument("--target-profile")
+    memory_recall_plan.add_argument("--requested-worker")
+    memory_recall_plan.add_argument("--channel")
+    memory_recall_plan.add_argument("--surface")
+    memory_recall_plan.add_argument("--thread-id")
+    memory_recall_plan.add_argument("--external-thread-id")
+    memory_recall_plan.add_argument("--conversation-key")
+    memory_recall_plan.add_argument("--tag", action="append", default=[])
+    memory_recall_plan.add_argument("--limit", type=int, default=5)
+    memory_recall_plan.add_argument("--include-private-full", action="store_true")
+    memory_recall_plan.add_argument("--metadata")
+    memory_cubes = memory_sub.add_parser("cubes-list")
+    memory_cubes.add_argument("--layer", choices=[item.value for item in MemoryLayer])
+    memory_cubes.add_argument("--kind")
+    memory_cubes.add_argument("--limit", type=int, default=20)
+    memory_thoughts = memory_sub.add_parser("thoughts-list")
+    memory_thoughts.add_argument("--status", choices=[item.value for item in ThoughtMemoryStatus])
+    memory_thoughts.add_argument("--limit", type=int, default=20)
+    memory_curator_run = memory_sub.add_parser("curator-run")
+    memory_curator_run.add_argument("--trigger", default="manual")
+    memory_curator_run.add_argument("--lookback-hours", type=int)
+    memory_curator_run.add_argument("--async", dest="async_mode", action="store_true")
+    memory_curator_runs = memory_sub.add_parser("curator-runs")
+    memory_curator_runs.add_argument("--limit", type=int, default=20)
+    memory_sub.add_parser("dual-profile")
+    memory_graph = memory_sub.add_parser("graph-facts")
+    memory_graph.add_argument("--entity", required=True)
+    memory_graph.add_argument("--relation")
+    memory_graph.add_argument("--at-time")
+    memory_graph.add_argument("--limit", type=int, default=10)
 
     runtime_parser = subparsers.add_parser("runtime")
     runtime_sub = runtime_parser.add_subparsers(dest="runtime_command", required=True)
@@ -183,6 +242,8 @@ def main(argv: list[str] | None = None) -> int:
     openclaw_live.add_argument("--channel", required=True)
     openclaw_live.add_argument("--payload-file")
     openclaw_live.add_argument("--max-age-hours", type=int)
+    openclaw_self_heal = openclaw_sub.add_parser("self-heal")
+    openclaw_self_heal.add_argument("--ignore-cooldown", action="store_true")
 
     orchestration_parser = subparsers.add_parser("orchestration")
     orchestration_sub = orchestration_parser.add_subparsers(dest="orchestration_command", required=True)
@@ -397,9 +458,18 @@ def main(argv: list[str] | None = None) -> int:
                     user_id=args.user_id,
                     project_id=args.project_id,
                     mission_id=args.mission_id,
+                    branch_name=args.branch_name,
+                    target_profile=args.target_profile,
+                    requested_worker=args.requested_worker,
+                    channel=args.channel,
+                    surface=args.surface,
+                    thread_id=args.thread_id,
+                    external_thread_id=args.external_thread_id,
+                    conversation_key=args.conversation_key,
                     tags=args.tag,
                     limit=args.limit,
                     include_private_full=bool(args.include_private_full),
+                    metadata=_json_arg(args.metadata),
                 )
                 print(json.dumps(services.memory.search(context), indent=2, ensure_ascii=True, sort_keys=True))
                 return 0
@@ -421,6 +491,95 @@ def main(argv: list[str] | None = None) -> int:
                         sort_keys=True,
                     )
                 )
+                return 0
+            if args.memory_command == "blocks-list":
+                payload = services.memory_blocks.list_blocks()[: max(1, min(int(args.limit), 100))]
+                print(json.dumps([to_jsonable(item) for item in payload], indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.memory_command == "block-get":
+                block = services.memory_blocks.get_block(args.block_name)
+                block.content = services.memory_blocks.read_block_content(
+                    block.block_name,
+                    reader_role="system",
+                    surface="cli",
+                )
+                print(json.dumps(to_jsonable(block), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.memory_command == "block-write":
+                block = services.memory_blocks.upsert_block(
+                    block_name=args.block_name,
+                    content=args.content,
+                    owner_role=args.owner_role,
+                    updated_by_role=args.updated_by_role,
+                    updated_by_run_id=args.updated_by_run_id,
+                    reason=args.reason,
+                    provenance=["cli:block-write"],
+                    metadata=_json_arg(args.metadata),
+                    surface="cli",
+                )
+                print(json.dumps(to_jsonable(block), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.memory_command == "recall-plan":
+                context = RetrievalContext(
+                    query=args.query,
+                    user_id=args.user_id,
+                    project_id=args.project_id,
+                    mission_id=args.mission_id,
+                    branch_name=args.branch_name,
+                    target_profile=args.target_profile,
+                    requested_worker=args.requested_worker,
+                    channel=args.channel,
+                    surface=args.surface,
+                    thread_id=args.thread_id,
+                    external_thread_id=args.external_thread_id,
+                    conversation_key=args.conversation_key,
+                    tags=args.tag,
+                    limit=args.limit,
+                    include_private_full=bool(args.include_private_full),
+                    metadata=_json_arg(args.metadata),
+                )
+                payload = services.memory_os.build_recall_plan(context=context, reason="cli")
+                print(json.dumps(to_jsonable(payload), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.memory_command == "cubes-list":
+                cubes = services.memory_os.list_cubes(
+                    layer=MemoryLayer(args.layer) if args.layer else None,
+                    kind=args.kind,
+                    limit=args.limit,
+                )
+                print(json.dumps([to_jsonable(item) for item in cubes], indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.memory_command == "thoughts-list":
+                thoughts = services.thoughts.list_thoughts(
+                    status=ThoughtMemoryStatus(args.status) if args.status else None,
+                    limit=args.limit,
+                )
+                print(json.dumps([to_jsonable(item) for item in thoughts], indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.memory_command == "curator-run":
+                payload = services.curator.run_sleeptime(
+                    trigger=str(args.trigger),
+                    async_mode=bool(args.async_mode),
+                    lookback_hours=args.lookback_hours,
+                )
+                print(json.dumps(to_jsonable(payload), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.memory_command == "curator-runs":
+                payload = services.curator.list_runs(limit=args.limit)
+                print(json.dumps([to_jsonable(item) for item in payload], indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.memory_command == "dual-profile":
+                payload = services.memory_os.dual_layer_profile()
+                print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.memory_command == "graph-facts":
+                payload = services.temporal_graph.facts_for(
+                    entity=args.entity,
+                    relation=args.relation,
+                    at_time=args.at_time,
+                    limit=args.limit,
+                )
+                print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
                 return 0
 
         if args.command == "runtime":
@@ -563,6 +722,10 @@ def main(argv: list[str] | None = None) -> int:
                 report = services.openclaw.validate_live(channel=args.channel, payload_file=args.payload_file, max_age_hours=args.max_age_hours)
                 print(json.dumps(to_jsonable(report), indent=2, ensure_ascii=True, sort_keys=True))
                 return 0 if report.success else 1
+            if args.openclaw_command == "self-heal":
+                report = services.openclaw.self_heal(ignore_cooldown=bool(args.ignore_cooldown))
+                print(json.dumps(to_jsonable(report), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0 if report.status != "failed" else 1
 
         if args.command == "orchestration" and args.orchestration_command == "simulate":
             intent = _router_intent_from_args(args)
@@ -1060,6 +1223,13 @@ def _execute_scheduler_task(services, command: str, args_dict: dict[str, Any]) -
             ),
         )
         return {"expired_count": int(cursor.rowcount or 0), "cutoff": cutoff}
+    if command == "memory_curator_sleeptime":
+        return services.curator.run_sleeptime(trigger=str(args_dict.get("trigger", "scheduled")), async_mode=False)
+    if command == "memory_block_refresh":
+        payload = services.memory_blocks.refresh_runtime_blocks()
+        return payload
+    if command == "memory_supersession_scan":
+        return services.thoughts.scan_for_supersession()
     if command == "github_issue_learning_sync":
         return services.github.sync_learning(limit=int(args_dict.get("limit", 100)))
     raise RuntimeError(f"Unknown scheduled command: {command}")

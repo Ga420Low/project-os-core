@@ -1,37 +1,77 @@
 # Memory, Storage and Ops Blueprint
 
-Ce document fige la strategie de memoire locale, de stockage physique et d'observabilite de Project OS.
+Ce document fige la memoire locale actuelle de `Project OS`: ce qui fait foi, ce qui sert au retrieval, ce qui est seulement inspiration, et ce qui reste un upgrade path.
 
 ## Objectif
 
 Eviter la memoire de mouche.
-Construire une memoire locale durable, inspectable, portable et extensible.
+Construire une memoire locale durable, inspectable, traçable, portable et extensible sans deplacer la verite hors du repo ou hors de la machine.
 
 ## Principe
 
 La memoire de l'agent doit vivre sur le poste.
-OpenAI sert au raisonnement, pas au stockage durable du contexte.
+Les APIs servent au raisonnement et a la consolidation, pas au stockage durable du contexte.
 
-## Pile retenue
+## Architecture actuelle
 
-- `OpenMemory`
-  - role: moteur memoire primaire local-first
+Le systeme memoire livre est maintenant compose de ces couches:
+
 - `SQLite`
-  - role: source de verite locale pour l'etat, la memoire indexee et les pointeurs d'artefacts
+  - role: verite canonique locale
+  - porte: `memory_records`, `decision_records`, `learning_signals`, `channel_events`, `gateway_dispatch_results`, `api_run_*`
+- `OpenMemory`
+  - role: sidecar retrieval local-first compatible
+  - statut: moteur secondaire utile, pas verite canonique
 - `sqlite-vec`
-  - role: recherche vectorielle embarquee et portable
+  - role: retrieval vectoriel embarque pour les `memory_records`
+- `Retrieval Sidecar`
+  - role: query expansion, session recall, temporal decay, MMR
+- `Memory OS substrate`
+  - role: couche d'exploitation memoire au-dessus du canonique
+  - objets: `MemCube`, `MemoryBlock`, `ThoughtMemory`, `RecallPlan`, `SupersessionRecord`
+- `Shared Memory Blocks`
+  - role: blocs partages type Letta pour `guardian`, `discord`, `curator`, `UEFN`
+- `Sleeptime Curator`
+  - role: consolidation asynchrone et generation de memoire de conclusions
+- `Temporal Graph Sidecar`
+  - role: reasoning temporel local
+  - backend courant: `sqlite shadow`
+  - backend cible: `kuzu embedded`
 - `fichiers locaux`
-  - role: screenshots, preuves, rapports, journaux, archives
-- `Letta`
-  - role: backup de comparaison et reference de benchmark
-- `Langfuse`
-  - role: observabilite LLM, traces, datasets, evals
-- `OpenTelemetry`
-  - role: traces techniques, logs, metriques
+  - role: preuves, captures, rapports, revisions de blocs, artefacts, archives
 - `Infisical`
   - role: secrets et configuration sensible
+- `OpenTelemetry hooks`
+  - role: point d'extension de tracing; la persistance locale des traces est deja active
+
+## Ce qui fait foi
+
+La verite memoire reste repartie ainsi:
+
+- `memory_records` = episodes/promotions compatibles avec l'existant
+- `decision_records` = decisions confirmees ou changees
+- `learning_signals` = signaux d'apprentissage
+- `channel_events` et `gateway_dispatch_results` = historique operateur
+- `api_run_*` = historique des runs
+- `MemCube` et `ThoughtMemory` = couche d'exploitation memoire, pas seconde verite metier
+- `MemoryBlock` = blocs partages et consolidations durables
 
 ## Etat reel actuel
+
+Ce qui est effectivement livre dans le repo:
+
+- `Memory OS` local branche
+- `MemCube`, `MemoryBlock`, `ThoughtMemory`, `RecallPlan`, `SupersessionRecord` poses
+- blocs partages versionnes localement dans le runtime
+- recall enrichi par `thought memories`
+- profils dual-layer:
+  - `founder_stable_profile`
+  - `recent_operating_context`
+- `Sleeptime Curator` async avec fallback deterministe
+- supersession tracee et non destructive
+- temporal graph sidecar local avec fallback `sqlite shadow`
+- traces memoire locales persistantes
+- commandes CLI memoire dediees
 
 La couche secrets et ops locale est maintenant branchee de cette facon:
 
@@ -42,25 +82,40 @@ La couche secrets et ops locale est maintenant branchee de cette facon:
 - le mode runtime local est `infisical_required`
 - `doctor --strict` confirme cette contrainte
 
-Le fallback local hors repo reste disponible comme filet de developpement, mais il n'est plus la source attendue du systeme.
+## Inspirations retenues
+
+Ce qui a ete explicitement vole comme pattern, sans deplacer la souverainete:
+
+- `Letta`
+  - shared blocks
+  - sleeptime curator
+- `TiM`
+  - memoire de conclusions plutot que logs bruts
+- `Supermemory`
+  - supersession non destructive
+- `HippoRAG / retrieval papers`
+  - rerank, diversification, recall contextuel
+- `Graphiti`
+  - direction pour la lane temporelle, sans migration prematuree
 
 ## Candidats surveilles
 
+- `MemOS`
+  - statut: reference architecturale, pas composant a integrer tel quel
+- `Graphiti`
+  - statut: candidat fort pour une lane graph plus riche si la douleur devient reelle
+- `A-MEM`
+  - statut: candidat pour enrichissement bidirectionnel des memories
 - `Mem0`
   - statut: candidat secondaire
-  - raison: bonne couche memoire universelle, plus SDK que noyau
 - `Zep`
   - statut: candidat secondaire
-  - raison: memoire + knowledge graph
 - `Qdrant`
-  - statut: upgrade path
-  - raison: moteur vectoriel plus costaud si l'echelle depasse `sqlite-vec`
+  - statut: upgrade path si `sqlite-vec` devient trop court
 - `LanceDB`
-  - statut: upgrade path
-  - raison: stockage multimodal et versionne
+  - statut: upgrade path pour stockage multimodal/versionne
 - `Temporal`
-  - statut: upgrade path
-  - raison: execution durable niveau entreprise
+  - statut: upgrade path pour orchestration durable niveau entreprise
 
 ## Niveaux de memoire
 
@@ -165,21 +220,18 @@ Cette politique est proactive:
 - le systeme doit anticiper ce qui merite d'etre retenu
 - le systeme doit chercher ce qui manque quand il sent qu'il s'appauvrit
 
-## Decision pour les 6 prochains mois
+## Decision pour les prochains lots
 
-On construit:
+La direction retenue est:
 
-- `OpenMemory + SQLite + sqlite-vec + fichiers locaux`
-- `Langfuse + OpenTelemetry + Infisical`
+- garder `Project OS` proprietaire de la memoire canonique
+- garder `OpenClaw` en surface/transport
+- continuer a enrichir `Memory OS` local
+- ne pas introduire de seconde verite memoire parallele
 
-On surveille:
+Les prochains gains memoire les plus probables sont:
 
-- `Letta`
-- `Mem0`
-- `Zep`
-
-On garde comme upgrade path:
-
-- `Temporal`
-- `Qdrant`
-- `LanceDB`
+- richer temporal graph si `sqlite shadow` plafonne
+- meilleurs thoughts merges / forget lifecycle
+- instrumentation `OpenTelemetry` plus riche
+- injections de lessons learned plus directes dans les gros runs

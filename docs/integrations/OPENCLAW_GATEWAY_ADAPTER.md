@@ -34,6 +34,59 @@ Puis le plugin:
 3. appelle `Project OS` via CLI
 4. laisse `Project OS` prendre toutes les decisions
 
+Diagramme canonique:
+
+```mermaid
+flowchart LR
+    A["Discord message"] --> B["OpenClaw (transport, thread, presence, approvals)"]
+    B --> C["Project OS ingress adapter"]
+    C --> D["Project OS runtime truth"]
+    D --> E{"Routing"}
+    E --> F["Claude API"]
+    E --> G["GPT API"]
+    E --> H["Ollama local (S3)"]
+    F --> I["Project OS final reply"]
+    G --> I
+    H --> I
+    I --> B
+    B --> J["Discord visible reply"]
+```
+
+Lecture imposee:
+
+- `OpenClaw` porte la surface et le transport
+- `Project OS` garde la verite, la memoire et le routage
+- `Claude API` peut etre le moteur de discussion principal, sans devenir une seconde identite publique
+- la voix visible sur Discord doit rester `Project OS`
+
+## Overrides de provider
+
+L'adapter d'entree accepte maintenant des prefixes operateur simples au debut du message:
+
+- `CLAUDE`
+- `GPT`
+- `LOCAL`
+- `OLLAMA`
+
+Effet canonique:
+
+1. le prefixe est detecte au niveau ingress
+2. le texte est nettoye avant d'entrer dans le routeur
+3. les metadata runtime gardent:
+   - `requested_provider`
+   - `requested_model_family`
+   - `requested_route_mode`
+   - `message_prefix_consumed`
+   - `raw_operator_text`
+   - `normalized_operator_text`
+4. `Project OS` decide ensuite avec la regle dure `S3 > override > auto`
+
+Cette grammaire ne cree pas une seconde personnalite:
+
+- `OpenClaw` ne pense toujours pas a cote
+- `Project OS` reste la seule voix publique
+- le prefixe ne fait que choisir la lane de modele pour ce tour
+
 ## Fichiers du lot
 
 - `src/project_os_core/gateway/openclaw_adapter.py`
@@ -208,6 +261,37 @@ La verite live Windows retenue est:
 - `rpc.ok = true` si disponible
 - absence de fallback `Startup`
 - projection `discord_thread_bindings` visible dans le runtime des qu'un event Discord recent existe
+
+## Self-heal et watchdog
+
+Un message Discord ne peut pas reveiller un gateway mort: si le listener local est casse, le message n'atteint deja plus la machine.
+La reparation doit donc partir du poste lui-meme.
+
+Commande canonique manuelle:
+
+```powershell
+py D:/ProjectOS/project-os-core/scripts/project_os_entry.py --config-path D:/ProjectOS/project-os-core/config/storage_roots.local.json --policy-path D:/ProjectOS/project-os-core/config/runtime_policy.local.json openclaw self-heal
+```
+
+Cette commande:
+
+1. lit la verite utile (`service.loaded`, `port.status`, `rpc.ok`)
+2. ne fait rien si le gateway est deja sain
+3. tente `gateway restart`
+4. tente `gateway start` si le restart n'a pas suffi
+5. ecrit un rapport runtime dans `runtime/openclaw/live/latest_self_heal.json`
+
+Installation canonique du watchdog Windows utilisateur:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File D:/ProjectOS/project-os-core/scripts/project_os_install_openclaw_watchdog.ps1 -RunNow
+```
+
+Mode retenu sur le poste Windows:
+
+- supervision periodique toutes les `2 minutes` via `schtasks`
+- relance au logon via le dossier `Startup` si Windows refuse un vrai trigger `AtLogOn`
+- cooldown de reparation pour eviter les boucles de restart
 
 ## Replay retenu
 

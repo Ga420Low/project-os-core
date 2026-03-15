@@ -32,14 +32,16 @@ Fournir un workflow de `board` visible mais discipline dans `Discord`:
 
 Salons permanents:
 
-- `#pilotage` -> discussion fondatrice, ouverture de reunion, recap compact
+- `#general` -> discussion fondatrice, ouverture de reunion, recap compact
+- `#pilotage` -> surface legacy/transitoire encore acceptee
 - `#runs-live` -> cartes de run, signaux de progression, lien vers un thread si necessaire
 - `#approvals` -> validations sensibles et decisions a risque
 - `#incidents` -> incidents reels, reprises et pre-mortems operationnels
 
 Surface de reunion:
 
-- threads ouverts depuis `#pilotage`
+- threads ouverts depuis `#general` en priorite
+- threads ouverts depuis `#pilotage` pendant la transition
 - threads ouverts depuis `#incidents` seulement pour un incident actif
 
 ## Identites logiques autorisees
@@ -93,21 +95,21 @@ Voir:
 
 ## Cycle de vie de reunion
 
-1. demande recue dans `#pilotage`
+1. demande recue dans `#general` par defaut
 2. `Moderator` ouvre un thread
 3. brief canonique poste
 4. une reponse initiale par angle
 5. round de contradictions ciblees
 6. synthese finale
 7. decision fondateur
-8. synthese humaine finale republiquee dans `#pilotage`
+8. synthese humaine finale republiquee dans `#general`
 9. si sensible, miroir dans `#approvals`
 
 ## Profils de sortie Discord
 
 - `notification_card`: cartes courtes de `#runs-live` et notifications operateur courantes, 3 lignes max
 - `meeting_thread`: thread visible de deliberation multi-angles, format structure, pas de limite fixe en lignes
-- `founder_synthesis`: recap final dans `#pilotage`, concis mais non borne a 3 lignes si le sujet demande plus de contexte
+- `founder_synthesis`: recap final dans `#general`, concis mais non borne a 3 lignes si le sujet demande plus de contexte
 
 La regle `3 lignes max` ne s'applique qu'aux `notification_card`.
 

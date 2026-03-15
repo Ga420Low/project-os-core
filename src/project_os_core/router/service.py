@@ -446,6 +446,16 @@ class MissionRouter:
                 reason_override="s3_policy_override_api",
             )
 
+        forced_provider = str(intent.metadata.get("requested_provider") or "").strip().lower()
+        if forced_provider:
+            return self._forced_provider_route(
+                requested_provider=forced_provider,
+                mission_cost_class=mission_cost_class,
+                budget_state=budget_state,
+                approval_gate=approval_gate,
+                model_health=model_health,
+            )
+
         if (
             intent.channel == "discord"
             and mission_cost_class is CostClass.CHEAP
@@ -540,6 +550,80 @@ class MissionRouter:
             route_tier=ModelRouteClass.API,
             allowed=True,
             reason="standard_route",
+        )
+
+    def _forced_provider_route(
+        self,
+        *,
+        requested_provider: str,
+        mission_cost_class: CostClass,
+        budget_state: BudgetState,
+        approval_gate: ApprovalGate,
+        model_health: dict[str, Any],
+    ) -> ModelRoute:
+        if requested_provider == "anthropic":
+            if not self.secret_resolver.get_optional("ANTHROPIC_API_KEY"):
+                return ModelRoute(
+                    provider="anthropic",
+                    model=self.execution_policy.discord_simple_model,
+                    reasoning_effort=self.execution_policy.discord_simple_reasoning_effort,
+                    route_class=mission_cost_class,
+                    route_tier=ModelRouteClass.API,
+                    allowed=False,
+                    reason="operator_forced_anthropic_unavailable",
+                )
+            return ModelRoute(
+                provider="anthropic",
+                model=self.execution_policy.discord_simple_model,
+                reasoning_effort=self.execution_policy.discord_simple_reasoning_effort,
+                route_class=mission_cost_class,
+                route_tier=ModelRouteClass.API,
+                allowed=True,
+                reason="operator_forced_anthropic_route",
+            )
+        if requested_provider == "openai":
+            if not self.secret_resolver.get_optional("OPENAI_API_KEY"):
+                return ModelRoute(
+                    provider="openai",
+                    model=self.execution_policy.default_model,
+                    reasoning_effort=self.execution_policy.default_reasoning_effort,
+                    route_class=mission_cost_class,
+                    route_tier=ModelRouteClass.API,
+                    allowed=False,
+                    reason="operator_forced_openai_unavailable",
+                )
+            return self._api_model_route(
+                mission_cost_class=mission_cost_class,
+                budget_state=budget_state,
+                approval_gate=approval_gate,
+                reason_override="operator_forced_openai_route",
+            )
+        if requested_provider == "local":
+            if model_health["tiers"][ModelRouteClass.LOCAL.value]["status"] == "ready":
+                return ModelRoute(
+                    provider="local",
+                    model=self.execution_policy.local_model_name,
+                    reasoning_effort=self.execution_policy.local_model_reasoning_effort,
+                    route_class=mission_cost_class,
+                    route_tier=ModelRouteClass.LOCAL,
+                    allowed=True,
+                    reason="operator_forced_local_route",
+                )
+            return ModelRoute(
+                provider="local",
+                model=self.execution_policy.local_model_name if self.execution_policy.local_model_enabled else None,
+                reasoning_effort=self.execution_policy.local_model_reasoning_effort
+                if self.execution_policy.local_model_enabled
+                else None,
+                route_class=mission_cost_class,
+                route_tier=ModelRouteClass.LOCAL,
+                allowed=False,
+                reason="operator_forced_local_unavailable",
+            )
+        return self._api_model_route(
+            mission_cost_class=mission_cost_class,
+            budget_state=budget_state,
+            approval_gate=approval_gate,
         )
 
     @staticmethod

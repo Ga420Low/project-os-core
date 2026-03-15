@@ -37,6 +37,9 @@ class ProjectPaths:
     learning_root: Path
     learning_decision_records_root: Path
     learning_deferred_log_path: Path
+    memory_os_root: Path
+    memory_blocks_root: Path
+    memory_graph_root: Path
     api_runs_terminal_snapshot_path: Path
     openclaw_reports_root: Path
     openclaw_replay_root: Path
@@ -47,6 +50,7 @@ class ProjectPaths:
     openclaw_live_validation_report_path: Path
     openclaw_truth_health_report_path: Path
     openclaw_trust_audit_report_path: Path
+    openclaw_self_heal_report_path: Path
 
 
 def _path(value: str) -> Path:
@@ -90,6 +94,9 @@ def build_project_paths(config: RuntimeConfig) -> ProjectPaths:
         learning_root=runtime_root / "learning",
         learning_decision_records_root=runtime_root / "learning" / "decision_records",
         learning_deferred_log_path=runtime_root / "learning" / "deferred_decisions.jsonl",
+        memory_os_root=runtime_root / "memory_os",
+        memory_blocks_root=runtime_root / "memory_os" / "blocks",
+        memory_graph_root=runtime_root / "memory_os" / "graph",
         api_runs_terminal_snapshot_path=runtime_root / "api_runs" / "latest_terminal_snapshot.json",
         openclaw_reports_root=runtime_root / "openclaw" / "reports",
         openclaw_replay_root=runtime_root / "openclaw" / "replay",
@@ -100,6 +107,7 @@ def build_project_paths(config: RuntimeConfig) -> ProjectPaths:
         openclaw_live_validation_report_path=runtime_root / "openclaw" / "live" / "latest_live_validation.json",
         openclaw_truth_health_report_path=runtime_root / "openclaw" / "live" / "latest_truth_health.json",
         openclaw_trust_audit_report_path=runtime_root / "openclaw" / "live" / "latest_trust_audit.json",
+        openclaw_self_heal_report_path=runtime_root / "openclaw" / "live" / "latest_self_heal.json",
     )
 
 
@@ -174,6 +182,9 @@ def ensure_project_roots(paths: ProjectPaths) -> dict[str, str]:
         paths.api_runs_root,
         paths.learning_root,
         paths.learning_decision_records_root,
+        paths.memory_os_root,
+        paths.memory_blocks_root,
+        paths.memory_graph_root,
         paths.api_runs_terminal_snapshot_path.parent,
         paths.openclaw_reports_root,
         paths.openclaw_replay_root,

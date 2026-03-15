@@ -5,6 +5,7 @@ const DEFAULT_PYTHON_COMMAND = process.platform === "win32" ? "py" : "python3";
 const DEFAULT_CHANNELS = new Set(["discord", "webchat"]);
 const DEFAULT_OPERATOR_POLLING_INTERVAL_MS = 8000;
 const INGRESS_DEDUP_TTL_MS = 10 * 60 * 1000;
+const PENDING_DISCORD_REPLY_TTL_MS = 2 * 60 * 1000;
 const SAFE_ENV_KEYS = new Set([
   "APPDATA",
   "COMSPEC",
@@ -229,6 +230,107 @@ async function dispatchToProjectOs(api, payload, config) {
   return { result, parsed };
 }
 
+function resolveDiscordRestToken() {
+  const token = typeof process.env.DISCORD_BOT_TOKEN === "string" ? process.env.DISCORD_BOT_TOKEN.trim() : "";
+  return token || null;
+}
+
+function parseDiscordTarget(target) {
+  const raw = typeof target === "string" ? target.trim() : "";
+  if (!raw) {
+    return null;
+  }
+  if (raw.startsWith("channel:")) {
+    const channelId = raw.slice("channel:".length).trim();
+    return channelId ? { kind: "channel", channelId } : null;
+  }
+  if (raw.startsWith("user:")) {
+    const userId = raw.slice("user:".length).trim();
+    return userId ? { kind: "user", userId } : null;
+  }
+  return /^\d+$/.test(raw) ? { kind: "channel", channelId: raw } : null;
+}
+
+async function resolveDiscordRestChannelId(target, token) {
+  const parsed = parseDiscordTarget(target);
+  if (!parsed) {
+    throw new Error(`unsupported Discord target: ${String(target || "unknown")}`);
+  }
+  if (parsed.kind === "channel") {
+    return parsed.channelId;
+  }
+
+  const response = await fetch("https://discord.com/api/v10/users/@me/channels", {
+    method: "POST",
+    headers: {
+      Authorization: `Bot ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      recipient_id: parsed.userId,
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`discord dm open failed (${response.status}): ${body}`);
+  }
+  const payload = await response.json();
+  const channelId = typeof payload?.id === "string" ? payload.id.trim() : "";
+  if (!channelId) {
+    throw new Error("discord dm open returned no channel id");
+  }
+  return channelId;
+}
+
+function normalizeDiscordComponents(components) {
+  return Array.isArray(components) ? components : undefined;
+}
+
+async function sendDiscordMessageDirect(api, target, text, options = {}) {
+  const token = resolveDiscordRestToken();
+  if (!token) {
+    throw new Error("DISCORD_BOT_TOKEN is not available in the gateway process environment");
+  }
+
+  const channelId = await resolveDiscordRestChannelId(target, token);
+  const payload = {
+    content: String(text || ""),
+    allowed_mentions: {
+      parse: [],
+      replied_user: false,
+    },
+  };
+  if (typeof options.replyTo === "string" && options.replyTo.trim()) {
+    payload.message_reference = {
+      message_id: options.replyTo.trim(),
+      channel_id: channelId,
+      fail_if_not_exists: false,
+    };
+  }
+  const components = normalizeDiscordComponents(options.components);
+  if (components) {
+    payload.components = components;
+  }
+
+  const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/messages`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bot ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`discord message send failed (${response.status}): ${body}`);
+  }
+  const result = await response.json();
+  api.logger.info(
+    `[project-os-gateway-adapter] sent Project OS Discord reply target=${target} message_id=${String(result?.id || "unknown")}`
+  );
+  return result;
+}
+
 async function runProjectOsJsonCommand(api, config, extraArgs, input) {
   const result = await api.runtime.system.runCommandWithTimeout(buildCommandArgs(config, extraArgs), {
     timeoutMs: config.timeoutMs,
@@ -248,33 +350,112 @@ async function runProjectOsJsonCommand(api, config, extraArgs, input) {
   return { result, parsed };
 }
 
-async function maybeSendDiscordAck(api, event, ctx, parsed) {
-  if (!parsed?.operator_reply?.summary) {
+async function maybeSendDiscordImmediateReply(api, event, ctx, parsed, config) {
+  const pendingKey = rememberPendingDiscordReply(api, ctx, parsed, config);
+  const reply = parsed?.operator_reply;
+  if (!reply?.summary) {
     return;
   }
-
-  const metadata = event.metadata && typeof event.metadata === "object" ? event.metadata : {};
-  const senderId = typeof metadata.senderId === "string" && metadata.senderId ? metadata.senderId : event.from;
-  const messageId = typeof metadata.messageId === "string" ? metadata.messageId : undefined;
-  const isGroup = Boolean(metadata.guildId || metadata.threadId || metadata.channelName);
-
-  const conversationId = typeof ctx.conversationId === "string" ? ctx.conversationId.trim() : "";
-  const target = isGroup
-    ? (conversationId || undefined)
-    : senderId
-      ? `user:${senderId}`
-      : undefined;
-
+  const replyKind = typeof reply.reply_kind === "string" ? reply.reply_kind.trim().toLowerCase() : "";
+  if (replyKind === "ack" && !config.sendAckReplies) {
+    return;
+  }
+  const target =
+    typeof ctx?.conversationId === "string" && ctx.conversationId.trim()
+      ? ctx.conversationId.trim()
+      : typeof event?.metadata?.originatingTo === "string" && event.metadata.originatingTo.trim()
+        ? event.metadata.originatingTo.trim()
+        : null;
   if (!target) {
-    api.logger.warn("[project-os-gateway-adapter] Cannot resolve Discord ack target");
+    api.logger.warn("[project-os-gateway-adapter] missing Discord target for direct Project OS reply");
     return;
   }
+  const replyTo =
+    typeof event?.metadata?.messageId === "string" && event.metadata.messageId.trim()
+      ? event.metadata.messageId.trim()
+      : undefined;
+  try {
+    await sendDiscordMessageDirect(api, target, String(reply.summary), {
+      replyTo,
+      components: reply.components,
+    });
+    forgetPendingDiscordReply(api, pendingKey);
+  } catch (error) {
+    api.logger.warn(`[project-os-gateway-adapter] direct Discord Project OS reply failed: ${String(error)}`);
+  }
+}
 
-  await api.runtime.channel.discord.sendMessageDiscord(target, parsed.operator_reply.summary, {
-    cfg: api.config,
-    accountId: ctx.accountId,
-    replyTo: messageId,
+function pendingDiscordReplyCache(api) {
+  if (!api._projectOsPendingDiscordReplies) {
+    api._projectOsPendingDiscordReplies = new Map();
+  }
+  return api._projectOsPendingDiscordReplies;
+}
+
+function prunePendingDiscordReplyCache(api, now = Date.now()) {
+  const cache = pendingDiscordReplyCache(api);
+  for (const [key, entry] of cache.entries()) {
+    if (now - Number(entry?.storedAt || 0) > PENDING_DISCORD_REPLY_TTL_MS) {
+      cache.delete(key);
+    }
+  }
+  return cache;
+}
+
+function buildPendingDiscordReplyKey(channelId, accountId, conversationId) {
+  const normalizedChannelId = String(channelId || "").trim().toLowerCase();
+  const normalizedAccountId = String(accountId || "").trim().toLowerCase();
+  const normalizedConversationId = String(conversationId || "").trim();
+  if (!normalizedChannelId || !normalizedConversationId) {
+    return null;
+  }
+  return `${normalizedChannelId}|${normalizedAccountId || "default"}|${normalizedConversationId}`;
+}
+
+function rememberPendingDiscordReply(api, ctx, parsed, config) {
+  const reply = parsed?.operator_reply;
+  if (!reply?.summary) {
+    return null;
+  }
+  const replyKind = typeof reply.reply_kind === "string" ? reply.reply_kind.trim().toLowerCase() : "";
+  if (!replyKind) {
+    return null;
+  }
+  if (replyKind === "ack" && !config.sendAckReplies) {
+    return null;
+  }
+  const key = buildPendingDiscordReplyKey("discord", ctx.accountId, ctx.conversationId);
+  if (!key) {
+    api.logger.warn("[project-os-gateway-adapter] Cannot persist pending Discord reply without conversation target");
+    return null;
+  }
+  prunePendingDiscordReplyCache(api).set(key, {
+    text: String(reply.summary),
+    replyKind,
+    storedAt: Date.now(),
   });
+  return key;
+}
+
+function forgetPendingDiscordReply(api, key) {
+  if (!key) {
+    return;
+  }
+  pendingDiscordReplyCache(api).delete(key);
+}
+
+function consumePendingDiscordReply(api, ctx, event) {
+  const key = buildPendingDiscordReplyKey("discord", ctx.accountId, event?.to);
+  if (!key) {
+    return null;
+  }
+  const cache = prunePendingDiscordReplyCache(api);
+  const entry = cache.get(key);
+  if (!entry) {
+    return null;
+  }
+  cache.delete(key);
+  return entry;
 }
 
 async function pullOperatorDeliveries(api, config) {
@@ -416,9 +597,7 @@ async function flushOperatorDeliveries(api, config) {
         : config.discordAccountId;
 
     try {
-      await api.runtime.channel.discord.sendMessageDiscord(target, text, {
-        cfg: api.config,
-        accountId,
+      await sendDiscordMessageDirect(api, target, text, {
         replyTo,
         components,
       });
@@ -427,6 +606,7 @@ async function flushOperatorDeliveries(api, config) {
         target,
         reply_to: replyTo,
         components_enabled: Boolean(components),
+        account_id: accountId,
       });
     } catch (error) {
       await ackOperatorDelivery(api, config, deliveryId, "pending", String(error), {
@@ -434,6 +614,7 @@ async function flushOperatorDeliveries(api, config) {
         target,
         reply_to: replyTo,
         components_enabled: Boolean(components),
+        account_id: accountId,
       });
     }
   }
@@ -546,6 +727,19 @@ const plugin = {
         return;
       }
 
+      if (
+        liveChannelId === "discord" &&
+        runtimeConfig.discordAccountId &&
+        typeof ctx.accountId === "string" &&
+        ctx.accountId.trim() &&
+        ctx.accountId.trim() !== runtimeConfig.discordAccountId
+      ) {
+        api.logger.info(
+          `[project-os-gateway-adapter] ignored inbound discord event for non-primary account=${ctx.accountId.trim()} primary=${runtimeConfig.discordAccountId}`
+        );
+        return { handled: true };
+      }
+
       if (ingressDedupKey && isRecentIngressDuplicate(api, ingressDedupKey)) {
         api.logger.info(
           `[project-os-gateway-adapter] ignored recent duplicate ingress channel=${liveChannelId || "unknown"} conversation=${String(ctx.conversationId || "unknown")}`
@@ -575,8 +769,8 @@ const plugin = {
           `[project-os-gateway-adapter] forwarded ${ctx.channelId}:${ctx.conversationId || "no-conversation"} to Project OS`
         );
 
-        if (runtimeConfig.sendAckReplies && String(ctx.channelId).toLowerCase() === "discord") {
-          await maybeSendDiscordAck(api, event, ctx, parsed);
+        if (String(ctx.channelId).toLowerCase() === "discord") {
+          maybeSendDiscordImmediateReply(api, event, ctx, parsed, runtimeConfig);
         }
 
         return { handled: true };
@@ -596,6 +790,13 @@ const plugin = {
       }
 
       const target = typeof event?.to === "string" ? event.to : "unknown";
+      const pendingReply = consumePendingDiscordReply(api, ctx, event);
+      if (pendingReply && pendingReply.text) {
+        api.logger.info(
+          `[project-os-gateway-adapter] replaced native OpenClaw Discord reply account=${String(ctx.accountId || "unknown")} target=${target} reply_kind=${pendingReply.replyKind}`
+        );
+        return { content: pendingReply.text };
+      }
       api.logger.info(
         `[project-os-gateway-adapter] suppressed native OpenClaw Discord reply account=${String(ctx.accountId || "unknown")} target=${target}`
       );

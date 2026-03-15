@@ -25,6 +25,7 @@ class RuntimeConfig:
     forbidden_zone_policy: ForbiddenZonePolicy
     secret_config: SecretConfig
     embedding_policy: EmbeddingPolicy
+    memory_config: MemoryConfig
     execution_policy: ExecutionPolicy
     github_config: GitHubConfig
     openclaw_config: OpenClawConfig
@@ -57,6 +58,81 @@ class EmbeddingPolicy:
 
 
 @dataclass(slots=True)
+class RetrievalSidecarConfig:
+    enabled: bool = True
+    query_expansion: bool = True
+    session_recall: bool = True
+    max_candidates_per_source: int = 8
+    recent_session_limit: int = 5
+    recency_half_life_days: int = 30
+    mmr_lambda: float = 0.7
+
+
+@dataclass(slots=True)
+class MemoryBlocksConfig:
+    enabled: bool = True
+    bootstrap_defaults: bool = True
+    max_block_bytes: int = 65536
+    refresh_interval_seconds: int = 1800
+    critical_prefixes: list[str] = field(default_factory=lambda: ["system/", "profiles/"])
+
+
+@dataclass(slots=True)
+class MemoryCuratorConfig:
+    enabled: bool = True
+    lookback_hours: int = 24
+    max_items_per_source: int = 8
+    async_enabled: bool = True
+    interval_seconds: int = 3600
+    llm_mode: str = "auto"
+    prefer_local_model: bool = True
+    max_prompt_chars: int = 16000
+
+
+@dataclass(slots=True)
+class MemoryThoughtsConfig:
+    enabled: bool = True
+    prefer_for_recall: bool = True
+    max_results: int = 5
+    min_confidence: float = 0.55
+    max_merge_candidates: int = 6
+
+
+@dataclass(slots=True)
+class MemorySupersessionConfig:
+    enabled: bool = True
+    interval_seconds: int = 7200
+    similarity_threshold: float = 0.82
+    recent_window_hours: int = 168
+
+
+@dataclass(slots=True)
+class MemoryTemporalGraphConfig:
+    enabled: bool = True
+    backend: str = "kuzu_embedded"
+    strict_backend: bool = False
+    max_results: int = 10
+
+
+@dataclass(slots=True)
+class MemoryTracingConfig:
+    enabled: bool = True
+    emit_journal_events: bool = True
+    otel_hooks_enabled: bool = False
+
+
+@dataclass(slots=True)
+class MemoryConfig:
+    retrieval_sidecar: RetrievalSidecarConfig = field(default_factory=RetrievalSidecarConfig)
+    blocks: MemoryBlocksConfig = field(default_factory=MemoryBlocksConfig)
+    curator: MemoryCuratorConfig = field(default_factory=MemoryCuratorConfig)
+    thoughts: MemoryThoughtsConfig = field(default_factory=MemoryThoughtsConfig)
+    supersession: MemorySupersessionConfig = field(default_factory=MemorySupersessionConfig)
+    temporal_graph: MemoryTemporalGraphConfig = field(default_factory=MemoryTemporalGraphConfig)
+    tracing: MemoryTracingConfig = field(default_factory=MemoryTracingConfig)
+
+
+@dataclass(slots=True)
 class GitHubConfig:
     repo: str = "Ga420Low/project-os-core"
     cli_command: str = "gh"
@@ -75,6 +151,7 @@ class OpenClawConfig:
     enabled_channels: list[str] = field(default_factory=lambda: ["discord", "webchat"])
     trusted_plugin_ids: list[str] = field(default_factory=lambda: ["project-os-gateway-adapter", "discord", "device-pair", "memory-core"])
     send_ack_replies: bool = False
+    discord_require_mention: bool = True
     discord_thread_bindings_required: bool = True
     discord_auto_presence_required: bool = True
     discord_exec_approvals_required: bool = True
@@ -85,6 +162,9 @@ class OpenClawConfig:
     live_validation_max_age_hours: int = 168
     pairing_rotation_max_age_days: int = 30
     windows_gateway_task_name: str = "OpenClaw Gateway"
+    windows_watchdog_task_name: str = "Project OS OpenClaw Watchdog"
+    self_heal_cooldown_seconds: int = 120
+    self_heal_check_interval_minutes: int = 2
 
 
 @dataclass(slots=True)
@@ -141,6 +221,58 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "local_model": "local-hash-v1",
             "local_dimensions": 64,
         },
+        "memory": {
+            "retrieval_sidecar": {
+                "enabled": True,
+                "query_expansion": True,
+                "session_recall": True,
+                "max_candidates_per_source": 8,
+                "recent_session_limit": 5,
+                "recency_half_life_days": 30,
+                "mmr_lambda": 0.7,
+            },
+            "blocks": {
+                "enabled": True,
+                "bootstrap_defaults": True,
+                "max_block_bytes": 65536,
+                "refresh_interval_seconds": 1800,
+                "critical_prefixes": ["system/", "profiles/"],
+            },
+            "curator": {
+                "enabled": True,
+                "lookback_hours": 24,
+                "max_items_per_source": 8,
+                "async_enabled": True,
+                "interval_seconds": 3600,
+                "llm_mode": "auto",
+                "prefer_local_model": True,
+                "max_prompt_chars": 16000,
+            },
+            "thoughts": {
+                "enabled": True,
+                "prefer_for_recall": True,
+                "max_results": 5,
+                "min_confidence": 0.55,
+                "max_merge_candidates": 6,
+            },
+            "supersession": {
+                "enabled": True,
+                "interval_seconds": 7200,
+                "similarity_threshold": 0.82,
+                "recent_window_hours": 168,
+            },
+            "temporal_graph": {
+                "enabled": True,
+                "backend": "kuzu_embedded",
+                "strict_backend": False,
+                "max_results": 10,
+            },
+            "tracing": {
+                "enabled": True,
+                "emit_journal_events": True,
+                "otel_hooks_enabled": False,
+            },
+        },
         "execution_policy": {
             "default_model": "gpt-5.4",
             "default_reasoning_effort": "high",
@@ -191,6 +323,7 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "enabled_channels": ["discord", "webchat"],
             "trusted_plugin_ids": ["project-os-gateway-adapter", "discord", "device-pair", "memory-core"],
             "send_ack_replies": False,
+            "discord_require_mention": True,
             "discord_thread_bindings_required": True,
             "discord_auto_presence_required": True,
             "discord_exec_approvals_required": True,
@@ -201,6 +334,9 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "live_validation_max_age_hours": 168,
             "pairing_rotation_max_age_days": 30,
             "windows_gateway_task_name": "OpenClaw Gateway",
+            "windows_watchdog_task_name": "Project OS OpenClaw Watchdog",
+            "self_heal_cooldown_seconds": 120,
+            "self_heal_check_interval_minutes": 2,
         },
         "api_dashboard_config": {
             "host": "127.0.0.1",
@@ -231,7 +367,17 @@ def _runtime_policy_defaults() -> dict[str, object]:
 def _load_runtime_policy(
     root: Path,
     policy_path: str | Path | None = None,
-) -> tuple[SecretConfig, EmbeddingPolicy, ExecutionPolicy, GitHubConfig, OpenClawConfig, ApiDashboardConfig, TierManagerConfig, LearningConfig]:
+) -> tuple[
+    SecretConfig,
+    EmbeddingPolicy,
+    MemoryConfig,
+    ExecutionPolicy,
+    GitHubConfig,
+    OpenClawConfig,
+    ApiDashboardConfig,
+    TierManagerConfig,
+    LearningConfig,
+]:
     env_override = os.getenv("PROJECT_OS_RUNTIME_POLICY")
     chosen = Path(policy_path) if policy_path else (Path(env_override) if env_override else None)
     if chosen is None:
@@ -254,11 +400,33 @@ def _load_runtime_policy(
         ):
             if key in loaded and isinstance(loaded[key], dict):
                 payload[key].update(loaded[key])
+        if "memory" in loaded and isinstance(loaded["memory"], dict):
+            for key in (
+                "retrieval_sidecar",
+                "blocks",
+                "curator",
+                "thoughts",
+                "supersession",
+                "temporal_graph",
+                "tracing",
+            ):
+                section_payload = loaded["memory"].get(key)
+                if isinstance(section_payload, dict):
+                    payload["memory"][key].update(section_payload)
 
     secret_payload = dict(payload["secret_config"])
     secret_payload["local_fallback_path"] = _expand_path(str(secret_payload["local_fallback_path"]))
     secret_config = SecretConfig(**secret_payload)
     embedding_policy = EmbeddingPolicy(**payload["embedding_policy"])
+    memory_config = MemoryConfig(
+        retrieval_sidecar=RetrievalSidecarConfig(**payload["memory"]["retrieval_sidecar"]),
+        blocks=MemoryBlocksConfig(**payload["memory"]["blocks"]),
+        curator=MemoryCuratorConfig(**payload["memory"]["curator"]),
+        thoughts=MemoryThoughtsConfig(**payload["memory"]["thoughts"]),
+        supersession=MemorySupersessionConfig(**payload["memory"]["supersession"]),
+        temporal_graph=MemoryTemporalGraphConfig(**payload["memory"]["temporal_graph"]),
+        tracing=MemoryTracingConfig(**payload["memory"]["tracing"]),
+    )
     execution_payload = dict(payload["execution_policy"])
     execution_payload["operator_audience"] = OperatorAudience(str(execution_payload["operator_audience"]))
     execution_payload["default_run_speech_policy"] = RunSpeechPolicy(str(execution_payload["default_run_speech_policy"]))
@@ -274,7 +442,17 @@ def _load_runtime_policy(
     api_dashboard_config = ApiDashboardConfig(**payload["api_dashboard_config"])
     tier_manager_config = TierManagerConfig(**payload["tier_manager_config"])
     learning_config = LearningConfig(**payload["learning_config"])
-    return secret_config, embedding_policy, execution_policy, github_config, openclaw_config, api_dashboard_config, tier_manager_config, learning_config
+    return (
+        secret_config,
+        embedding_policy,
+        memory_config,
+        execution_policy,
+        github_config,
+        openclaw_config,
+        api_dashboard_config,
+        tier_manager_config,
+        learning_config,
+    )
 
 
 def load_runtime_config(config_path: str | Path | None = None, policy_path: str | Path | None = None) -> RuntimeConfig:
@@ -294,7 +472,17 @@ def load_runtime_config(config_path: str | Path | None = None, policy_path: str 
     ).resolve(strict=False)
     storage_roots = _storage_from_dict(payload)
     policy = ForbiddenZonePolicy(roots=[storage_roots.archive_do_not_touch_root])
-    secret_config, embedding_policy, execution_policy, github_config, openclaw_config, api_dashboard_config, tier_manager_config, learning_config = _load_runtime_policy(root, policy_path)
+    (
+        secret_config,
+        embedding_policy,
+        memory_config,
+        execution_policy,
+        github_config,
+        openclaw_config,
+        api_dashboard_config,
+        tier_manager_config,
+        learning_config,
+    ) = _load_runtime_policy(root, policy_path)
     return RuntimeConfig(
         repo_root=root,
         storage_config_path=chosen_storage_path,
@@ -303,6 +491,7 @@ def load_runtime_config(config_path: str | Path | None = None, policy_path: str 
         forbidden_zone_policy=policy,
         secret_config=secret_config,
         embedding_policy=embedding_policy,
+        memory_config=memory_config,
         execution_policy=execution_policy,
         github_config=github_config,
         openclaw_config=openclaw_config,

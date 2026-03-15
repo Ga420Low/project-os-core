@@ -26,8 +26,75 @@ Corollaire produit:
 - recevoir les clarifications bloquantes
 - recevoir le verdict final sans ouvrir le runtime
 
+## Workflow canonique
+
+Le pipeline Discord retenu doit rester lisible:
+
+- `OpenClaw` porte la surface Discord
+- `Project OS` garde la verite runtime
+- `Claude API`, `GPT API` et `Ollama` sont appeles par `Project OS`
+- une seule voix publique doit sortir sur Discord: `Project OS`
+
+```mermaid
+flowchart LR
+    A["Discord message"] --> B["OpenClaw (transport, thread, presence, approvals)"]
+    B --> C["Project OS ingress adapter"]
+    C --> D["Project OS runtime truth"]
+    D --> E{"Routing"}
+    E --> F["Claude API"]
+    E --> G["GPT API"]
+    E --> H["Ollama local (S3)"]
+    F --> I["Project OS final reply"]
+    G --> I
+    H --> I
+    I --> B
+    B --> J["Discord visible reply"]
+```
+
+Corollaires:
+
+- `OpenClaw` n'est pas un second cerveau autonome
+- `OpenClaw` ne doit pas improviser une personnalite ou une memoire paralleles
+- `Claude API` peut etre le moteur principal de discussion Discord sans devenir la verite du systeme
+
+## Overrides operateur
+
+Le fondateur peut forcer ponctuellement le provider de discussion au tout debut du message:
+
+- `CLAUDE <message>`
+- `GPT <message>`
+- `LOCAL <message>`
+- `OLLAMA <message>`
+
+Variantes acceptees:
+
+- `CLAUDE: <message>`
+- `GPT: <message>`
+- `LOCAL: <message>`
+- `OLLAMA: <message>`
+
+Regles canoniques:
+
+- le prefixe est reconnu uniquement au debut du message
+- le prefixe est retire avant classification, routage et memoire canonique
+- le texte brut d'origine reste trace dans les metadata runtime
+- la voix publique reste `Project OS`, quel que soit le provider force
+
+Priorite stricte:
+
+- `S3`
+- override operateur
+- route automatique
+
+Donc:
+
+- `CLAUDE OPENCLAW_GATEWAY_TOKEN=...` ne part jamais au cloud
+- un `S3` garde toujours la priorite locale ou le blocage ferme
+- sans prefixe, la route par defaut reste active
+
 Topologie cible:
 
+- `#general` comme entree fondatrice par defaut
 - `#pilotage`
 - `#runs-live`
 - `#approvals`
@@ -36,10 +103,11 @@ Topologie cible:
 
 Les deliberations multi-angles se branchent sur cette topologie existante:
 
-- ouverture depuis `#pilotage`
+- ouverture depuis `#general` en priorite
+- `#pilotage` reste autorise pendant la transition
 - thread dedie pour la reunion
 - synthese finale dans le thread
-- synthese humaine finale republiquee dans `#pilotage`
+- synthese humaine finale republiquee dans `#general`
 - miroir dans `#approvals` si la decision est sensible
 - lien vers `#runs-live` seulement si la reunion debouche sur un run
 
@@ -172,7 +240,7 @@ Profils de sortie Discord:
 
 - `notification_card` pour les signaux operateur courants et les cartes `#runs-live`
 - `meeting_thread` pour les deliberations structurees visibles
-- `founder_synthesis` pour la synthese humaine finale dans `#pilotage`
+- `founder_synthesis` pour la synthese humaine finale dans `#general`
 
 Pendant un gros run de code:
 
@@ -197,10 +265,15 @@ Note:
 Chaque carte doit rester courte et comprehensible par un humain non developpeur.
 Les artefacts runtime peuvent etre lies comme preuves, mais ne doivent pas etre la seule explication.
 
-Dans `#pilotage`:
+Dans `#general`:
 
 - l'agent reste souple
 - mais toujours en francais clair et non technique si ce n'est pas necessaire
+
+Dans `#pilotage`:
+
+- le comportement doit rester aligne sur `#general`
+- ce salon est traite comme une surface de compatibilite/transitoire
 
 ## Reunions multi-angles structurees
 

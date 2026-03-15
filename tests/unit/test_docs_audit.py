@@ -30,7 +30,7 @@ def test_docs_audit_reports_broken_links_and_known_drift_patterns(tmp_path: Path
         tmp_path / "docs" / "guide.md",
         "# Guide\n"
         "See [missing](./missing.md)\n"
-        "Legacy #general channel\n"
+        "Legacy #decisions channel\n"
         "Mode `infisical_first`\n",
     )
 

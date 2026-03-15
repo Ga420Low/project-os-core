@@ -30,6 +30,12 @@ class MemoryType(str, Enum):
     REFLECTIVE = "reflective"
 
 
+class MemoryLayer(str, Enum):
+    PLAINTEXT = "plaintext"
+    ACTIVATION = "activation"
+    THOUGHT = "thought"
+
+
 class MissionStatus(str, Enum):
     QUEUED = "queued"
     RUNNING = "running"
@@ -152,6 +158,12 @@ class LearningSignalKind(str, Enum):
     REFRESH_NEEDED = "refresh_needed"
     DECISION_PROMOTED = "decision_promoted"
     NOISE_DETECTED = "noise_detected"
+
+
+class ThoughtMemoryStatus(str, Enum):
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    FORGOTTEN = "forgotten"
 
 
 class CommunicationMode(str, Enum):
@@ -285,14 +297,121 @@ class MemoryRecord:
 
 
 @dataclass(slots=True)
+class MemoryBlockAccessPolicy:
+    readers: list[str] = field(default_factory=list)
+    writers: list[str] = field(default_factory=list)
+    surfaces: list[str] = field(default_factory=list)
+    sensitivity: str = "s1_passthrough"
+
+
+@dataclass(slots=True)
+class MemoryBlock:
+    block_id: str
+    block_name: str
+    owner_role: str
+    path: str
+    content: str
+    hash_sha256: str
+    version: int = 1
+    access_policy: MemoryBlockAccessPolicy = field(default_factory=MemoryBlockAccessPolicy)
+    provenance: list[str] = field(default_factory=list)
+    last_updated_by_role: str | None = None
+    last_updated_by_run_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class MemCube:
+    cube_id: str
+    payload: dict[str, Any]
+    layer: MemoryLayer
+    kind: str
+    confidence: float = 1.0
+    supersedes: list[str] = field(default_factory=list)
+    sources: list[str] = field(default_factory=list)
+    access_scope: str = "clean"
+    usage_stats: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class RecallPlan:
+    recall_plan_id: str
+    query: str
+    reason: str
+    needed_blocks: list[str] = field(default_factory=list)
+    needed_cubes: list[str] = field(default_factory=list)
+    needed_sessions: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class CuratorRun:
+    curator_run_id: str
+    status: str
+    trigger: str
+    window_start: str
+    window_end: str
+    llm_mode: str
+    model: str | None = None
+    summary: str | None = None
+    input_summary: dict[str, Any] = field(default_factory=dict)
+    output_summary: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ThoughtMemory:
+    thought_id: str
+    kind: str
+    summary: str
+    content: str
+    source_ids: list[str] = field(default_factory=list)
+    confidence: float = 1.0
+    status: ThoughtMemoryStatus = ThoughtMemoryStatus.ACTIVE
+    supersedes: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class SupersessionRecord:
+    supersession_record_id: str
+    superseded_type: str
+    superseded_id: str
+    superseding_type: str
+    superseding_id: str
+    reason: str
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
 class RetrievalContext:
     query: str
     user_id: str
     project_id: str | None = None
     mission_id: str | None = None
+    branch_name: str | None = None
+    target_profile: str | None = None
+    requested_worker: str | None = None
+    channel: str | None = None
+    surface: str | None = None
+    thread_id: str | None = None
+    external_thread_id: str | None = None
+    conversation_key: str | None = None
     tags: list[str] = field(default_factory=list)
     limit: int = 5
     include_private_full: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -900,6 +1019,17 @@ class OpenClawTrustAuditReport:
     verdict: str
     summary: str
     actionable_fixes: list[str] = field(default_factory=list)
+    checks: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class OpenClawSelfHealReport:
+    report_id: str
+    status: str
+    summary: str
+    actions: list[str] = field(default_factory=list)
     checks: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)

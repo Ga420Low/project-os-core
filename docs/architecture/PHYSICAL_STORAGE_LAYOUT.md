@@ -118,7 +118,7 @@ D:\ProjectOS\project-os-core\third_party/
 ├── letta/          # memoire stateful (reference)
 ├── omniparser/     # perception visuelle (reference)
 ├── openclaw/       # shell operateur + Discord
-├── openmemory/     # moteur memoire primaire
+├── openmemory/     # sidecar retrieval compatible
 └── stagehand/      # execution web fiable
 ```
 

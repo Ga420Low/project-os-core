@@ -1,6 +1,7 @@
 {
   "openclaw_config": {
     "send_ack_replies": false,
+    "discord_require_mention": false,
     "discord_thread_bindings_required": true,
     "discord_auto_presence_required": true,
     "discord_exec_approvals_required": true,
@@ -8,12 +9,16 @@
     "discord_exec_approver_ids": [
       "1482209095984484443"
     ],
+    "self_heal_cooldown_seconds": 120,
+    "self_heal_check_interval_minutes": 2,
     "trusted_plugin_ids": [
       "project-os-gateway-adapter",
       "discord",
       "device-pair",
-      "memory-core"
-    ]
+      "memory-core",
+      "ollama"
+    ],
+    "windows_watchdog_task_name": "Project OS OpenClaw Watchdog"
   },
   "execution_policy": {
     "privacy_guard_enabled": true,
@@ -24,6 +29,17 @@
     "local_model_name": "qwen2.5:14b",
     "local_model_timeout_seconds": 120.0,
     "local_model_health_timeout_seconds": 5.0
+  },
+  "memory": {
+    "retrieval_sidecar": {
+      "enabled": true,
+      "query_expansion": true,
+      "session_recall": true,
+      "max_candidates_per_source": 8,
+      "recent_session_limit": 5,
+      "recency_half_life_days": 30,
+      "mmr_lambda": 0.7
+    }
   },
   "learning_config": {
     "auto_sync_runbook_deferred": true,

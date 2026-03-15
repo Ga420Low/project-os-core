@@ -125,6 +125,18 @@ Style:
 - moins de verbosite
 - mais sans perdre la rigueur
 
+Override ponctuel accepte:
+
+- `CLAUDE <message>`
+- `GPT <message>`
+- `LOCAL <message>`
+
+Regle:
+
+- cet override choisit la lane modele du tour courant
+- il ne change ni l'identite canonique, ni la voix publique
+- `S3` garde toujours la priorite sur un override cloud
+
 ### Voix transcrite
 
 But:

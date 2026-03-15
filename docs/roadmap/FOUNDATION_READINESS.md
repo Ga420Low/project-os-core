@@ -69,6 +69,8 @@ Etat reel de la fondation:
 
 - `OpenMemory` branche et valide
 - `SQLite + sqlite-vec` branches et valides
+- `Memory OS` local branche et valide
+- blocs partages / thoughts / curator / supersession poses
 - `Mission Router` branche et valide
 - frontiere `OpenClaw` vs `Project OS` figee
 - policy `Discord selective sync` posee
@@ -105,3 +107,7 @@ Les prochains chantiers utiles sont:
 Le renforcement post-bootstrap d'`OpenClaw` suit maintenant la feuille de route:
 
 - `docs/roadmap/OPENCLAW_REINFORCEMENT_PLAN.md`
+
+La couche de securite `sanctuaire` devient aussi un chantier explicite:
+
+- `docs/roadmap/SANCTUARY_SECURITY_LAYER.md`

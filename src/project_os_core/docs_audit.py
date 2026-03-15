@@ -29,7 +29,7 @@ class DocAuditFinding:
 _KNOWN_DRIFT_RULES: tuple[KnownDriftRule, ...] = (
     KnownDriftRule(
         name="legacy_discord_channels",
-        pattern=re.compile(r"#general|#decisions|#ops-log"),
+        pattern=re.compile(r"#decisions|#ops-log"),
         message="Legacy Discord channels should not appear in active docs.",
     ),
     KnownDriftRule(

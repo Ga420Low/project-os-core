@@ -25,6 +25,7 @@ from ..models import (
     OpenClawReplayFixture,
     OpenClawReplayResult,
     OpenClawRuntimeRoots,
+    OpenClawSelfHealReport,
     OpenClawTrustAuditReport,
     OpenClawTruthHealthReport,
     RuntimeState,
@@ -292,7 +293,10 @@ class OpenClawLiveService:
         checks.append(discord_policy_check)
         blocking = blocking or discord_policy_check["status"] == "bloque"
         if discord_policy_check["status"] == "bloque":
-            actionable_fixes.append("La boucle Discord live doit rester en allowlist stricte avec requireMention=true sur les canaux autorises.")
+            mention_requirement = "requireMention=true" if self.config.openclaw_config.discord_require_mention else "requireMention=false"
+            actionable_fixes.append(
+                f"La boucle Discord live doit rester en allowlist stricte avec {mention_requirement} selon la policy retenue."
+            )
 
         discord_operations_check = self._doctor_discord_operations_ux(runtime_config)
         checks.append(discord_operations_check)
@@ -662,6 +666,127 @@ class OpenClawLiveService:
         self._write_report(self.paths.openclaw_live_validation_report_path, result)
         return result
 
+    def self_heal(self, *, ignore_cooldown: bool = False) -> OpenClawSelfHealReport:
+        checks: list[dict[str, Any]] = []
+        actions: list[str] = []
+        metadata: dict[str, Any] = {
+            "cooldown_seconds": int(self.config.openclaw_config.self_heal_cooldown_seconds),
+            "ignore_cooldown": bool(ignore_cooldown),
+        }
+
+        binary_path = self._resolve_openclaw_binary()
+        if not binary_path:
+            report = OpenClawSelfHealReport(
+                report_id=new_id("openclaw_self_heal"),
+                status="failed",
+                summary="OpenClaw est introuvable. Auto-reparation impossible.",
+                checks=[self._blocked_check("openclaw_binaire", "OpenClaw est introuvable sur ce poste.")],
+                metadata=metadata,
+            )
+            self._write_report(self.paths.openclaw_self_heal_report_path, report)
+            return report
+
+        runtime_config = self._load_json_payload(self.paths.openclaw_state_root / "openclaw.json")
+        if not isinstance(runtime_config, dict):
+            report = OpenClawSelfHealReport(
+                report_id=new_id("openclaw_self_heal"),
+                status="failed",
+                summary="openclaw.json est introuvable ou invalide. Auto-reparation impossible.",
+                checks=[self._blocked_check("runtime_config", "Le snapshot runtime OpenClaw est introuvable ou invalide.")],
+                metadata=metadata,
+            )
+            self._write_report(self.paths.openclaw_self_heal_report_path, report)
+            return report
+
+        before_result = self._gateway_status_command(runtime_config)
+        before_details = self._gateway_truth_details_from_command(before_result)
+        if before_details["healthy"]:
+            checks.append(self._ok_check("gateway_before", "Le gateway est deja sain.", before_details))
+            report = OpenClawSelfHealReport(
+                report_id=new_id("openclaw_self_heal"),
+                status="healthy",
+                summary="Le gateway OpenClaw etait deja sain. Aucune action necessaire.",
+                checks=checks,
+                metadata={**metadata, "before": before_details, "final": before_details},
+            )
+            self._write_report(self.paths.openclaw_self_heal_report_path, report)
+            self.logger.log("info", "openclaw_self_heal_completed", status=report.status)
+            return report
+
+        checks.append(self._warn_check("gateway_before", "Le gateway OpenClaw a besoin d'une reparation.", before_details))
+        metadata["before"] = before_details
+
+        cooldown = self._self_heal_cooldown_state(ignore_cooldown=ignore_cooldown)
+        if cooldown["active"]:
+            checks.append(self._warn_check("cooldown", "Une tentative recente existe deja. Cooldown actif.", cooldown))
+            report = OpenClawSelfHealReport(
+                report_id=new_id("openclaw_self_heal"),
+                status="cooldown_skip",
+                summary="Le gateway reste degrade, mais une tentative recente existe deja. Nouvelle relance differee.",
+                actions=actions,
+                checks=checks,
+                metadata={**metadata, "cooldown": cooldown, "final": before_details},
+            )
+            self._write_report(self.paths.openclaw_self_heal_report_path, report)
+            self.logger.log("warning", "openclaw_self_heal_completed", status=report.status)
+            return report
+
+        restart_result = self._run_openclaw_command(["gateway", "restart"], timeout_ms=self.config.openclaw_config.timeout_ms)
+        actions.append("gateway_restart")
+        checks.append(self._command_check("gateway_restart", "Tentative de restart du gateway.", restart_result))
+        after_restart_result = self._gateway_status_command(runtime_config)
+        after_restart_details = self._gateway_truth_details_from_command(after_restart_result)
+        checks.append(self._status_check("gateway_after_restart", after_restart_details, "Le gateway est sain apres restart.", "Le gateway reste degrade apres restart."))
+        if after_restart_details["healthy"]:
+            report = OpenClawSelfHealReport(
+                report_id=new_id("openclaw_self_heal"),
+                status="restarted",
+                summary="Le gateway OpenClaw a ete repare par restart.",
+                actions=actions,
+                checks=checks,
+                metadata={
+                    **metadata,
+                    "before": before_details,
+                    "after_restart": after_restart_details,
+                    "final": after_restart_details,
+                    "last_repair_attempt_at": datetime.now(timezone.utc).isoformat(),
+                },
+            )
+            self._write_report(self.paths.openclaw_self_heal_report_path, report)
+            self.logger.log("warning", "openclaw_self_heal_completed", status=report.status)
+            return report
+
+        start_result = self._run_openclaw_command(["gateway", "start"], timeout_ms=self.config.openclaw_config.timeout_ms)
+        actions.append("gateway_start")
+        checks.append(self._command_check("gateway_start", "Tentative de demarrage du gateway.", start_result))
+        after_start_result = self._gateway_status_command(runtime_config)
+        after_start_details = self._gateway_truth_details_from_command(after_start_result)
+        checks.append(self._status_check("gateway_after_start", after_start_details, "Le gateway est sain apres demarrage.", "Le gateway reste degrade apres demarrage."))
+
+        repaired = after_start_details["healthy"]
+        report = OpenClawSelfHealReport(
+            report_id=new_id("openclaw_self_heal"),
+            status="started" if repaired else "failed",
+            summary=(
+                "Le gateway OpenClaw a ete repare par demarrage explicite."
+                if repaired
+                else "Le gateway OpenClaw reste degrade apres restart + start. Intervention humaine requise."
+            ),
+            actions=actions,
+            checks=checks,
+            metadata={
+                **metadata,
+                "before": before_details,
+                "after_restart": after_restart_details,
+                "after_start": after_start_details,
+                "final": after_start_details,
+                "last_repair_attempt_at": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        self._write_report(self.paths.openclaw_self_heal_report_path, report)
+        self.logger.log("warning" if repaired else "error", "openclaw_self_heal_completed", status=report.status)
+        return report
+
     def _resolve_plugin_source_path(self) -> Path:
         configured = self.config.openclaw_config.plugin_source_path
         if configured:
@@ -919,6 +1044,7 @@ class OpenClawLiveService:
             return self._ok_check("discord_policy", "Le canal Discord live n'est pas actif.")
 
         issues: list[dict[str, Any]] = []
+        expected_require_mention = bool(self.config.openclaw_config.discord_require_mention)
         if str(discord.get("groupPolicy") or "").strip().lower() == "open":
             issues.append({"path": "channels.discord.groupPolicy", "value": "open"})
 
@@ -936,26 +1062,39 @@ class OpenClawLiveService:
                 if not isinstance(guild_payload, dict):
                     continue
                 guild_channels = guild_payload.get("channels")
-                if not isinstance(guild_channels, dict):
-                    continue
-                for channel_id, channel_payload in guild_channels.items():
-                    if not isinstance(channel_payload, dict):
-                        continue
-                    if channel_payload.get("requireMention") is not True:
-                        issues.append(
-                            {
-                                "path": f"channels.discord.guilds.{guild_id}.channels.{channel_id}.requireMention",
-                                "value": channel_payload.get("requireMention"),
-                            }
-                        )
+                guild_level_require_mention = guild_payload.get("requireMention")
+                if isinstance(guild_channels, dict) and guild_channels:
+                    for channel_id, channel_payload in guild_channels.items():
+                        if not isinstance(channel_payload, dict):
+                            continue
+                        effective_require_mention = channel_payload.get("requireMention", guild_level_require_mention)
+                        if effective_require_mention is not expected_require_mention:
+                            issues.append(
+                                {
+                                    "path": f"channels.discord.guilds.{guild_id}.channels.{channel_id}.requireMention",
+                                    "value": effective_require_mention,
+                                    "expected": expected_require_mention,
+                                }
+                            )
+                elif guild_level_require_mention is not expected_require_mention:
+                    issues.append(
+                        {
+                            "path": f"channels.discord.guilds.{guild_id}.requireMention",
+                            "value": guild_level_require_mention,
+                            "expected": expected_require_mention,
+                        }
+                    )
 
         if issues:
+            expectation = "mention obligatoire" if expected_require_mention else "ecoute sans mention sur les salons allowlistes"
             return self._blocked_check(
                 "discord_policy",
-                "La boucle Discord live doit rester en allowlist stricte avec mention obligatoire.",
+                f"La boucle Discord live doit rester en allowlist stricte avec {expectation}.",
                 issues,
             )
-        return self._ok_check("discord_policy", "La policy Discord live est durcie.")
+        if expected_require_mention:
+            return self._ok_check("discord_policy", "La policy Discord live est durcie.")
+        return self._ok_check("discord_policy", "La policy Discord live est durcie avec ecoute sans mention sur le serveur prive.")
 
     def _doctor_discord_operations_ux(self, runtime_config: dict[str, Any] | None) -> dict[str, Any]:
         if runtime_config is None:
@@ -1088,7 +1227,7 @@ class OpenClawLiveService:
             )
         return self._ok_check(
             "privacy_guard_policy",
-            "La privacy guard Pack 4 est active avec blocage S3 sans voie locale.",
+            "La privacy guard Pack 4 est active avec blocage S3 sans fallback cloud.",
         )
 
     def _doctor_local_model_route(self) -> dict[str, Any]:
@@ -1921,6 +2060,70 @@ class OpenClawLiveService:
             "raw": parsed,
         }
 
+    def _gateway_truth_details_from_command(self, result: dict[str, Any]) -> dict[str, Any]:
+        parsed = result.get("parsed")
+        if isinstance(parsed, dict):
+            details = self._gateway_truth_details(parsed)
+            details["command_ok"] = bool(result.get("ok"))
+            return details
+        return {
+            "loaded": False,
+            "runtime_status": None,
+            "port_status": None,
+            "listener_count": 0,
+            "has_live_listener": False,
+            "rpc_ok": False,
+            "unknown_runtime_accepted": False,
+            "healthy": False,
+            "command_ok": bool(result.get("ok")),
+            "raw": {
+                "stdout": result.get("stdout"),
+                "stderr": result.get("stderr"),
+                "returncode": result.get("returncode"),
+            },
+        }
+
+    def _command_check(self, name: str, message: str, result: dict[str, Any]) -> dict[str, Any]:
+        details = {
+            "ok": bool(result.get("ok")),
+            "returncode": result.get("returncode"),
+            "stdout": result.get("stdout"),
+            "stderr": result.get("stderr"),
+        }
+        if result.get("ok"):
+            return self._ok_check(name, message, details)
+        return self._warn_check(name, f"{message} La commande a retourne une erreur.", details)
+
+    def _status_check(self, name: str, details: dict[str, Any], ok_message: str, warn_message: str) -> dict[str, Any]:
+        if details.get("healthy"):
+            return self._ok_check(name, ok_message, details)
+        return self._warn_check(name, warn_message, details)
+
+    def _self_heal_cooldown_state(self, *, ignore_cooldown: bool) -> dict[str, Any]:
+        cooldown_seconds = max(0, int(self.config.openclaw_config.self_heal_cooldown_seconds))
+        if ignore_cooldown or cooldown_seconds <= 0:
+            return {"active": False, "cooldown_seconds": cooldown_seconds}
+        previous = self._load_json_if_exists(self.paths.openclaw_self_heal_report_path)
+        if not previous:
+            return {"active": False, "cooldown_seconds": cooldown_seconds}
+        previous_status = str(previous.get("status") or "").strip().lower()
+        if previous_status not in {"restarted", "started", "failed"}:
+            return {"active": False, "cooldown_seconds": cooldown_seconds}
+        last_attempt_at = str(previous.get("metadata", {}).get("last_repair_attempt_at") or previous.get("created_at") or "").strip()
+        last_dt = self._parse_iso_datetime(last_attempt_at)
+        if last_dt is None:
+            return {"active": False, "cooldown_seconds": cooldown_seconds}
+        elapsed_seconds = max(0, int((datetime.now(timezone.utc) - last_dt).total_seconds()))
+        active = elapsed_seconds < cooldown_seconds
+        return {
+            "active": active,
+            "cooldown_seconds": cooldown_seconds,
+            "elapsed_seconds": elapsed_seconds,
+            "remaining_seconds": max(0, cooldown_seconds - elapsed_seconds),
+            "previous_status": previous_status,
+            "last_repair_attempt_at": last_dt.isoformat(),
+        }
+
     def _startup_fallback_path(self) -> Path:
         startup_root = Path(os.environ.get("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "Startup"
         return startup_root / f"{self.config.openclaw_config.windows_gateway_task_name}.cmd"
@@ -2047,6 +2250,18 @@ class OpenClawLiveService:
             except Exception:
                 continue
         return None
+
+    @staticmethod
+    def _parse_iso_datetime(value: str) -> datetime | None:
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
 
     def _plugin_visible(self) -> tuple[bool, Any]:
         listed = self._run_openclaw_command(["plugins", "list", "--json"], timeout_ms=self.config.openclaw_config.timeout_ms)

@@ -7,7 +7,7 @@ Le but est d'avoir une topologie simple, lisible et scalable.
 
 ## Salons cibles
 
-### `#pilotage`
+### `#general`
 
 Usage:
 
@@ -24,6 +24,24 @@ Style:
 - humain
 - souple
 - clair
+
+Note:
+
+- `#general` devient l'entree fondatrice par defaut
+- a terme, c'est le salon intuitif principal pour parler a `Project OS`
+
+### `#pilotage`
+
+Usage:
+
+- compatibilite de transition
+- anciens workflows ou habitudes encore vivants
+- quelques syntheses republiables tant que la migration vers `#general` n'est pas finie
+
+Style:
+
+- meme voix que `#general`
+- pas de logique differente
 
 ### `#runs-live`
 
@@ -78,6 +96,7 @@ Usage:
 
 ## Mapping salon -> mode
 
+- `#general` -> `discussion`, `architecte`
 - `#pilotage` -> `discussion`, `architecte`
 - `#runs-live` -> `builder`, `reviewer`, `incident`
 - `#approvals` -> `gardien`
@@ -100,8 +119,8 @@ Pas de long texte par defaut.
 ## Profils de sortie Discord
 
 - `notification_card` -> `#runs-live`, validations courtes, clarifications courtes, 3 lignes max
-- `meeting_thread` -> thread visible depuis `#pilotage` ou `#incidents`, format structure
-- `founder_synthesis` -> `#pilotage`, recap final concis apres une reunion ou un arbitrage dense
+- `meeting_thread` -> thread visible depuis `#general`, `#pilotage` ou `#incidents`, format structure
+- `founder_synthesis` -> `#general`, recap final concis apres une reunion ou un arbitrage dense
 
 ## Voix
 

@@ -11,7 +11,12 @@ from .embedding import EmbeddingStrategy, choose_embedding_strategy
 from .gateway.service import GatewayService
 from .learning.service import LearningService
 from .local_model import LocalModelClient
+from .memory.blocks import MemoryBlockStore
+from .memory.curator import SleeptimeCuratorService
+from .memory.os_service import MemoryOSService
 from .memory.store import MemoryStore
+from .memory.temporal_graph import TemporalGraphService
+from .memory.thoughts import ThoughtMemoryService
 from .memory.tiering import TierManagerService
 from .mission.chain import MissionChainService
 from .observability import StructuredLogger
@@ -36,6 +41,11 @@ class AppServices:
     database: CanonicalDatabase
     journal: LocalJournal
     memory: MemoryStore
+    memory_blocks: MemoryBlockStore
+    memory_os: MemoryOSService
+    thoughts: ThoughtMemoryService
+    curator: SleeptimeCuratorService
+    temporal_graph: TemporalGraphService
     tier_manager: TierManagerService
     learning: LearningService
     github: GitHubLearningService
@@ -52,6 +62,7 @@ class AppServices:
 
     def close(self) -> None:
         self.memory.close()
+        self.temporal_graph.close()
         self.database.close()
 
 
@@ -74,7 +85,43 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
     database = CanonicalDatabase(paths.canonical_db_path, vector_dimensions=embedding_strategy.dimensions)
     journal = LocalJournal(database, paths.journal_file_path)
     logger = StructuredLogger(paths, path_policy)
-    memory = MemoryStore(database, paths, path_policy, embedding_strategy, secret_resolver)
+    memory = MemoryStore(
+        database,
+        paths,
+        path_policy,
+        embedding_strategy,
+        secret_resolver,
+        retrieval_sidecar_config=config.memory_config.retrieval_sidecar,
+    )
+    memory_blocks = MemoryBlockStore(
+        database=database,
+        paths=paths,
+        path_policy=path_policy,
+        config=config.memory_config.blocks,
+    )
+    temporal_graph = TemporalGraphService(
+        database=database,
+        paths=paths,
+        path_policy=path_policy,
+        config=config.memory_config.temporal_graph,
+    )
+    memory_os = MemoryOSService(
+        database=database,
+        journal=journal,
+        paths=paths,
+        path_policy=path_policy,
+        config=config.memory_config,
+        blocks=memory_blocks,
+        temporal_graph=temporal_graph,
+    )
+    thoughts = ThoughtMemoryService(
+        database=database,
+        memory_os=memory_os,
+        thoughts_config=config.memory_config.thoughts,
+        supersession_config=config.memory_config.supersession,
+    )
+    memory_os.attach_thought_service(thoughts)
+    memory.attach_memory_os(memory_os)
     tier_manager = TierManagerService(
         config=config.tier_manager_config,
         database=database,
@@ -128,6 +175,19 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         journal=journal,
         logger=logger,
         github_config=config.github_config,
+        memory_config=config.memory_config,
+    )
+    curator = SleeptimeCuratorService(
+        database=database,
+        journal=journal,
+        config=config.memory_config.curator,
+        blocks=memory_blocks,
+        memory_os=memory_os,
+        thoughts=thoughts,
+        temporal_graph=temporal_graph,
+        local_model_client=local_model_client,
+        secret_resolver=secret_resolver,
+        default_openai_model=config.execution_policy.default_model,
     )
     session_state = PersistentSessionState(database=database, api_runs=api_runs)
     gateway = GatewayService(
@@ -162,6 +222,11 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         database=database,
         journal=journal,
         memory=memory,
+        memory_blocks=memory_blocks,
+        memory_os=memory_os,
+        thoughts=thoughts,
+        curator=curator,
+        temporal_graph=temporal_graph,
         tier_manager=tier_manager,
         learning=learning,
         github=github,

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-CURRENT_SCHEMA_VERSION = "13"
+CURRENT_SCHEMA_VERSION = "14"
 
 
 def _quote_identifier(name: str) -> str:
@@ -694,6 +694,122 @@ class CanonicalDatabase:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS mem_cubes (
+                    cube_id TEXT PRIMARY KEY,
+                    layer TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    supersedes_json TEXT NOT NULL,
+                    sources_json TEXT NOT NULL,
+                    access_scope TEXT NOT NULL,
+                    usage_stats_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS memory_blocks (
+                    block_id TEXT PRIMARY KEY,
+                    block_name TEXT NOT NULL UNIQUE,
+                    owner_role TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    hash_sha256 TEXT NOT NULL,
+                    version INTEGER NOT NULL DEFAULT 1,
+                    access_policy_json TEXT NOT NULL,
+                    provenance_json TEXT NOT NULL,
+                    last_updated_by_role TEXT,
+                    last_updated_by_run_id TEXT,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS memory_block_revisions (
+                    revision_id TEXT PRIMARY KEY,
+                    block_id TEXT NOT NULL,
+                    block_name TEXT NOT NULL,
+                    version INTEGER NOT NULL,
+                    path TEXT NOT NULL,
+                    hash_sha256 TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    content_summary TEXT,
+                    change_reason TEXT,
+                    provenance_json TEXT NOT NULL,
+                    updated_by_role TEXT,
+                    updated_by_run_id TEXT,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS curator_runs (
+                    curator_run_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    trigger TEXT NOT NULL,
+                    window_start TEXT NOT NULL,
+                    window_end TEXT NOT NULL,
+                    llm_mode TEXT NOT NULL,
+                    model TEXT,
+                    summary TEXT,
+                    input_summary_json TEXT NOT NULL,
+                    output_summary_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS thought_memories (
+                    thought_id TEXT PRIMARY KEY,
+                    kind TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    status TEXT NOT NULL,
+                    source_ids_json TEXT NOT NULL,
+                    supersedes_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS supersession_records (
+                    supersession_record_id TEXT PRIMARY KEY,
+                    superseded_type TEXT NOT NULL,
+                    superseded_id TEXT NOT NULL,
+                    superseding_type TEXT NOT NULL,
+                    superseding_id TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS memory_operation_traces (
+                    trace_id TEXT PRIMARY KEY,
+                    operation TEXT NOT NULL,
+                    target_type TEXT NOT NULL,
+                    target_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    detail_json TEXT NOT NULL,
+                    routing_trace_id TEXT,
+                    run_id TEXT,
+                    decision_record_id TEXT,
+                    channel_event_id TEXT,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS temporal_graph_facts (
+                    fact_id TEXT PRIMARY KEY,
+                    episode_id TEXT,
+                    entity TEXT NOT NULL,
+                    relation TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    valid_at TEXT NOT NULL,
+                    invalid_at TEXT,
+                    source_ref TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS github_issue_ingestions (
                     repo TEXT NOT NULL,
                     issue_number INTEGER NOT NULL,
@@ -846,6 +962,32 @@ class CanonicalDatabase:
                 ON dataset_candidates(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_eval_candidates_created
                 ON eval_candidates(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_mem_cubes_layer_updated
+                ON mem_cubes(layer, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_mem_cubes_kind_updated
+                ON mem_cubes(kind, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_memory_blocks_name_updated
+                ON memory_blocks(block_name, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_memory_block_revisions_block_created
+                ON memory_block_revisions(block_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_curator_runs_status_updated
+                ON curator_runs(status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_curator_runs_window
+                ON curator_runs(window_start, window_end, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_thought_memories_status_updated
+                ON thought_memories(status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_thought_memories_kind_updated
+                ON thought_memories(kind, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_supersession_superseded
+                ON supersession_records(superseded_type, superseded_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_memory_operation_traces_target
+                ON memory_operation_traces(target_type, target_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_memory_operation_traces_operation
+                ON memory_operation_traces(operation, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_temporal_graph_facts_entity_valid
+                ON temporal_graph_facts(entity, valid_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_temporal_graph_facts_source
+                ON temporal_graph_facts(source_ref, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_github_issue_ingestions_ingested
                 ON github_issue_ingestions(ingested_at DESC);
             CREATE INDEX IF NOT EXISTS idx_github_issue_ingestions_updated

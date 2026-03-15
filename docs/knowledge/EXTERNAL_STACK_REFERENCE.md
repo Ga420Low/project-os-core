@@ -19,8 +19,8 @@ Ces briques sont au coeur de la version finale.
   - role: recherche vectorielle embarquee et portable
   - decision: coeur du retrieval local
 - `OpenMemory`
-  - role: moteur memoire primaire local-first
-  - decision: coeur de la memoire
+  - role: sidecar retrieval local-first compatible
+  - decision: brique coeur utile, mais la verite memoire reste dans `SQLite + Memory OS`
 - `GPT API` (`OpenAI`)
   - role: cerveau generaliste et arbitrage
   - decision: coeur du raisonnement
@@ -63,8 +63,8 @@ Ces briques renforcent le systeme sans devenir le centre de gravite.
   - role: grounding, dataset, supervision, idees d'eval
   - decision: support recherche et evaluation
 - `Letta`
-  - role: memoire agent stateful plus large
-  - decision: alternative serieuse et backup de comparaison
+  - role: reference forte pour shared blocks et sleeptime curator
+  - decision: source de patterns, pas noyau memoire proprietaire
 - `WorldGUI`
   - role: benchmark desktop GUI
   - decision: support evaluation

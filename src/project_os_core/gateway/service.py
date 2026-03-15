@@ -3,6 +3,8 @@
 import hashlib
 import json
 import logging
+import sqlite3
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from ..database import CanonicalDatabase, dump_json
@@ -65,30 +67,49 @@ class GatewayService:
         risk_class=None,
         metadata: dict | None = None,
     ) -> GatewayDispatchResult:
-        candidate = self.selective_sync.build_candidate(event)
-        duplicate_event_id = self._duplicate_channel_event_id(event)
+        normalized_event = self._normalize_event_for_routing(event)
+        candidate = self.selective_sync.build_candidate(normalized_event)
+        candidate.metadata.update(self._operator_override_metadata(normalized_event))
+        duplicate_event_id = self._duplicate_channel_event_id(normalized_event)
         if duplicate_event_id:
             self.journal.append(
                 "gateway_duplicate_ingress_ignored",
                 "gateway",
                 {
-                    "channel_event_id": event.event_id,
+                    "channel_event_id": normalized_event.event_id,
                     "duplicate_of_event_id": duplicate_event_id,
-                    "message_id": event.message.message_id,
-                    "surface": event.surface,
+                    "message_id": normalized_event.message.message_id,
+                    "surface": normalized_event.surface,
                 },
             )
-            return self._build_duplicate_dispatch(event, duplicate_event_id)
+            return self._build_duplicate_dispatch(normalized_event, duplicate_event_id)
         promotion = self.selective_sync.decide_promotion(candidate)
-        human_artifacts = self.selective_sync.build_human_artifacts(event)
+        human_artifacts = self.selective_sync.build_human_artifacts(normalized_event)
         candidate.metadata["human_artifacts"] = [to_jsonable(item) for item in human_artifacts]
-        channel_class = self._channel_class_for(event.message.channel, event.message.thread_ref.parent_thread_id)
+        duplicate_event_id = self._reserve_channel_event(normalized_event, candidate)
+        if duplicate_event_id:
+            self.journal.append(
+                "gateway_duplicate_ingress_ignored",
+                "gateway",
+                {
+                    "channel_event_id": normalized_event.event_id,
+                    "duplicate_of_event_id": duplicate_event_id,
+                    "message_id": normalized_event.message.message_id,
+                    "surface": normalized_event.surface,
+                    "mode": "race_safe_reservation",
+                },
+            )
+            return self._build_duplicate_dispatch(normalized_event, duplicate_event_id)
+        channel_class = self._channel_class_for(
+            normalized_event.message.channel,
+            normalized_event.message.thread_ref.parent_thread_id,
+        )
         communication_mode = self._communication_mode_for(candidate.classification, channel_class)
         envelope = OperatorEnvelope(
             envelope_id=new_id("envelope"),
-            actor_id=event.message.actor_id,
-            channel=event.message.channel,
-            objective=event.message.text.strip() or candidate.summary,
+            actor_id=normalized_event.message.actor_id,
+            channel=normalized_event.message.channel,
+            objective=normalized_event.message.text.strip() or candidate.summary,
             target_profile=target_profile,
             requested_worker=requested_worker,
             requested_risk_class=risk_class,
@@ -96,27 +117,27 @@ class GatewayService:
             operator_language="fr",
             audience=OperatorAudience.NON_DEVELOPER,
             metadata={
-                "channel_event_id": event.event_id,
+                "channel_event_id": normalized_event.event_id,
                 "message_kind": candidate.classification.value,
                 "channel_class": channel_class.value,
                 "sensitivity_class": candidate.metadata.get("sensitivity_class", SensitivityClass.S1.value),
                 "sensitivity_reason": candidate.metadata.get("sensitivity_reason"),
-                "thread_ref": to_jsonable(event.message.thread_ref),
-                "attachments": [to_jsonable(item) for item in event.message.attachments],
+                "thread_ref": to_jsonable(normalized_event.message.thread_ref),
+                "attachments": [to_jsonable(item) for item in normalized_event.message.attachments],
                 "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                **self._operator_override_metadata(normalized_event),
                 **(metadata or {}),
             },
         )
         snapshot = self.session_state.load()
-        resolved = self.session_state.resolve_intent(event.message.text, snapshot=snapshot)
+        resolved = self.session_state.resolve_intent(normalized_event.message.text, snapshot=snapshot)
         if resolved is not None:
-            self._persist_channel_event(event, candidate)
             self._persist_promotion(candidate, promotion)
             action_result = self._execute_resolved_intent(resolved)
             promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
-            reply = self._build_session_reply(event, envelope.envelope_id, resolved, action_result)
+            reply = self._build_session_reply(normalized_event, envelope.envelope_id, resolved, action_result)
             dispatch = self._build_session_dispatch(
-                event=event,
+                event=normalized_event,
                 envelope=envelope,
                 resolved=resolved,
                 action_result=action_result,
@@ -128,7 +149,7 @@ class GatewayService:
                 human_artifacts=human_artifacts,
             )
             thread_binding = self._upsert_discord_thread_binding(
-                event=event,
+                event=normalized_event,
                 dispatch=dispatch,
                 channel_class=channel_class,
             )
@@ -141,7 +162,7 @@ class GatewayService:
                 "gateway",
                 {
                     "dispatch_id": dispatch.dispatch_id,
-                    "channel_event_id": event.event_id,
+                    "channel_event_id": normalized_event.event_id,
                     "resolved_action": resolved.action,
                     "target_id": resolved.target_id,
                     "promoted_memory_count": len(promoted_memory_ids),
@@ -152,35 +173,36 @@ class GatewayService:
         decision, trace, mission_run = self.router.route_intent(intent, persist=True)
         promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
 
-        if decision.allowed and self._should_inline_chat(event, decision):
+        if decision.allowed and self._should_inline_chat(normalized_event, decision):
             message_for_model = self._message_for_route(candidate, decision)
             inline_response = self._call_inline_chat(
                 message=message_for_model,
                 model=decision.model_route.model,
                 provider=decision.model_route.provider,
+                reasoning_effort=decision.model_route.reasoning_effort,
                 sensitivity=self._candidate_sensitivity(candidate),
             )
             if inline_response:
                 reply = OperatorReply(
                     reply_id=new_id("reply"),
-                    channel=event.message.channel,
+                    channel=normalized_event.message.channel,
                     envelope_id=envelope.envelope_id,
-                    thread_ref=event.message.thread_ref,
-                    summary=inline_response,
+                    thread_ref=normalized_event.message.thread_ref,
+                    summary=self._decorate_inline_reply_summary(inline_response, decision),
                     mission_run_id=mission_run.mission_run_id if mission_run else None,
                     decision_id=decision.decision_id,
                     reply_kind="chat_response",
                     communication_mode=decision.communication_mode,
                     operator_language=decision.operator_language,
                     audience=decision.audience,
-                    metadata={"surface": event.surface, "speech_policy": decision.speech_policy.value},
+                    metadata={"surface": normalized_event.surface, "speech_policy": decision.speech_policy.value},
                 )
             elif decision.model_route.provider == "local":
                 reply = OperatorReply(
                     reply_id=new_id("reply"),
-                    channel=event.message.channel,
+                    channel=normalized_event.message.channel,
                     envelope_id=envelope.envelope_id,
-                    thread_ref=event.message.thread_ref,
+                    thread_ref=normalized_event.message.thread_ref,
                     summary="Message bloque: la voie locale sensible est indisponible. Rien n'a ete envoye au cloud.",
                     mission_run_id=mission_run.mission_run_id if mission_run else None,
                     decision_id=decision.decision_id,
@@ -188,12 +210,22 @@ class GatewayService:
                     communication_mode=decision.communication_mode,
                     operator_language=decision.operator_language,
                     audience=decision.audience,
-                    metadata={"surface": event.surface, "speech_policy": decision.speech_policy.value},
+                    metadata={"surface": normalized_event.surface, "speech_policy": decision.speech_policy.value},
                 )
             else:
-                reply = self._build_reply(event, envelope.envelope_id, decision, mission_run.mission_run_id if mission_run else None)
+                reply = self._build_reply(
+                    normalized_event,
+                    envelope.envelope_id,
+                    decision,
+                    mission_run.mission_run_id if mission_run else None,
+                )
         else:
-            reply = self._build_reply(event, envelope.envelope_id, decision, mission_run.mission_run_id if mission_run else None)
+            reply = self._build_reply(
+                normalized_event,
+                envelope.envelope_id,
+                decision,
+                mission_run.mission_run_id if mission_run else None,
+            )
         run_card = self._build_run_card(
             decision=decision,
             channel_class=channel_class,
@@ -201,11 +233,10 @@ class GatewayService:
             mission_run_id=mission_run.mission_run_id if mission_run else None,
         )
 
-        self._persist_channel_event(event, candidate)
         self._persist_promotion(candidate, promotion)
         dispatch = GatewayDispatchResult(
             dispatch_id=new_id("dispatch"),
-            channel_event_id=event.event_id,
+            channel_event_id=normalized_event.event_id,
             envelope_id=envelope.envelope_id,
             intent_id=intent.intent_id,
             decision_id=decision.decision_id,
@@ -223,10 +254,13 @@ class GatewayService:
                 "channel_class": channel_class.value,
                 "communication_mode": communication_mode.value,
                 "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                "model_provider": decision.model_route.provider,
+                "requested_provider": envelope.metadata.get("requested_provider"),
+                "message_prefix_consumed": envelope.metadata.get("message_prefix_consumed"),
             },
         )
         thread_binding = self._upsert_discord_thread_binding(
-            event=event,
+            event=normalized_event,
             dispatch=dispatch,
             channel_class=channel_class,
         )
@@ -239,13 +273,99 @@ class GatewayService:
             "gateway",
             {
                 "dispatch_id": dispatch.dispatch_id,
-                "channel_event_id": event.event_id,
+                "channel_event_id": normalized_event.event_id,
                 "decision_id": decision.decision_id,
                 "mission_run_id": dispatch.mission_run_id,
                 "promoted_memory_count": len(promoted_memory_ids),
             },
         )
         return dispatch
+
+    @staticmethod
+    def _parse_operator_provider_override(raw_text: str) -> tuple[str, dict[str, str]] | None:
+        stripped = raw_text.lstrip()
+        if not stripped:
+            return None
+        prefixes = {
+            "CLAUDE": {"requested_provider": "anthropic", "requested_model_family": "claude"},
+            "GPT": {"requested_provider": "openai", "requested_model_family": "gpt"},
+            "LOCAL": {"requested_provider": "local", "requested_model_family": "local"},
+            "OLLAMA": {"requested_provider": "local", "requested_model_family": "ollama"},
+        }
+        upper = stripped.upper()
+        for token, metadata in prefixes.items():
+            remainder: str | None = None
+            if upper.startswith(f"{token}:"):
+                remainder = stripped[len(token) + 1 :].strip()
+            elif upper.startswith(f"{token} "):
+                remainder = stripped[len(token) :].strip()
+            if not remainder:
+                continue
+            return (
+                remainder,
+                {
+                    **metadata,
+                    "requested_route_mode": "forced_provider",
+                    "message_prefix_consumed": token,
+                },
+            )
+        return None
+
+    def _normalize_event_for_routing(self, event: ChannelEvent) -> ChannelEvent:
+        parsed = self._parse_operator_provider_override(event.message.text)
+        if parsed is None:
+            return event
+        normalized_text, override_metadata = parsed
+        message_metadata = {
+            **event.message.metadata,
+            **override_metadata,
+            "raw_operator_text": event.message.text,
+            "normalized_operator_text": normalized_text,
+        }
+        raw_payload = dict(event.raw_payload)
+        operator_ingress = dict(raw_payload.get("operator_ingress") or {})
+        operator_ingress.update(
+            {
+                **override_metadata,
+                "raw_operator_text": event.message.text,
+                "normalized_operator_text": normalized_text,
+            }
+        )
+        raw_payload["operator_ingress"] = operator_ingress
+        return replace(
+            event,
+            message=replace(event.message, text=normalized_text, metadata=message_metadata),
+            raw_payload=raw_payload,
+        )
+
+    @staticmethod
+    def _operator_override_metadata(event: ChannelEvent) -> dict[str, str]:
+        message_metadata = event.message.metadata
+        requested_provider = str(message_metadata.get("requested_provider") or "").strip()
+        if not requested_provider:
+            return {}
+        fields = (
+            "requested_provider",
+            "requested_model_family",
+            "requested_route_mode",
+            "message_prefix_consumed",
+            "raw_operator_text",
+            "normalized_operator_text",
+        )
+        return {
+            field: str(message_metadata[field])
+            for field in fields
+            if message_metadata.get(field) not in (None, "")
+        }
+
+    def _reserve_channel_event(self, event: ChannelEvent, candidate) -> str | None:
+        try:
+            self._persist_channel_event(event, candidate)
+        except sqlite3.IntegrityError as exc:
+            if "channel_events.ingress_dedup_key" not in str(exc):
+                raise
+            return self._duplicate_channel_event_id(event)
+        return None
 
     def _execute_resolved_intent(self, resolved: ResolvedIntent) -> dict:
         if resolved.action == "approve_contract":
@@ -690,20 +810,72 @@ class GatewayService:
             response = client.messages.create(
                 model=model,
                 max_tokens=500,
-                system=(
-                    "Tu es Project OS, un agent autonome qui gere des projets de developpement. "
-                    "Tu reponds en francais, de facon concise et directe. "
-                    "Tu es connecte via Discord et tu assistes le fondateur du projet. "
-                    "Sois utile, professionnel mais decontracte."
-                ),
+                system=self._simple_chat_system_prompt(),
                 messages=[
-                    {"role": "user", "content": message},
+                    {"role": "user", "content": self._simple_chat_user_message(message)},
                 ],
             )
             return response.content[0].text
         except Exception as exc:
             logging.getLogger("project_os.gateway").warning("simple_chat Claude call failed: %s", exc)
             return None
+
+    def _call_openai_chat(
+        self,
+        message: str,
+        *,
+        model: str | None,
+        reasoning_effort: str | None,
+    ) -> str | None:
+        if not self.secret_resolver:
+            return None
+        try:
+            from openai import OpenAI
+
+            api_key = self.secret_resolver.get_required("OPENAI_API_KEY")
+            client = OpenAI(api_key=api_key)
+            response = client.responses.create(
+                model=model or "gpt-5.4",
+                reasoning={"effort": reasoning_effort or "medium"},
+                input=(
+                    f"System:\n{self._simple_chat_system_prompt()}\n\n"
+                    f"User:\n{self._simple_chat_user_message(message)}"
+                ),
+                store=False,
+            )
+            output_text = getattr(response, "output_text", None)
+            if not output_text and hasattr(response, "model_dump"):
+                output_text = response.model_dump().get("output_text")
+            rendered = str(output_text or "").strip()
+            return rendered or None
+        except Exception as exc:
+            logging.getLogger("project_os.gateway").warning("simple_chat OpenAI call failed: %s", exc)
+            return None
+
+    @staticmethod
+    def _simple_chat_system_prompt() -> str:
+        return (
+            "Tu es la voix operateur de Project OS sur la machine Windows du fondateur. "
+            "Tu reponds en francais, de facon concise, claire et concrete. "
+            "Tu n'es pas un assistant web public ni une simple interface de chat. "
+            "Tu peux orchestrer des actions sur le projet et sur les dossiers geres par Project OS quand une mission le demande. "
+            "N'affirme jamais que tu n'as pas acces au projet, aux dossiers, au systeme de fichiers ou aux APIs locales de facon generale. "
+            "Si tu n'as pas encore inspecte un fichier ou execute une action dans ce tour, dis simplement que tu ne l'as pas encore fait. "
+            "Ne te presente pas comme Claude ou Anthropic. "
+            "Ne promets jamais une action non executee."
+        )
+
+    @staticmethod
+    def _simple_chat_user_message(message: str) -> str:
+        return (
+            "Contexte runtime:\n"
+            "- surface: Discord\n"
+            "- role: Project OS operator voice\n"
+            "- host: Windows-first\n"
+            "- managed_workspace: D:/ProjectOS/project-os-core\n"
+            "- principle: do not invent completed file inspection or executed actions\n\n"
+            f"Message fondateur:\n{message}"
+        )
 
     def _call_local_chat(
         self,
@@ -734,11 +906,28 @@ class GatewayService:
         message: str,
         model: str | None,
         provider: str,
+        reasoning_effort: str | None,
         sensitivity: SensitivityClass,
     ) -> str | None:
         if provider == "local":
             return self._call_local_chat(message=message, model=model, sensitivity=sensitivity)
+        if provider == "openai":
+            return self._call_openai_chat(
+                message,
+                model=model,
+                reasoning_effort=reasoning_effort,
+            )
         return self._call_simple_chat(message=message, model=model or "claude-sonnet-4-20250514")
+
+    @staticmethod
+    def _decorate_inline_reply_summary(summary: str, decision: RoutingDecision) -> str:
+        rendered = summary.strip()
+        if decision.model_route.provider == "local":
+            label = "[Local S3 / Ollama]" if decision.route_reason == "s3_local_route" else "[Local / Ollama]"
+            if rendered.lower().startswith(label.lower()):
+                return rendered
+            return f"{label} {rendered}"
+        return rendered
 
     @staticmethod
     def _candidate_sensitivity(candidate) -> SensitivityClass:
@@ -762,6 +951,11 @@ class GatewayService:
         if event.surface != "discord" or not decision.allowed:
             return False
         if decision.model_route.provider == "local":
+            return decision.communication_mode in {CommunicationMode.DISCUSSION, CommunicationMode.ARCHITECT}
+        if (
+            decision.route_reason.startswith("operator_forced_")
+            and decision.model_route.provider in {"anthropic", "openai"}
+        ):
             return decision.communication_mode in {CommunicationMode.DISCUSSION, CommunicationMode.ARCHITECT}
         return decision.route_reason == "discord_simple_route"
 
@@ -959,6 +1153,9 @@ class GatewayService:
             "exceptional_requires_founder_approval": "une validation fondateur est obligatoire",
             "daily_budget_soft_exceeded": "le budget journalier souple est depasse",
             "s3_requires_local_model": "le contenu est trop sensible pour le cloud et aucune voie locale sure n'est disponible",
+            "operator_forced_anthropic_unavailable": "la voie Claude demandee n'est pas disponible sur cette machine",
+            "operator_forced_openai_unavailable": "la voie GPT demandee n'est pas disponible sur cette machine",
+            "operator_forced_local_unavailable": "la voie locale demandee n'est pas disponible sur cette machine",
         }
         return ", ".join(mapping.get(item, item) for item in reasons)
 
@@ -1129,4 +1326,3 @@ class GatewayService:
         if dispatch.mission_run_id:
             return "run"
         return "discussion"
-

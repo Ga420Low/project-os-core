@@ -5,12 +5,14 @@ from dataclasses import replace
 from typing import Any
 
 from ..artifacts import write_json_artifact
+from ..config import RetrievalSidecarConfig
 from ..database import CanonicalDatabase, dump_json
 from ..embedding import EmbeddingService, EmbeddingStrategy
 from ..models import MemoryRecord, MemoryTier, RetrievalContext, MemoryType, new_id, to_jsonable
 from ..paths import PathPolicy, ProjectPaths
 from ..secrets import SecretResolver
 from .adapter import OpenMemoryAdapter
+from .retrieval_sidecar import RetrievalSidecar
 
 
 class MemoryStore:
@@ -21,6 +23,7 @@ class MemoryStore:
         path_policy: PathPolicy,
         embedding_strategy: EmbeddingStrategy,
         secret_resolver: SecretResolver,
+        retrieval_sidecar_config: RetrievalSidecarConfig | None = None,
     ):
         self.database = database
         self.paths = paths
@@ -29,11 +32,17 @@ class MemoryStore:
         self.secret_resolver = secret_resolver
         self.embedding_service = EmbeddingService(embedding_strategy, secret_resolver)
         self.openmemory = OpenMemoryAdapter(paths, embedding_strategy, secret_resolver)
+        self.retrieval_sidecar_config = retrieval_sidecar_config or RetrievalSidecarConfig()
+        self.retrieval_sidecar = RetrievalSidecar(self.database, self.retrieval_sidecar_config)
         self._tier_manager: Any | None = None
+        self._memory_os: Any | None = None
         self._ensure_embedding_index_current()
 
     def attach_tier_manager(self, tier_manager: Any) -> None:
         self._tier_manager = tier_manager
+
+    def attach_memory_os(self, memory_os: Any) -> None:
+        self._memory_os = memory_os
 
     def remember(
         self,
@@ -197,18 +206,37 @@ class MemoryStore:
         return self._row_to_memory_record(row)
 
     def search(self, context: RetrievalContext) -> list[dict[str, Any]]:
+        hits: list[dict[str, Any]]
+        if self.retrieval_sidecar_config.enabled:
+            hits = self.retrieval_sidecar.apply(
+                context=context,
+                collect_base_hits=lambda query, limit: self._collect_base_hits(query, limit, context),
+            )
+        else:
+            hits = self._collect_base_hits(context.query, context.limit, context)
+        if self._memory_os is not None:
+            return self._memory_os.enrich_search_results(context=context, hits=hits)
+        return hits
+
+    def _collect_base_hits(
+        self,
+        query: str,
+        limit: int,
+        context: RetrievalContext,
+    ) -> list[dict[str, Any]]:
         hits: dict[str, dict[str, Any]] = {}
         try:
-            query_vector = self.embedding_service.vector_literal(self.embedding_service.embed_text(context.query))
+            query_vector = self.embedding_service.vector_literal(self.embedding_service.embed_text(query))
         except Exception:
-            fallback = self.embedding_service._local_hash_embedding(context.query, self.database.vector_dimensions)
+            fallback = self.embedding_service._local_hash_embedding(query, self.database.vector_dimensions)
             query_vector = self.embedding_service.vector_literal(fallback)
-        for row in self.database.search_vectors(query_vector, context.limit):
+        for row in self.database.search_vectors(query_vector, limit):
             record = self.get(str(row["memory_id"]))
             if not self._is_search_visible(record, context):
                 continue
             hits[record.memory_id] = {
                 "memory_id": record.memory_id,
+                "_candidate_key": record.memory_id,
                 "source": "sqlite_vec",
                 "distance": float(row["distance"]),
                 "record": to_jsonable(record),
@@ -216,7 +244,8 @@ class MemoryStore:
 
         if self.openmemory.status.available:
             try:
-                for result in self.openmemory.search(context):
+                query_context = replace(context, query=query, limit=limit)
+                for result in self.openmemory.search(query_context):
                     result_id = result.get("id") or result.get("root_memory_id")
                     canonical = None
                     if result_id:
@@ -235,6 +264,7 @@ class MemoryStore:
                             continue
                         hits[canonical] = {
                             "memory_id": canonical,
+                            "_candidate_key": canonical,
                             "source": "openmemory",
                             "record": to_jsonable(record),
                             "openmemory": result,
@@ -243,10 +273,15 @@ class MemoryStore:
                     orphan_id = new_id("memory_orphan")
                     hits[orphan_id] = {
                         "memory_id": orphan_id,
+                        "_candidate_key": orphan_id,
                         "source": "openmemory_only",
                         "record": {
                             "content": result.get("content") or result.get("text"),
                             "user_id": context.user_id,
+                            "metadata": {
+                                "privacy_view": "clean",
+                                "openmemory_only": True,
+                            },
                         },
                         "openmemory": result,
                     }
@@ -255,7 +290,7 @@ class MemoryStore:
 
         ordered = list(hits.values())
         ordered.sort(key=lambda item: item.get("distance", 0.0))
-        return ordered[: context.limit]
+        return ordered[: limit]
 
     def reindex(self) -> dict[str, Any]:
         return self._ensure_embedding_index_current(force=True)

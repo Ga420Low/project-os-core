@@ -46,8 +46,14 @@ class ConfigAndPathsTests(unittest.TestCase):
             policy = PathPolicy(paths)
 
             self.assertTrue(paths.runtime_root.exists())
+            self.assertTrue(paths.memory_blocks_root.exists())
+            self.assertTrue(paths.memory_graph_root.exists())
             self.assertTrue(policy.is_forbidden(paths.archive_do_not_touch_root))
             self.assertTrue(policy.is_managed(paths.runtime_root))
+            self.assertTrue(config.memory_config.retrieval_sidecar.enabled)
+            self.assertTrue(config.memory_config.blocks.enabled)
+            self.assertTrue(config.memory_config.curator.enabled)
+            self.assertEqual(config.memory_config.temporal_graph.backend, "kuzu_embedded")
             with self.assertRaises(PermissionError):
                 policy.ensure_allowed_write(paths.archive_do_not_touch_root / "blocked.json")
 

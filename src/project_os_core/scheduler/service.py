@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from ..config import GitHubConfig
+from ..config import GitHubConfig, MemoryConfig
 from ..database import CanonicalDatabase, dump_json
 from ..models import new_id, utc_now_iso
 from ..observability import StructuredLogger
@@ -80,11 +80,13 @@ class SchedulerService:
         journal: LocalJournal,
         logger: StructuredLogger,
         github_config: GitHubConfig | None = None,
+        memory_config: MemoryConfig | None = None,
     ) -> None:
         self.database = database
         self.journal = journal
         self.logger = logger
         self.github_config = github_config
+        self.memory_config = memory_config
         self._ensure_default_tasks()
 
     def _ensure_default_tasks(self) -> None:
@@ -121,6 +123,35 @@ class SchedulerService:
 
     def _default_tasks(self) -> list[dict[str, Any]]:
         tasks = [dict(item) for item in BASE_DEFAULT_TASKS]
+        if self.memory_config is not None:
+            tasks.extend(
+                [
+                    {
+                        "name": "memory_curator_sleeptime",
+                        "schedule_kind": "interval",
+                        "interval_seconds": max(300, int(self.memory_config.curator.interval_seconds)),
+                        "command": "memory_curator_sleeptime",
+                        "command_args": {"trigger": "scheduled"},
+                        "enabled": bool(self.memory_config.curator.enabled),
+                    },
+                    {
+                        "name": "memory_block_refresh",
+                        "schedule_kind": "interval",
+                        "interval_seconds": max(300, int(self.memory_config.blocks.refresh_interval_seconds)),
+                        "command": "memory_block_refresh",
+                        "command_args": {},
+                        "enabled": bool(self.memory_config.blocks.enabled),
+                    },
+                    {
+                        "name": "memory_supersession_scan",
+                        "schedule_kind": "interval",
+                        "interval_seconds": max(600, int(self.memory_config.supersession.interval_seconds)),
+                        "command": "memory_supersession_scan",
+                        "command_args": {},
+                        "enabled": bool(self.memory_config.supersession.enabled),
+                    },
+                ]
+            )
         if self.github_config is not None:
             tasks.append(
                 {

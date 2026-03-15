@@ -402,6 +402,32 @@ class OpenClawLiveTests(unittest.TestCase):
             finally:
                 services.close()
 
+    def test_openclaw_doctor_accepts_private_server_without_mentions_when_policy_allows_it(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            services = self._build_services(tmp_path)
+            try:
+                runtime_payload = self._runtime_config_payload(
+                    tmp_path,
+                    Path(__file__).resolve().parents[2] / "integrations" / "openclaw" / "project-os-gateway-adapter",
+                )
+                runtime_payload["channels"]["discord"]["guilds"] = {"*": {"requireMention": False}}  # type: ignore[index]
+                (services.paths.openclaw_state_root / "openclaw.json").write_text(
+                    json.dumps(runtime_payload),
+                    encoding="utf-8",
+                )
+
+                services.config.openclaw_config.discord_require_mention = False
+                self._stub_openclaw_binary_and_status(services)
+
+                report = services.openclaw.doctor()
+
+                self.assertEqual(report.verdict, "OK")
+                by_name = {item["name"]: item for item in report.checks}
+                self.assertEqual(by_name["discord_policy"]["status"], "ok")
+            finally:
+                services.close()
+
     def test_openclaw_replay_all_fixtures_respects_router_and_selective_sync(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = self._build_services(Path(tmp))
@@ -686,6 +712,163 @@ class OpenClawLiveTests(unittest.TestCase):
                 checks_by_name = {item["name"]: item for item in report.checks}
                 self.assertEqual(checks_by_name["plugin_catalog"]["status"], "bloque")
                 self.assertEqual(checks_by_name["pairing_secret_exposure"]["status"], "bloque")
+            finally:
+                services.close()
+
+    def test_openclaw_self_heal_is_noop_when_gateway_is_already_healthy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.openclaw._resolve_openclaw_binary = lambda: "openclaw"  # type: ignore[method-assign]
+
+                def _fake_command(args, *, timeout_ms):
+                    if args[:3] == ["gateway", "status", "--json"]:
+                        return {
+                            "ok": True,
+                            "stdout": '{"service":{"loaded":true,"runtime":{"status":"unknown"}},"port":{"status":"busy","listeners":[{"pid":123}]},"rpc":{"ok":true}}',
+                            "stderr": "",
+                            "parsed": {
+                                "service": {"loaded": True, "runtime": {"status": "unknown"}},
+                                "port": {"status": "busy", "listeners": [{"pid": 123}]},
+                                "rpc": {"ok": True},
+                            },
+                            "returncode": 0,
+                        }
+                    raise AssertionError(f"Unexpected OpenClaw command: {args}")
+
+                services.openclaw._run_openclaw_command = _fake_command  # type: ignore[method-assign]
+
+                report = services.openclaw.self_heal()
+                self.assertEqual(report.status, "healthy")
+                self.assertEqual(report.actions, [])
+            finally:
+                services.close()
+
+    def test_openclaw_self_heal_repairs_gateway_with_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.openclaw._resolve_openclaw_binary = lambda: "openclaw"  # type: ignore[method-assign]
+                status_payloads = [
+                    {
+                        "service": {"loaded": True, "runtime": {"status": "unknown"}},
+                        "port": {"status": "free", "listeners": []},
+                        "rpc": {"ok": False},
+                    },
+                    {
+                        "service": {"loaded": True, "runtime": {"status": "unknown"}},
+                        "port": {"status": "busy", "listeners": [{"pid": 123}]},
+                        "rpc": {"ok": True},
+                    },
+                ]
+
+                def _fake_command(args, *, timeout_ms):
+                    if args[:3] == ["gateway", "status", "--json"]:
+                        parsed = status_payloads.pop(0)
+                        return {
+                            "ok": True,
+                            "stdout": json.dumps(parsed),
+                            "stderr": "",
+                            "parsed": parsed,
+                            "returncode": 0,
+                        }
+                    if args[:2] == ["gateway", "restart"]:
+                        return {"ok": True, "stdout": "", "stderr": "", "parsed": None, "returncode": 0}
+                    raise AssertionError(f"Unexpected OpenClaw command: {args}")
+
+                services.openclaw._run_openclaw_command = _fake_command  # type: ignore[method-assign]
+
+                report = services.openclaw.self_heal()
+                self.assertEqual(report.status, "restarted")
+                self.assertEqual(report.actions, ["gateway_restart"])
+            finally:
+                services.close()
+
+    def test_openclaw_self_heal_falls_back_to_start_after_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.openclaw._resolve_openclaw_binary = lambda: "openclaw"  # type: ignore[method-assign]
+                status_payloads = [
+                    {
+                        "service": {"loaded": True, "runtime": {"status": "unknown"}},
+                        "port": {"status": "free", "listeners": []},
+                        "rpc": {"ok": False},
+                    },
+                    {
+                        "service": {"loaded": True, "runtime": {"status": "unknown"}},
+                        "port": {"status": "free", "listeners": []},
+                        "rpc": {"ok": False},
+                    },
+                    {
+                        "service": {"loaded": True, "runtime": {"status": "unknown"}},
+                        "port": {"status": "busy", "listeners": [{"pid": 123}]},
+                        "rpc": {"ok": True},
+                    },
+                ]
+
+                def _fake_command(args, *, timeout_ms):
+                    if args[:3] == ["gateway", "status", "--json"]:
+                        parsed = status_payloads.pop(0)
+                        return {
+                            "ok": True,
+                            "stdout": json.dumps(parsed),
+                            "stderr": "",
+                            "parsed": parsed,
+                            "returncode": 0,
+                        }
+                    if args[:2] == ["gateway", "restart"]:
+                        return {"ok": False, "stdout": "", "stderr": "restart timeout", "parsed": None, "returncode": 1}
+                    if args[:2] == ["gateway", "start"]:
+                        return {"ok": True, "stdout": "", "stderr": "", "parsed": None, "returncode": 0}
+                    raise AssertionError(f"Unexpected OpenClaw command: {args}")
+
+                services.openclaw._run_openclaw_command = _fake_command  # type: ignore[method-assign]
+
+                report = services.openclaw.self_heal()
+                self.assertEqual(report.status, "started")
+                self.assertEqual(report.actions, ["gateway_restart", "gateway_start"])
+            finally:
+                services.close()
+
+    def test_openclaw_self_heal_respects_cooldown_after_recent_repair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.openclaw._resolve_openclaw_binary = lambda: "openclaw"  # type: ignore[method-assign]
+                services.openclaw._write_json(  # type: ignore[attr-defined]
+                    services.paths.openclaw_self_heal_report_path,
+                    {
+                        "report_id": "openclaw_self_heal_previous",
+                        "status": "restarted",
+                        "created_at": "2026-03-15T05:58:00+00:00",
+                        "metadata": {
+                            "last_repair_attempt_at": "2999-03-15T05:58:00+00:00",
+                        },
+                    },
+                )
+
+                def _fake_command(args, *, timeout_ms):
+                    if args[:3] == ["gateway", "status", "--json"]:
+                        parsed = {
+                            "service": {"loaded": True, "runtime": {"status": "unknown"}},
+                            "port": {"status": "free", "listeners": []},
+                            "rpc": {"ok": False},
+                        }
+                        return {
+                            "ok": True,
+                            "stdout": json.dumps(parsed),
+                            "stderr": "",
+                            "parsed": parsed,
+                            "returncode": 0,
+                        }
+                    raise AssertionError(f"Unexpected OpenClaw command: {args}")
+
+                services.openclaw._run_openclaw_command = _fake_command  # type: ignore[method-assign]
+
+                report = services.openclaw.self_heal()
+                self.assertEqual(report.status, "cooldown_skip")
+                self.assertEqual(report.actions, [])
             finally:
                 services.close()
 

@@ -28,6 +28,15 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
 - [x] Pointeurs d'artefacts et archivage poses
 - [x] Strategie embeddings OpenAI/fallback locale posee
 - [x] Reindexation canonique posee
+- [x] `Retrieval Sidecar` pose
+- [x] `MemoryBlock` partages poses
+- [x] `MemCube` poses
+- [x] `ThoughtMemory` posees
+- [x] `Sleeptime Curator` async pose
+- [x] Profils dual-layer poses
+- [x] Supersession non destructive posee
+- [x] Traces memoire persistantes posees
+- [x] `Temporal Graph` local sidecar pose
 
 ## Lot 3 - Runtime State + Evidence
 
@@ -168,6 +177,12 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
   - [ ] Table scheduled_runs
   - [ ] check_scheduled_runs() dans la boucle monitor
   - [ ] Guard 5 schedules max actifs
+- [ ] Sanctuary Security Layer v1
+  - [ ] Approval Truth Hardening
+  - [ ] Destructive Boundary Hardening
+  - [ ] Data Egress Guard
+  - [ ] Local Surfaces And Token Hygiene
+  - [ ] Recovery Without Unsafe Degrade
 - [ ] Lot 5 - Orchestration durable `LangGraph` live
 - [ ] Lot 6 - Windows worker + perception
 - [ ] Lot 7 - Browser worker `Stagehand`

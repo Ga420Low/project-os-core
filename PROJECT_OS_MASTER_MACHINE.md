@@ -502,14 +502,29 @@ Le systeme ne doit jamais dependre d'un prompt geant ou d'un cache distant pour 
 
 La pile memoire visee est:
 
-- `OpenMemory` pour le moteur memoire primaire
 - `SQLite` comme verite locale canonique
+- `OpenMemory` comme sidecar retrieval utile, pas comme verite
 - `sqlite-vec` pour la recherche vectorielle locale
+- `Retrieval Sidecar` pour query expansion, session recall, temporal decay et MMR
+- `Memory OS substrate` pour `MemCube`, `MemoryBlock`, `ThoughtMemory`, `RecallPlan`
+- `Sleeptime Curator` pour la consolidation async
+- `Temporal Graph Sidecar` local avec cible `Kuzu embedded`
 - fichiers locaux pour les preuves, captures, rapports et artefacts
-- `Letta` comme backup et reference de comparaison
+
+Etat reel maintenant livre:
+
+- blocs partages locaux type Letta
+- profils dual-layer `founder_stable_profile` et `recent_operating_context`
+- memoire de conclusions `ThoughtMemory`
+- supersession non destructive
+- traces memoire persistantes
+- lane graph locale en `sqlite shadow` tant que `Kuzu` n'est pas present
 
 Autres candidats surveilles:
 
+- `MemOS`: reference architecturale, pas composant central
+- `Graphiti`: candidat fort si la lane graph doit monter en puissance
+- `A-MEM`: candidat pour enrichissement bidirectionnel
 - `Mem0`: couche memoire SDK utile, mais moins centrale
 - `Zep`: interessant pour memoire + knowledge graph
 

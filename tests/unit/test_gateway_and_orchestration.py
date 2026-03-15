@@ -91,6 +91,19 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
         services.secret_resolver.write_local_fallback("OPENAI_API_KEY", "sk-test-secret")
         return services
 
+    @staticmethod
+    def _mark_runtime_ready(services, profile_name: str = "core"):
+        session = services.runtime.open_session(profile_name=profile_name, owner="founder")
+        services.runtime.record_runtime_state(
+            RuntimeState(
+                runtime_state_id=new_id("runtime_state"),
+                session_id=session.session_id,
+                verdict=RuntimeVerdict.READY,
+                active_profile=profile_name,
+            )
+        )
+        return session
+
     def test_gateway_dispatch_promotes_decision_and_does_not_issue_worker_ticket(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = self._build_services(Path(tmp))
@@ -351,6 +364,7 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self.assertEqual(len(stub_local.messages), 1)
                 self.assertIn("OPENCLAW_GATEWAY_TOKEN", stub_local.messages[0])
                 self.assertNotIn("sk-super-secret-123456789", dispatch.operator_reply.summary)
+                self.assertTrue(dispatch.operator_reply.summary.startswith("[Local S3 / Ollama]"))
                 self.assertIn("hors cloud", dispatch.operator_reply.summary)
                 record = services.memory.get(dispatch.promoted_memory_ids[0])
                 self.assertEqual(record.metadata.get("privacy_view"), "full")
@@ -398,6 +412,299 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self.assertEqual(dispatch.operator_reply.reply_kind, "blocked")
                 self.assertIn("Rien n'a ete envoye au cloud", dispatch.operator_reply.summary)
                 self.assertEqual(len(failing_local.messages), 1)
+            finally:
+                services.close()
+
+    def test_gateway_dispatch_handles_racy_duplicate_ingress_without_crashing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                session = services.runtime.open_session(profile_name="core", owner="founder")
+                services.runtime.record_runtime_state(
+                    RuntimeState(
+                        runtime_state_id=new_id("runtime_state"),
+                        session_id=session.session_id,
+                        verdict=RuntimeVerdict.READY,
+                        active_profile="core",
+                    )
+                )
+
+                def _build_event(event_id: str) -> ChannelEvent:
+                    return ChannelEvent(
+                        event_id=event_id,
+                        surface="discord",
+                        event_type="message.created",
+                        raw_payload={"source": "openclaw"},
+                        message=OperatorMessage(
+                            message_id=new_id("message"),
+                            actor_id="founder",
+                            channel="discord",
+                            text="@ProjectOS test de doublon OpenClaw.",
+                            thread_ref=ConversationThreadRef(
+                                thread_id="thread_race",
+                                channel="discord",
+                                external_thread_id="channel:discord-thread-race",
+                            ),
+                            metadata={
+                                "source": "openclaw",
+                                "message_id": "discord-message-race",
+                            },
+                        ),
+                    )
+
+                first = services.gateway.dispatch_event(_build_event(new_id("channel_event")), target_profile="core")
+                original_duplicate_lookup = services.gateway._duplicate_channel_event_id
+                lookup_state = {"calls": 0}
+
+                def _staged_duplicate_lookup(event):
+                    lookup_state["calls"] += 1
+                    if lookup_state["calls"] == 1:
+                        return None
+                    return original_duplicate_lookup(event)
+
+                services.gateway._duplicate_channel_event_id = _staged_duplicate_lookup  # type: ignore[method-assign]
+                second = services.gateway.dispatch_event(_build_event(new_id("channel_event")), target_profile="core")
+
+                self.assertFalse(first.metadata.get("duplicate_ingress", False))
+                self.assertTrue(second.metadata.get("duplicate_ingress"))
+                self.assertEqual(second.operator_reply.reply_kind, "ack")
+
+                channel_event_count = services.database.fetchone("SELECT COUNT(*) AS count FROM channel_events")
+                dispatch_count = services.database.fetchone("SELECT COUNT(*) AS count FROM gateway_dispatch_results")
+                self.assertEqual(channel_event_count["count"], 1)
+                self.assertEqual(dispatch_count["count"], 1)
+            finally:
+                services.close()
+
+    def test_simple_chat_prompt_preserves_project_os_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                system_prompt = services.gateway._simple_chat_system_prompt()
+                user_prompt = services.gateway._simple_chat_user_message(
+                    "et tu connecter au projet vois tu les dossier ? quelle api utilise tu"
+                )
+
+                self.assertIn("voix operateur de Project OS", system_prompt)
+                self.assertIn("Ne te presente pas comme Claude", system_prompt)
+                self.assertIn("managed_workspace: D:/ProjectOS/project-os-core", user_prompt)
+                self.assertIn("Message fondateur:", user_prompt)
+                self.assertIn("quelle api utilise tu", user_prompt)
+            finally:
+                services.close()
+
+    def test_discord_prefix_claude_forces_anthropic_route_and_strips_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "sk-ant-test")
+                self._mark_runtime_ready(services, "core")
+                captured: dict[str, str] = {}
+
+                def _stub_simple_chat(message: str, model: str = "claude-sonnet-4-20250514") -> str:
+                    captured["message"] = message
+                    captured["model"] = model
+                    return "Claude override ok."
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="CLAUDE qui est tu ?",
+                        thread_ref=ConversationThreadRef(thread_id="thread_claude", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(dispatch.metadata["requested_provider"], "anthropic")
+                self.assertEqual(dispatch.metadata["message_prefix_consumed"], "CLAUDE")
+                self.assertEqual(dispatch.discord_run_card["metadata"]["route_reason"], "operator_forced_anthropic_route")
+                self.assertEqual(captured["message"], "qui est tu ?")
+                self.assertEqual(captured["model"], services.config.execution_policy.discord_simple_model)
+            finally:
+                services.close()
+
+    def test_discord_prefix_gpt_forces_openai_route_and_strips_prefix(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services, "core")
+                captured: dict[str, str] = {}
+
+                def _stub_openai_chat(message: str, *, model: str | None, reasoning_effort: str | None) -> str:
+                    captured["message"] = message
+                    captured["model"] = model or ""
+                    captured["reasoning_effort"] = reasoning_effort or ""
+                    return "GPT override ok."
+
+                services.gateway._call_openai_chat = _stub_openai_chat  # type: ignore[method-assign]
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="GPT: propose trois options concretes",
+                        thread_ref=ConversationThreadRef(thread_id="thread_gpt", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(dispatch.metadata["requested_provider"], "openai")
+                self.assertEqual(dispatch.metadata["message_prefix_consumed"], "GPT")
+                self.assertEqual(dispatch.discord_run_card["metadata"]["route_reason"], "operator_forced_openai_route")
+                self.assertEqual(captured["message"], "propose trois options concretes")
+                self.assertEqual(captured["model"], services.config.execution_policy.default_model)
+            finally:
+                services.close()
+
+    def test_discord_prefix_local_forces_local_route_when_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.config.execution_policy.local_model_enabled = True
+                services.config.execution_policy.local_model_name = "qwen2.5:14b"
+                services.router.execution_policy.local_model_enabled = True
+                services.router.execution_policy.local_model_name = "qwen2.5:14b"
+                stub_local = StubLocalModelClient(content="Je reste local et je ne repete rien de sensible.")
+                services.router.local_model_client = stub_local
+                services.gateway.local_model_client = stub_local
+                services.openclaw.local_model_client = stub_local
+                self._mark_runtime_ready(services, "core")
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="LOCAL parle moi de ce sujet",
+                        thread_ref=ConversationThreadRef(thread_id="thread_local", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(dispatch.discord_run_card["metadata"]["route_reason"], "operator_forced_local_route")
+                self.assertEqual(stub_local.messages, ["parle moi de ce sujet"])
+                self.assertTrue(dispatch.operator_reply.summary.startswith("[Local / Ollama]"))
+            finally:
+                services.close()
+
+    def test_discord_prefix_local_blocks_when_local_lane_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services, "core")
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="LOCAL explique ce point",
+                        thread_ref=ConversationThreadRef(thread_id="thread_local_blocked", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "blocked")
+                self.assertIn("voie locale demandee", dispatch.operator_reply.summary)
+                self.assertEqual(dispatch.discord_run_card["metadata"]["route_reason"], "operator_forced_local_unavailable")
+            finally:
+                services.close()
+
+    def test_s3_prefix_override_still_routes_locally(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.config.execution_policy.local_model_enabled = True
+                services.config.execution_policy.local_model_name = "qwen2.5:14b"
+                services.router.execution_policy.local_model_enabled = True
+                services.router.execution_policy.local_model_name = "qwen2.5:14b"
+                stub_local = StubLocalModelClient(content="Secret garde localement. Rien ne sort.")
+                services.router.local_model_client = stub_local
+                services.gateway.local_model_client = stub_local
+                services.openclaw.local_model_client = stub_local
+                self._mark_runtime_ready(services, "core")
+                openai_calls: list[str] = []
+
+                def _stub_openai_chat(message: str, *, model: str | None, reasoning_effort: str | None) -> str:
+                    openai_calls.append(message)
+                    return "should_not_happen"
+
+                services.gateway._call_openai_chat = _stub_openai_chat  # type: ignore[method-assign]
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="GPT OPENCLAW_GATEWAY_TOKEN=sk-super-secret-123456789",
+                        thread_ref=ConversationThreadRef(thread_id="thread_s3_override", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(dispatch.metadata["sensitivity_class"], SensitivityClass.S3.value)
+                self.assertEqual(dispatch.discord_run_card["metadata"]["route_reason"], "s3_local_route")
+                self.assertEqual(openai_calls, [])
+                self.assertTrue(dispatch.operator_reply.summary.startswith("[Local S3 / Ollama]"))
+            finally:
+                services.close()
+
+    def test_no_prefix_keeps_default_discord_simple_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "sk-ant-test")
+                self._mark_runtime_ready(services, "core")
+                captured_messages: list[str] = []
+
+                def _stub_simple_chat(message: str, model: str = "claude-sonnet-4-20250514") -> str:
+                    captured_messages.append(message)
+                    return "route par defaut"
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="qui est tu ?",
+                        thread_ref=ConversationThreadRef(thread_id="thread_default", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertIsNone(dispatch.metadata["requested_provider"])
+                self.assertEqual(dispatch.discord_run_card["metadata"]["route_reason"], "discord_simple_route")
+                self.assertEqual(captured_messages, ["qui est tu ?"])
             finally:
                 services.close()
 
