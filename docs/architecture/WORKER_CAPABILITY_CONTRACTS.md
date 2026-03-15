@@ -180,7 +180,7 @@ Il devra etre specifie quand le besoin media sera clarifie.
 
 Standard `WorkerRequest` / `WorkerResult`.
 
-## Profil: UEFN
+## Profil applicatif: UEFN
 
 ### Identite
 

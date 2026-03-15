@@ -31,7 +31,7 @@ py D:/ProjectOS/project-os-core/scripts/project_os_entry.py --config-path <...> 
 - config path: `D:/ProjectOS/project-os-core/config/storage_roots.local.json`
 - policy path: `D:/ProjectOS/project-os-core/config/runtime_policy.local.json`
 - python command: `py` on Windows
-- enabled channels: `discord`, `webchat`, `internal`
+- enabled channels: `discord`, `webchat`
 - ack replies: disabled by default
 - operator delivery polling: enabled only if `discordAccountId` and `operatorTargets` are configured
 
@@ -85,6 +85,15 @@ Delivery policy:
 
 `run_started` is filtered as operator noise and is normally not delivered to Discord.
 
+Optional outbound payload overrides:
+
+- `target`: bypasses `channel_hint -> operatorTargets` mapping
+- `reply_to`: forwards a Discord reply target
+- `components`: forwards Discord components v2 as-is
+- `account_id`: overrides the default Discord account for that delivery
+
+These overrides stay optional. The normal path remains compact `channel_hint` delivery.
+
 ## Discord ownership model
 
 For the live Discord server, the intended behavior is:
@@ -94,6 +103,20 @@ For the live Discord server, the intended behavior is:
 - outbound operator lifecycle messages still go to Discord through `sendMessageDiscord`
 
 This keeps Discord single-voiced: `Project OS` speaks, `OpenClaw` transports.
+
+## Pack 2 Discord UX
+
+The upstream Discord features retained for the operator loop are:
+
+- `threadBindings`
+- `execApprovals`
+- `autoPresence`
+
+The adapter itself stays thin:
+
+- it does not implement custom approval logic
+- it does not become the canonical thread store
+- it only forwards more precise outbound Discord targets when `Project OS` already decided them
 
 ## Suggested install path
 

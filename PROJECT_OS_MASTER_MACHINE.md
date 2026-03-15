@@ -33,6 +33,20 @@ Construire une surcouche d'intelligence locale capable de:
 - demander une approbation lorsque le risque augmente
 - reprendre une mission sans perdre le contexte
 
+## Taxonomie app et profils
+
+Regle de vocabulaire:
+
+- `categorie` = famille de capacites ou de workers
+- `app` = logiciel concret a piloter
+- `profil applicatif` = facon dont `Project OS` travaille avec une app ou un domaine
+
+Donc:
+
+- `UEFN` n'est pas une categorie d'architecture
+- `UEFN` est une app cible
+- `UEFN` peut aussi etre le nom d'un profil applicatif
+
 ## Workflow officiel
 
 Le workflow officiel repose sur un duo de modeles complementaires (ADR 0013):
@@ -59,7 +73,9 @@ Reference detaillee:
 - `docs/architecture/HYBRID_LARGE_CONTEXT_WORKFLOW.md`
 - `docs/integrations/API_LEAD_AGENT_V1.md`
 - `docs/architecture/AGENT_IDENTITY_AND_CHANNEL_MODEL.md`
+- `docs/architecture/DOCUMENTATION_LANGUAGE_POLICY.md`
 - `docs/architecture/HANDOFF_MEMORY_POLICY.md`
+- `docs/architecture/WINDOWS_FIRST_HOST_AND_WSL_FABRIC.md`
 - `docs/integrations/DISCORD_OPERATING_MODEL.md`
 - `docs/architecture/RUN_COMMUNICATION_POLICY.md`
 - `docs/integrations/DISCORD_CHANNEL_TOPOLOGY.md`
@@ -132,6 +148,26 @@ Project OS doit devenir une `master machine`:
 - un actif reutilisable pour une future entreprise
 
 Le systeme doit privilegier la robustesse, la reprise et l'auditabilite plutot que la demo fragile.
+
+## Windows-first et WSL
+
+`DECISION CONFIRMED`
+
+Le systeme reste `Windows-first`.
+
+Le poste Windows est la machine operatoire principale.
+`WSL2` n'est pas la base unique du produit.
+
+Role retenu:
+
+- `Windows host` = verite machine, runtime, memoire, evidence, workers Windows, apps reelles, `UEFN`
+- `WSL2` = cellules de travail optionnelles par projet ou par domaine
+
+Le futur peut inclure plusieurs cellules `WSL2` en parallele, mais elles restent supervisees par l'hote Windows.
+
+Reference:
+
+- `docs/architecture/WINDOWS_FIRST_HOST_AND_WSL_FABRIC.md`
 
 ## Principe cle
 
@@ -219,7 +255,8 @@ Cette exigence est structurelle.
   - Windows
   - browser
   - media
-  - UEFN
+  - app profiles (`UEFN`, etc.)
+  - future Linux project cells via `WSL2`
 - `profiles/`
   - profils applicatifs
   - projets cibles
@@ -273,6 +310,11 @@ Les branches majeures sont:
 - `Infisical`: secrets et configuration sensible
 - `WindowsAgentArena`, `OSWorld`, `WorldGUI`: evaluation
 - `Letta`: backup et benchmark memoire
+
+Note de trajectoire:
+
+- `WSL2` est autorise comme tissu futur de cellules de travail isolees
+- il ne remplace pas l'hote Windows comme verite operatoire
 
 ## Frontiere OpenClaw vs Project OS
 
@@ -436,7 +478,7 @@ Role actuel:
 - convertir l'evenement en charge utile canonique `Project OS`
 - appeler `gateway ingest-openclaw-event`
 - prouver en replay que tout passe par `Gateway -> Mission Router`
-- echouer ferme tant qu'aucun message reel Discord/WebChat n'a ete valide
+- echouer ferme tant qu'aucune preuve canonique `source=openclaw` n'a ete validee
 
 Ce qui est deja valide:
 
@@ -445,13 +487,13 @@ Ce qui est deja valide:
 - configuration et policy `Project OS` lisibles
 - doctor `OpenClaw` vert et comprehensible
 - replay sur fixtures reelles vert
-- validation live bloquee proprement tant qu'aucun canal reel n'a ete prouve
+- validation live canonique verte sur le poste
+- voie locale Windows-first reelle via `Ollama`
+- modele local courant: `qwen2.5:14b`
 
 Ce qui reste avant de considerer le lot 4 totalement termine:
 
-- brancher un vrai canal `Discord` ou `WebChat`
-- faire passer un vrai message entrant jusqu'au `Mission Router`
-- produire une carte ou une reponse compacte visible cote humain
+- rejouer un vrai message operateur Discord/WebChat amont si on veut une preuve humaine stricte distincte de la preuve canonique runtime
 
 ## Memory OS locale
 
@@ -668,7 +710,7 @@ Les briques suivantes ne sont pas au coeur immediat, mais doivent rester visible
 - `third_party/` sert de reference locale et de zone d'etude, pas de coeur proprietaire.
 - Le code proprietaire doit rester clairement distinct des inspirations externes.
 
-## Premier cas d'usage
+## Premier profil applicatif
 
 Le premier profile metier est `UEFN`.
 Le systeme devra pouvoir:

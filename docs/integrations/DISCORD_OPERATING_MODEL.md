@@ -223,6 +223,26 @@ Regles:
 - synthese finale obligatoire
 - `Discord` ne devient jamais la memoire canonique
 
+## OpenClaw Discord UX retenue
+
+Le socle `OpenClaw` retenu pour `Discord` est volontairement minimal et robuste:
+
+- `threadBindings` pour garder un fil durable entre thread et runtime
+- `execApprovals` pour les approvals Discord natives a faible ambiguite
+- `autoPresence` pour refleter la sante runtime
+
+Regles:
+
+- `threadBindings` oui
+- approvals upstream en `dm`
+- cards compactes dans les salons
+- pas de components metier riches tant qu'ils ne sont pas prouves sans ambiguite
+
+Le mapping canonique reste:
+
+- `Discord` = vue operateur
+- `Project OS` = verite runtime
+
 References:
 
 - `docs/analysis-angles/README.md`

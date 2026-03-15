@@ -64,6 +64,17 @@ Il change seulement:
 - la vitesse de reponse
 - la densite d'information
 
+## Regle de langue
+
+La langue suit une regle simple:
+
+- doctrine et explication humaine en francais
+- contrats machine et noms canoniques en anglais
+
+Reference:
+
+- `docs/architecture/DOCUMENTATION_LANGUAGE_POLICY.md`
+
 ### GPT API / code lane
 
 But:

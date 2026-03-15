@@ -16,6 +16,15 @@ Le coeur vise la version finale suivante:
 - `WindowsAgentArena`, `OSWorld`, `WorldGUI` pour l'evaluation
 - `Letta` comme backup et benchmark memoire
 
+`DECISION CONFIRMED`
+
+Le socle de production reste `Windows-first`.
+`WSL2` est retenu comme extension future possible pour des cellules de travail isolees par projet, pas comme fondation unique du produit.
+
+Reference:
+
+- `docs/architecture/WINDOWS_FIRST_HOST_AND_WSL_FABRIC.md`
+
 ## Etat actuel
 
 Le repo socle est pose.
@@ -79,10 +88,20 @@ Points encore non critiques:
 1. `docker` reste absent si on veut executer certains quickstarts ou services isoles.
 2. Il faudra figer la strategie de dependances du repo (`python`, `node`, ou dual stack`).
 3. Il faudra choisir si `third_party/` reste un cache de lecture ou devient un espace de reference plus structure.
-4. `OpenClaw` et `LangGraph` ne sont pas encore branches au coeur, meme si la policy du router est deja prete pour eux.
-5. Le branchement live `OpenClaw` et `LangGraph` reste volontairement le prochain lot; seuls les contrats et adaptateurs internes sont maintenant figes.
+4. `OpenClaw` est maintenant branche jusqu'au runtime live et a la voie locale Windows-first; `LangGraph` reste le prochain gros branchement.
+5. Le reste du chantier `OpenClaw` tient surtout a la preuve operateur manuelle Discord/WebChat, pas a l'absence d'integration coeur.
+6. La trajectoire `multi-WSL` est admise pour plus tard, mais sous supervision du host Windows et sans deplacer la verite runtime hors de l'hote.
 
 ## Regle de demarrage
 
-On peut maintenant ouvrir le chantier du lot 4 proprement.
-Le prochain chantier doit etre le branchement live `OpenClaw`, puis `LangGraph`, sur des interfaces deja figees.
+Le branchement live coeur `OpenClaw` est maintenant pose.
+
+Les prochains chantiers utiles sont:
+
+1. cloturer la preuve operateur manuelle `Discord` / `WebChat`
+2. brancher `LangGraph` sur les interfaces deja figees
+3. garder `OpenClaw` comme facade durcie, pas comme seconde source de verite
+
+Le renforcement post-bootstrap d'`OpenClaw` suit maintenant la feuille de route:
+
+- `docs/roadmap/OPENCLAW_REINFORCEMENT_PLAN.md`

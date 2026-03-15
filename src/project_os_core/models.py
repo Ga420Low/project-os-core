@@ -74,6 +74,18 @@ class CostClass(str, Enum):
     EXCEPTIONAL = "exceptional"
 
 
+class ModelRouteClass(str, Enum):
+    FAST = "fast"
+    LOCAL = "local"
+    API = "api"
+
+
+class SensitivityClass(str, Enum):
+    S1 = "s1_passthrough"
+    S2 = "s2_desensitize"
+    S3 = "s3_local"
+
+
 class OperatorMessageKind(str, Enum):
     CHAT = "chat"
     STATUS_REQUEST = "status_request"
@@ -280,6 +292,7 @@ class RetrievalContext:
     mission_id: str | None = None
     tags: list[str] = field(default_factory=list)
     limit: int = 5
+    include_private_full: bool = False
 
 
 @dataclass(slots=True)
@@ -463,6 +476,27 @@ class GatewayDispatchResult:
 
 
 @dataclass(slots=True)
+class DiscordThreadBinding:
+    binding_id: str
+    binding_key: str
+    surface: str
+    channel: str
+    thread_id: str
+    external_thread_id: str | None = None
+    parent_thread_id: str | None = None
+    channel_event_id: str | None = None
+    dispatch_id: str | None = None
+    envelope_id: str | None = None
+    decision_id: str | None = None
+    mission_run_id: str | None = None
+    binding_kind: str = "discussion"
+    status: str = "active"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
 class RuntimeState:
     runtime_state_id: str
     session_id: str
@@ -595,6 +629,7 @@ class ExecutionPolicy:
     deterministic_first: bool = True
     allow_pro_default: bool = False
     secret_mode: str = "infisical_first"
+    discord_simple_model: str = "claude-sonnet-4-20250514"
     discord_simple_reasoning_effort: str = "medium"
     operator_language: str = "fr"
     operator_audience: OperatorAudience = OperatorAudience.NON_DEVELOPER
@@ -604,6 +639,16 @@ class ExecutionPolicy:
     operator_delivery_retry_base_seconds: int = 30
     operator_delivery_retry_max_seconds: int = 900
     operator_delivery_max_pending: int = 64
+    local_model_enabled: bool = False
+    local_model_provider: str = "ollama"
+    local_model_base_url: str = "http://127.0.0.1:11434"
+    local_model_name: str = "local-llm"
+    local_model_timeout_seconds: float = 90.0
+    local_model_health_timeout_seconds: float = 5.0
+    local_model_reasoning_effort: str = "medium"
+    proactive_briefing_max_items: int = 3
+    privacy_guard_enabled: bool = True
+    s3_requires_local_model: bool = True
 
 
 @dataclass(slots=True)
@@ -612,6 +657,7 @@ class ModelRoute:
     model: str | None
     reasoning_effort: str | None
     route_class: CostClass
+    route_tier: ModelRouteClass
     allowed: bool
     reason: str
 
@@ -831,6 +877,30 @@ class OpenClawLiveValidationResult:
     success: bool
     evidence_refs: list[str] = field(default_factory=list)
     failure_reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class OpenClawTruthHealthReport:
+    report_id: str
+    verdict: str
+    summary: str
+    channel: str
+    actionable_fixes: list[str] = field(default_factory=list)
+    checks: list[dict[str, Any]] = field(default_factory=list)
+    evidence_refs: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class OpenClawTrustAuditReport:
+    report_id: str
+    verdict: str
+    summary: str
+    actionable_fixes: list[str] = field(default_factory=list)
+    checks: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
 

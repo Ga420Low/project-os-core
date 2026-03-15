@@ -1,4 +1,37 @@
 {
+  "openclaw_config": {
+    "send_ack_replies": false,
+    "discord_thread_bindings_required": true,
+    "discord_auto_presence_required": true,
+    "discord_exec_approvals_required": true,
+    "discord_exec_target": "dm",
+    "discord_exec_approver_ids": [
+      "1482209095984484443"
+    ],
+    "trusted_plugin_ids": [
+      "project-os-gateway-adapter",
+      "discord",
+      "device-pair",
+      "memory-core"
+    ]
+  },
+  "execution_policy": {
+    "privacy_guard_enabled": true,
+    "s3_requires_local_model": true,
+    "local_model_enabled": true,
+    "local_model_provider": "ollama",
+    "local_model_base_url": "http://127.0.0.1:11434",
+    "local_model_name": "qwen2.5:14b",
+    "local_model_timeout_seconds": 120.0,
+    "local_model_health_timeout_seconds": 5.0
+  },
+  "learning_config": {
+    "auto_sync_runbook_deferred": true,
+    "runbook_deferred_globs": [
+      "docs/integrations/*.md",
+      "docs/roadmap/*.md"
+    ]
+  },
   "secret_config": {
     "mode": "infisical_required"
   }

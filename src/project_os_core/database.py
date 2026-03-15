@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-CURRENT_SCHEMA_VERSION = "11"
+CURRENT_SCHEMA_VERSION = "13"
 
 
 def _quote_identifier(name: str) -> str:
@@ -261,6 +261,9 @@ class CanonicalDatabase:
                     actor_id TEXT NOT NULL,
                     channel TEXT NOT NULL,
                     message_kind TEXT,
+                    source_message_id TEXT,
+                    conversation_key TEXT,
+                    ingress_dedup_key TEXT,
                     thread_ref_json TEXT NOT NULL,
                     message_json TEXT NOT NULL,
                     raw_payload_json TEXT NOT NULL,
@@ -307,6 +310,26 @@ class CanonicalDatabase:
                     reply_json TEXT NOT NULL,
                     metadata_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS discord_thread_bindings (
+                    binding_id TEXT PRIMARY KEY,
+                    binding_key TEXT NOT NULL,
+                    surface TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    external_thread_id TEXT,
+                    parent_thread_id TEXT,
+                    channel_event_id TEXT,
+                    dispatch_id TEXT,
+                    envelope_id TEXT,
+                    decision_id TEXT,
+                    mission_run_id TEXT,
+                    binding_kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS session_snapshots (
@@ -697,6 +720,9 @@ class CanonicalDatabase:
                 ("mission_runs", "parent_mission_id TEXT"),
                 ("mission_runs", "step_index INTEGER NOT NULL DEFAULT 0"),
                 ("mission_runs", "total_steps INTEGER NOT NULL DEFAULT 1"),
+                ("channel_events", "source_message_id TEXT"),
+                ("channel_events", "conversation_key TEXT"),
+                ("channel_events", "ingress_dedup_key TEXT"),
                 ("api_run_requests", "communication_mode TEXT"),
                 ("api_run_requests", "speech_policy TEXT"),
                 ("api_run_requests", "operator_language TEXT"),
@@ -751,12 +777,21 @@ class CanonicalDatabase:
                 ON routing_decisions(intent_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_channel_events_channel_created
                 ON channel_events(channel, created_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_events_ingress_dedup
+                ON channel_events(ingress_dedup_key)
+                WHERE ingress_dedup_key IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_candidates_event_created
                 ON conversation_memory_candidates(source_event_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_promotion_decisions_candidate
                 ON promotion_decisions(candidate_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_gateway_dispatch_event
                 ON gateway_dispatch_results(channel_event_id, created_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_discord_thread_bindings_key
+                ON discord_thread_bindings(binding_key);
+            CREATE INDEX IF NOT EXISTS idx_discord_thread_bindings_mission_updated
+                ON discord_thread_bindings(mission_run_id, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_discord_thread_bindings_surface_updated
+                ON discord_thread_bindings(surface, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_session_snapshots_created
                 ON session_snapshots(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_graph_states_mission

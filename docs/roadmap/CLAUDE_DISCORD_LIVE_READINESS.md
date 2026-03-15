@@ -1,5 +1,31 @@
 # Claude + Discord Live Readiness
 
+## Statut
+
+Document historique, conserve comme trace du premier lot live.
+
+Etat reel au 15 mars 2026:
+
+- `doctor --strict` verifie maintenant les probes `reviewer` et `translator`
+- `openclaw doctor` est `OK`
+- `openclaw truth-health --channel discord` est `OK`
+- `openclaw validate-live --channel discord` peut maintenant reussir quand une preuve canonique recente est enregistree
+- la voie locale Windows-first `Ollama + qwen2.5:14b` est active pour `S3`
+
+Ce document n'est plus la source canonique du lot `OpenClaw`.
+
+Sources canoniques a utiliser maintenant:
+
+- [OPENCLAW_GATEWAY_ADAPTER.md](../integrations/OPENCLAW_GATEWAY_ADAPTER.md)
+- [OPENCLAW_MODEL_HEALTH_AND_ROUTING.md](../integrations/OPENCLAW_MODEL_HEALTH_AND_ROUTING.md)
+- [OPENCLAW_PRIVACY_GUARD_AND_SENSITIVE_ROUTING.md](../integrations/OPENCLAW_PRIVACY_GUARD_AND_SENSITIVE_ROUTING.md)
+- [OPENCLAW_REINFORCEMENT_PLAN.md](OPENCLAW_REINFORCEMENT_PLAN.md)
+
+Lecture:
+
+- les sections ci-dessous conservent le plan initial
+- quand elles contredisent ce bloc `Statut`, c'est le bloc `Statut` qui fait foi
+
 ## But
 
 Ce document fixe le prochain lot concret:
@@ -35,20 +61,14 @@ Etat reel:
 - `doctor --strict` passe
 - mais il reste faux-vert pour `Claude`
 
-Cause:
+Cause historique:
 
-- `doctor --strict` ne verifie pas encore:
-  - `ANTHROPIC_API_KEY`
-  - l'import du package `anthropic`
-  - le chemin reviewer / translator
+- cette section etait vraie avant le hardening du doctor
 
-Conclusion:
+Etat actuel:
 
-- le runtime Claude marche
-- le readiness gate n'est pas encore complet
-
-Ce n'est pas un blocage pour le premier smoke test live.
-C'est un hardening a faire juste apres preuve du live.
+- cette limitation n'est plus vraie sur le poste cible
+- `doctor --strict` porte maintenant les probes `reviewer` et `translator`
 
 ### Discord / OpenClaw
 
@@ -56,7 +76,8 @@ Etat reel:
 
 - les policies, templates et le pipeline sont poses dans le repo
 - `OpenClaw` replay et doctor existent
-- la validation live reste fail-closed tant qu'aucun vrai message entrant n'a ete prouve
+- `openclaw truth-health` permet maintenant de conclure proprement sur la sante machine et la preuve live
+- `openclaw validate-live` reste bloquee tant qu'aucun vrai message entrant n'a ete prouve
 - la boucle sortante `Project OS -> OpenClaw -> Discord` depend encore de la config plugin `discordAccountId` + `operatorTargets`
 - le manifest `openclaw.plugin.json` doit exposer ces champs avant tout smoke test live complet
 
@@ -179,14 +200,11 @@ Le replay reste obligatoire meme si `Claude` est deja pret.
 
 Note importante sur `validate_live()`:
 
-Aujourd'hui, `validate_live()` retourne toujours `success=false`.
-C'est une garde `fail_closed` volontaire:
+Etat actuel:
 
-- tant qu'aucune vraie validation live n'a ete reconnue sur ce poste
-- le systeme refuse de se declarer pret
-
-Ce n'est pas un bug.
-C'est un verrou de securite a faire evoluer seulement apres preuve live reelle.
+- `validate-live()` ne retourne plus systematiquement `success=false`
+- il accepte une preuve canonique recente `source=openclaw -> Gateway -> Mission Router`
+- cette preuve n'est pas identique a une preuve operateur manuelle Discord reelle
 
 ### 4. Prouver un vrai message entrant
 
@@ -223,6 +241,8 @@ Tant que cette sequence n'est pas prouvee de bout en bout,
 le lot live n'est pas considere termine.
 
 ## Definition of done
+
+Cette section doit maintenant etre lue comme une `definition of done operateur stricte`, pas comme l'etat minimum du runtime.
 
 Le lot est considere `ready` seulement si les points suivants sont vrais:
 

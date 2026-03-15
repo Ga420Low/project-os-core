@@ -1,7 +1,52 @@
+import crypto from "node:crypto";
+
 const DEFAULT_PROJECT_OS_REPO_ROOT = "D:/ProjectOS/project-os-core";
 const DEFAULT_PYTHON_COMMAND = process.platform === "win32" ? "py" : "python3";
 const DEFAULT_CHANNELS = new Set(["discord", "webchat"]);
 const DEFAULT_OPERATOR_POLLING_INTERVAL_MS = 8000;
+const INGRESS_DEDUP_TTL_MS = 10 * 60 * 1000;
+const SAFE_ENV_KEYS = new Set([
+  "APPDATA",
+  "COMSPEC",
+  "HOME",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "HTTPS_PROXY",
+  "HTTP_PROXY",
+  "LOCALAPPDATA",
+  "NO_PROXY",
+  "OS",
+  "PATH",
+  "PATHEXT",
+  "PROGRAMDATA",
+  "ProgramData",
+  "ProgramFiles",
+  "ProgramFiles(x86)",
+  "PUBLIC",
+  "SSL_CERT_DIR",
+  "SSL_CERT_FILE",
+  "SYSTEMDRIVE",
+  "SYSTEMROOT",
+  "SystemDrive",
+  "SystemRoot",
+  "TEMP",
+  "TMP",
+  "USERPROFILE",
+  "WINDIR",
+]);
+const SAFE_ENV_PREFIXES = [
+  "ANTHROPIC_",
+  "GH_",
+  "INFISICAL_",
+  "OM_",
+  "OPENAI_",
+  "OPENCLAW_",
+  "PROJECT_OS_",
+  "PY_",
+  "PYTHON",
+  "REQUESTS_",
+  "UV_",
+];
 
 function detachTimer(handle) {
   if (handle && typeof handle.unref === "function") {
@@ -87,6 +132,19 @@ function resolveConfig(api) {
   };
 }
 
+function buildProjectOsEnv(baseEnv = process.env) {
+  const filtered = {};
+  for (const [key, value] of Object.entries(baseEnv || {})) {
+    if (typeof value !== "string" || !value) {
+      continue;
+    }
+    if (SAFE_ENV_KEYS.has(key) || SAFE_ENV_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      filtered[key] = value;
+    }
+  }
+  return filtered;
+}
+
 function shouldSuppressNativeDiscordReply(event, ctx, config) {
   const channelId = String(ctx.channelId || event?.metadata?.channel || "").toLowerCase();
   if (channelId !== "discord") {
@@ -156,7 +214,7 @@ async function dispatchToProjectOs(api, payload, config) {
       timeoutMs: config.timeoutMs,
       cwd: config.projectOsRepoRoot,
       input: JSON.stringify(payload),
-      env: process.env,
+      env: buildProjectOsEnv(),
     }
   );
   const stdout = (result.stdout || "").trim();
@@ -176,7 +234,7 @@ async function runProjectOsJsonCommand(api, config, extraArgs, input) {
     timeoutMs: config.timeoutMs,
     cwd: config.projectOsRepoRoot,
     input,
-    env: process.env,
+    env: buildProjectOsEnv(),
   });
   const stdout = (result.stdout || "").trim();
   let parsed = null;
@@ -253,6 +311,76 @@ function resolveOperatorTarget(config, channelHint) {
   return config.operatorTargets[channelHint] || config.operatorTargets.default;
 }
 
+function resolveOperatorDeliveryTarget(config, payload, channelHint) {
+  if (typeof payload?.target === "string" && payload.target.trim()) {
+    return payload.target.trim();
+  }
+  return resolveOperatorTarget(config, channelHint);
+}
+
+function ingressDedupCache(api) {
+  if (!api._projectOsIngressDedupCache) {
+    api._projectOsIngressDedupCache = new Map();
+  }
+  return api._projectOsIngressDedupCache;
+}
+
+function pruneIngressDedupCache(api, now = Date.now()) {
+  const cache = ingressDedupCache(api);
+  for (const [key, timestamp] of cache.entries()) {
+    if (now - Number(timestamp || 0) > INGRESS_DEDUP_TTL_MS) {
+      cache.delete(key);
+    }
+  }
+  return cache;
+}
+
+function buildIngressDedupKey(event, ctx) {
+  const metadata = event && typeof event.metadata === "object" ? event.metadata : {};
+  const messageId =
+    typeof metadata.messageId === "string" && metadata.messageId.trim()
+      ? metadata.messageId.trim()
+      : undefined;
+  const conversationKey =
+    typeof ctx?.conversationId === "string" && ctx.conversationId.trim()
+      ? ctx.conversationId.trim()
+      : typeof metadata.threadId === "string" && metadata.threadId.trim()
+        ? metadata.threadId.trim()
+        : typeof metadata.channelId === "string" && metadata.channelId.trim()
+          ? metadata.channelId.trim()
+          : undefined;
+  const messageText = typeof event?.content === "string" ? event.content.trim() : "";
+  if (!messageId || !conversationKey || !messageText) {
+    return null;
+  }
+  const contentHash = crypto.createHash("sha256").update(messageText).digest("hex");
+  const raw = `${String(ctx?.channelId || "unknown").toLowerCase()}|${messageId}|${conversationKey}|${contentHash}`;
+  return crypto.createHash("sha256").update(raw).digest("hex");
+}
+
+function isRecentIngressDuplicate(api, dedupKey) {
+  if (!dedupKey) {
+    return false;
+  }
+  const cache = pruneIngressDedupCache(api);
+  const seenAt = cache.get(dedupKey);
+  return typeof seenAt === "number" && Date.now() - seenAt <= INGRESS_DEDUP_TTL_MS;
+}
+
+function rememberIngressKey(api, dedupKey) {
+  if (!dedupKey) {
+    return;
+  }
+  pruneIngressDedupCache(api).set(dedupKey, Date.now());
+}
+
+function forgetIngressKey(api, dedupKey) {
+  if (!dedupKey || !api._projectOsIngressDedupCache) {
+    return;
+  }
+  api._projectOsIngressDedupCache.delete(dedupKey);
+}
+
 async function flushOperatorDeliveries(api, config) {
   if (!config.discordAccountId) {
     return;
@@ -270,7 +398,7 @@ async function flushOperatorDeliveries(api, config) {
 
     const payload = delivery.payload && typeof delivery.payload === "object" ? delivery.payload : {};
     const channelHint = typeof delivery.channel_hint === "string" ? delivery.channel_hint : "runs_live";
-    const target = resolveOperatorTarget(config, channelHint);
+    const target = resolveOperatorDeliveryTarget(config, payload, channelHint);
 
     if (!target) {
       await ackOperatorDelivery(api, config, deliveryId, "skipped", "discord_target_not_configured", {
@@ -280,20 +408,32 @@ async function flushOperatorDeliveries(api, config) {
     }
 
     const text = typeof payload.text === "string" && payload.text.trim() ? payload.text.trim() : `[Project OS] ${channelHint}`;
+    const replyTo = typeof payload.reply_to === "string" && payload.reply_to.trim() ? payload.reply_to.trim() : undefined;
+    const components = payload.components && typeof payload.components === "object" ? payload.components : undefined;
+    const accountId =
+      typeof payload.account_id === "string" && payload.account_id.trim()
+        ? payload.account_id.trim()
+        : config.discordAccountId;
 
     try {
       await api.runtime.channel.discord.sendMessageDiscord(target, text, {
         cfg: api.config,
-        accountId: config.discordAccountId,
+        accountId,
+        replyTo,
+        components,
       });
       await ackOperatorDelivery(api, config, deliveryId, "delivered", undefined, {
         channel_hint: channelHint,
         target,
+        reply_to: replyTo,
+        components_enabled: Boolean(components),
       });
     } catch (error) {
       await ackOperatorDelivery(api, config, deliveryId, "pending", String(error), {
         channel_hint: channelHint,
         target,
+        reply_to: replyTo,
+        components_enabled: Boolean(components),
       });
     }
   }
@@ -393,6 +533,7 @@ const plugin = {
     const handleMessageReceived = async (event, ctx) => {
       const runtimeConfig = resolveConfig(api);
       const liveChannelId = String(ctx.channelId || "").toLowerCase();
+      const ingressDedupKey = buildIngressDedupKey(event, ctx);
 
       api.logger.info(
         `[project-os-gateway-adapter] inbound message_received channel=${liveChannelId || "unknown"} account=${String(ctx.accountId || "unknown")} conversation=${String(ctx.conversationId || "unknown")}`
@@ -405,12 +546,21 @@ const plugin = {
         return;
       }
 
+      if (ingressDedupKey && isRecentIngressDuplicate(api, ingressDedupKey)) {
+        api.logger.info(
+          `[project-os-gateway-adapter] ignored recent duplicate ingress channel=${liveChannelId || "unknown"} conversation=${String(ctx.conversationId || "unknown")}`
+        );
+        return { handled: true };
+      }
+
       const payload = buildPayload(event, ctx, runtimeConfig);
+      rememberIngressKey(api, ingressDedupKey);
 
       try {
         const { result, parsed } = await dispatchToProjectOs(api, payload, runtimeConfig);
 
         if (result.code !== 0 && !parsed) {
+          forgetIngressKey(api, ingressDedupKey);
           api.logger.warn(
             `[project-os-gateway-adapter] Project OS dispatch failed with code ${String(result.code)}: ${result.stderr || "no stderr"}`
           );
@@ -431,6 +581,7 @@ const plugin = {
 
         return { handled: true };
       } catch (error) {
+        forgetIngressKey(api, ingressDedupKey);
         api.logger.warn(
           `[project-os-gateway-adapter] ${error?.stack || error?.message || String(error)}`
         );

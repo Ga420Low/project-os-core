@@ -52,6 +52,7 @@ from ..observability import StructuredLogger
 from ..paths import PathPolicy, ProjectPaths
 from ..runtime.journal import LocalJournal
 from ..secrets import SecretResolver
+from ..router.service import MissionRouter
 
 
 PRICING_PER_MILLION_USD: dict[str, dict[str, float]] = {
@@ -79,6 +80,7 @@ class ApiRunService:
         path_policy: PathPolicy,
         secret_resolver: SecretResolver,
         logger: StructuredLogger,
+        router: MissionRouter,
         execution_policy,
         dashboard_config,
         learning: LearningService,
@@ -89,6 +91,7 @@ class ApiRunService:
         self.path_policy = path_policy
         self.secret_resolver = secret_resolver
         self.logger = logger
+        self.router = router
         self.execution_policy = execution_policy
         self.dashboard_config = dashboard_config
         self.learning = learning
@@ -120,7 +123,7 @@ class ApiRunService:
             target_profile=target_profile,
             source_refs=[self._read_context_source(path) for path in selected_sources],
             repo_state=self._repo_state(target_branch=resolved_branch),
-            runtime_facts=self._runtime_facts(),
+            runtime_facts=self._runtime_facts(target_branch=resolved_branch, target_profile=target_profile),
             constraints=list(constraints or self._default_constraints()),
             acceptance_criteria=list(acceptance_criteria or self._default_acceptance_criteria(mode)),
             skill_tags=normalized_skills,
@@ -143,6 +146,7 @@ class ApiRunService:
                 mode=mode.value,
                 branch_name=resolved_branch,
                 decisions=len(learning_context.get("decisions", [])),
+                deferred_decisions=len(learning_context.get("deferred_decisions", [])),
                 high_severity_signals=len(learning_context.get("high_severity_signals", [])),
                 detected_loops=len(learning_context.get("detected_loops", [])),
                 refresh_recommendations=len(learning_context.get("refresh_recommendations", [])),
@@ -158,6 +162,7 @@ class ApiRunService:
             context_pack.runtime_facts["learning_context"] = {
                 "error": str(exc),
                 "decisions": [],
+                "deferred_decisions": [],
                 "high_severity_signals": [],
                 "detected_loops": [],
                 "refresh_recommendations": [],
@@ -3781,7 +3786,7 @@ class ApiRunService:
             "last_commit": self._git_output("log", "-1", "--pretty=format:%H%x09%s%x09%ad", "--date=iso-strict"),
         }
 
-    def _runtime_facts(self) -> dict[str, Any]:
+    def _runtime_facts(self, *, target_branch: str, target_profile: str | None) -> dict[str, Any]:
         facts: dict[str, Any] = {}
         if self.paths.bootstrap_state_path.exists():
             facts["bootstrap"] = json.loads(self.paths.bootstrap_state_path.read_text(encoding="utf-8"))
@@ -3793,7 +3798,54 @@ class ApiRunService:
                 facts["api_runs_monitor"] = self._sanitize_monitor_snapshot(snapshot)
             else:
                 facts["api_runs_monitor"] = snapshot
+        facts["model_stack_health"] = self.router.model_stack_health_snapshot()
+        recent_session_briefing = self._recent_session_briefing(target_branch=target_branch, target_profile=target_profile)
+        if recent_session_briefing:
+            facts["recent_session_briefing"] = recent_session_briefing
         return facts
+
+    def _recent_session_briefing(self, *, target_branch: str, target_profile: str | None) -> dict[str, Any] | None:
+        limit = max(1, min(int(self.execution_policy.proactive_briefing_max_items), 5))
+        params: list[Any] = [target_branch]
+        where_clause = "req.branch_name = ?"
+        if target_profile:
+            where_clause = "(req.branch_name = ? OR req.target_profile = ?)"
+            params.append(target_profile)
+        params.append(limit)
+        rows = self.database.fetchall(
+            f"""
+            SELECT req.branch_name, req.mode, req.objective, req.target_profile, req.status AS request_status,
+                   req.updated_at AS request_updated_at,
+                   res.run_id, res.model, res.status AS result_status, res.updated_at AS result_updated_at
+            FROM api_run_requests req
+            LEFT JOIN api_run_results res ON res.run_request_id = req.run_request_id
+            WHERE {where_clause}
+            ORDER BY COALESCE(res.updated_at, req.updated_at) DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        items = [
+            {
+                "branch_name": str(row["branch_name"]),
+                "mode": str(row["mode"]),
+                "objective": str(row["objective"]),
+                "target_profile": str(row["target_profile"]) if row["target_profile"] else None,
+                "request_status": str(row["request_status"]),
+                "result_status": str(row["result_status"]) if row["result_status"] else None,
+                "model": str(row["model"]) if row["model"] else None,
+                "updated_at": str(row["result_updated_at"] or row["request_updated_at"]),
+                "run_id": str(row["run_id"]) if row["run_id"] else None,
+            }
+            for row in rows
+        ]
+        if not items:
+            return None
+        return {
+            "count": len(items),
+            "items": items,
+            "summary": f"{len(items)} recent session summaries retained for this branch/profile.",
+        }
 
     def _render_prompt_text(self, context_pack: ContextPack, template_config: dict[str, Any]) -> str:
         sections = [
@@ -3843,7 +3895,7 @@ class ApiRunService:
     def _render_learning_context_section(self, learning_context: dict[str, Any]) -> str | None:
         if not any(
             learning_context.get(key)
-            for key in ("decisions", "high_severity_signals", "detected_loops", "refresh_recommendations")
+            for key in ("decisions", "deferred_decisions", "high_severity_signals", "detected_loops", "refresh_recommendations")
         ):
             return None
         lines = ["## Learning Context (lessons from recent runs)"]
@@ -3865,6 +3917,14 @@ class ApiRunService:
             lines.append("Recent confirmed decisions:")
             for decision in learning_context["decisions"]:
                 lines.append(f"  - [{decision['status']}] {decision['scope']}: {decision['summary']}")
+        if learning_context.get("deferred_decisions"):
+            lines.append("")
+            lines.append("Known intentional deferrals / accepted gaps:")
+            for decision in learning_context["deferred_decisions"]:
+                lines.append(f"  - [{decision['status']}] {decision['scope']}: {decision['summary']}")
+                next_trigger = decision.get("metadata", {}).get("next_trigger")
+                if next_trigger:
+                    lines.append(f"    Revisit when: {next_trigger}")
         if learning_context.get("refresh_recommendations"):
             lines.append("")
             lines.append("Refresh recommendations:")

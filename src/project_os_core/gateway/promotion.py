@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from typing import Sequence
 
 from ..models import (
     ChannelEvent,
@@ -12,8 +13,10 @@ from ..models import (
     OperatorMessageKind,
     PromotionAction,
     PromotionDecision,
+    SensitivityClass,
     new_id,
 )
+from ..privacy_guard import assess_sensitivity, attachment_safe_summary
 
 
 class SelectiveSyncPromoter:
@@ -67,15 +70,28 @@ class SelectiveSyncPromoter:
 
     def build_candidate(self, event: ChannelEvent) -> ConversationMemoryCandidate:
         classification = self.classify_message(event)
-        summary = self._summarize(event.message.text, classification, event.message.attachments)
-        should_promote = self._should_promote(classification, event.message.text)
-        tags = self._tags_for(classification, event.message.attachments)
+        raw_text = event.message.text.strip()
+        attachment_names = [attachment.name for attachment in event.message.attachments]
+        sensitivity = assess_sensitivity(raw_text, attachment_names=attachment_names)
+        summary = self._summarize(raw_text, classification, event.message.attachments)
+        should_promote = self._should_promote(classification, event.message.text) or sensitivity.classification is not SensitivityClass.S1
+        tags = self._tags_for(classification, event.message.attachments, sensitivity.classification)
         tier = MemoryTier.WARM if should_promote else MemoryTier.HOT
+        clean_content = self._clean_content_for(
+            raw_text=raw_text,
+            attachment_names=attachment_names,
+            sensitivity=sensitivity.classification,
+            fallback=sensitivity.clean_text,
+        )
         metadata = {
             "channel": event.message.channel,
             "surface": event.surface,
-            "attachments": [attachment.name for attachment in event.message.attachments],
+            "attachments": attachment_names,
             "thread_ref": event.message.thread_ref.external_thread_id or event.message.thread_ref.thread_id,
+            "sensitivity_class": sensitivity.classification.value,
+            "sensitivity_reason": sensitivity.reason,
+            "clean_content": clean_content,
+            "sensitive_attachments": list(sensitivity.sensitive_attachments),
         }
         return ConversationMemoryCandidate(
             candidate_id=new_id("candidate"),
@@ -84,7 +100,7 @@ class SelectiveSyncPromoter:
             actor_id=event.message.actor_id,
             classification=classification,
             summary=summary,
-            content=event.message.text.strip() or self._attachments_summary(event.message.attachments),
+            content=raw_text or self._attachments_summary(event.message.attachments),
             tags=tags,
             tier=tier,
             should_promote=should_promote,
@@ -109,7 +125,12 @@ class SelectiveSyncPromoter:
             reason="selective_sync_promoted",
             memory_type=memory_type,
             tier=candidate.tier,
-            metadata={"classification": candidate.classification.value, "tags": list(candidate.tags)},
+            metadata={
+                "classification": candidate.classification.value,
+                "tags": list(candidate.tags),
+                "sensitivity_class": candidate.metadata.get("sensitivity_class"),
+                "sensitivity_reason": candidate.metadata.get("sensitivity_reason"),
+            },
         )
 
     def promote_ready_candidate(self, candidate: ConversationMemoryCandidate) -> ConversationMemoryCandidate:
@@ -119,6 +140,7 @@ class SelectiveSyncPromoter:
                 **candidate.metadata,
                 "promotion_policy": "selective_sync",
                 "classification": candidate.classification.value,
+                "sensitivity_class": candidate.metadata.get("sensitivity_class", SensitivityClass.S1.value),
             },
         )
 
@@ -148,10 +170,17 @@ class SelectiveSyncPromoter:
             return MemoryType.EPISODIC
         return MemoryType.SEMANTIC
 
-    def _tags_for(self, classification: OperatorMessageKind, attachments: list[OperatorAttachment]) -> list[str]:
-        tags = [classification.value, "discord_selective_sync"]
+    def _tags_for(
+        self,
+        classification: OperatorMessageKind,
+        attachments: list[OperatorAttachment],
+        sensitivity: SensitivityClass,
+    ) -> list[str]:
+        tags = [classification.value, "discord_selective_sync", sensitivity.value]
         if attachments:
             tags.append("has_attachment")
+        if sensitivity is not SensitivityClass.S1:
+            tags.append("privacy_guard")
         return tags
 
     def _summarize(self, text: str, classification: OperatorMessageKind, attachments: list[OperatorAttachment]) -> str:
@@ -166,3 +195,15 @@ class SelectiveSyncPromoter:
     def _attachments_summary(attachments: list[OperatorAttachment]) -> str:
         names = ", ".join(attachment.name for attachment in attachments[:3])
         return f"Pieces jointes referencees: {names}" if names else "Reference de piece jointe"
+
+    @staticmethod
+    def _clean_content_for(
+        *,
+        raw_text: str,
+        attachment_names: Sequence[str],
+        sensitivity: SensitivityClass,
+        fallback: str | None,
+    ) -> str | None:
+        if raw_text:
+            return fallback or raw_text
+        return attachment_safe_summary(attachment_names, sensitivity=sensitivity)

@@ -330,6 +330,52 @@ Le graphe mission officiel part sur 6 roles:
 Le premier graphe reste unique et canonique.
 On ne multiplie pas les graphes metier avant d'avoir valide cette forme.
 
+## Gouvernance analytique
+
+Au-dessus du graphe canonique, `Project OS` peut ouvrir une couche de deliberation structuree pour les arbitrages importants.
+
+Cette couche ne remplace pas les 6 roles.
+Elle sert a cadrer:
+
+- les reviews avant codage
+- les arbitrages d'architecture
+- les pre-mortems
+- les conseils strategiques
+- les revues de confiance et de comportement externe
+
+V1 retenue:
+
+- `Vision Strategy`
+- `Product Value`
+- `Technical Architecture`
+- `Execution Delivery`
+- `Operations Workflow`
+- `Security Governance`
+- `Red Team`
+- `Clarity Anti-Bullshit`
+- `Research Exploration`
+
+Angles reserves:
+
+- `Financial Leverage`
+- `Legal Compliance`
+- `Brand Trust`
+
+Regles dures:
+
+- les angles sont des fonctions d'analyse bornees, pas des personnages
+- ils sont actives selectivement
+- ils n'ont aucune autorite d'execution directe
+- le `Moderator` est une fonction procedurale, pas une nouvelle identite produit
+- la synthese arbitree et le `DecisionRecord` sont les seules sorties durables par defaut
+
+References:
+
+- `docs/analysis-angles/README.md`
+- `docs/analysis-angles/00-framework.md`
+- `docs/analysis-angles/06-activation-policy.md`
+- `docs/integrations/DISCORD_MEETING_SYSTEM_V1.md`
+
 ## Skills de mega prompt
 
 Les gros runs API doivent declarer explicitement leurs skills de run.
@@ -510,6 +556,7 @@ Le systeme doit y rester:
 Reference:
 
 - `docs/integrations/DISCORD_OPERATING_MODEL.md`
+- `docs/integrations/DISCORD_MEETING_SYSTEM_V1.md`
 
 ## Stockage cible
 

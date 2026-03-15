@@ -11,8 +11,8 @@ Pour la liste complete, voir `EXTERNAL_STACK_REFERENCE.md`. Ce document explique
 - **Role**: Shell operateur, surface Discord, inbox de missions
 - **Integration**: `third_party/openclaw/` + `integrations/openclaw/`
 - **Utilise pour**: recevoir les messages du fondateur, envoyer les notifications, gerer la file d'attente de missions
-- **Interface**: Gateway adapter (`src/project_os_core/gateway/service.py`)
-- **A connecter**: live gateway adapter sur les messages Discord entrants
+- **Interface**: ingress `OpenClaw -> gateway ingest-openclaw-event -> Mission Router`
+- **Etat**: branche en live sur le poste cible via le plugin `project-os-gateway-adapter`, `openclaw doctor`, `truth-health` et `validate-live`
 
 ### LangGraph
 
@@ -55,7 +55,7 @@ Pour la liste complete, voir `EXTERNAL_STACK_REFERENCE.md`. Ce document explique
 ### Claude API (Anthropic)
 
 - **Role**: L'Auditeur + Le Traducteur (ADR 0013)
-- **Integration**: a implementer via `_call_reviewer()` et `_call_translator()` dans `service.py`
+- **Integration**: `src/project_os_core/api_runs/service.py` via `_call_reviewer()` et `_call_translator()`
 - **Utilise pour**:
   1. Review cross-model du code produit par GPT
   2. Traduction des questions structurees en francais simple pour Discord
@@ -67,7 +67,7 @@ Pour la liste complete, voir `EXTERNAL_STACK_REFERENCE.md`. Ce document explique
 - **Role**: Gestion des secrets (ADR 0005)
 - **Integration**: `src/project_os_core/secrets/infisical_provider.py`
 - **Utilise pour**: stocker et recuperer OPENAI_API_KEY, DISCORD_TOKEN, ANTHROPIC_API_KEY, etc.
-- **Mode**: `infisical_first` avec fallback `.env` local
+- **Mode**: `infisical_required` avec `Universal Auth` machine-first
 - **Regles**: jamais de secret dans SQLite, jamais dans les logs, jamais dans le repo
 
 ## Core Stack - Execution (workers)

@@ -48,6 +48,7 @@ class MemoryStore:
         metadata: dict[str, Any] | None = None,
     ) -> MemoryRecord:
         metadata = dict(metadata or {})
+        openmemory_enabled = self._openmemory_enabled(metadata)
         record = MemoryRecord(
             memory_id=new_id("memory"),
             user_id=user_id,
@@ -60,7 +61,7 @@ class MemoryStore:
             metadata=metadata,
         )
 
-        if self.openmemory.status.available:
+        if openmemory_enabled and self.openmemory.status.available:
             try:
                 added = self.openmemory.add_record(record)
                 record.openmemory_id = added.get("id") or added.get("root_memory_id")
@@ -89,25 +90,26 @@ class MemoryStore:
             immutable_columns=["created_at"],
         )
         try:
-            vector = self.embedding_service.embed_text(content)
+            vector = self._embed_for_record(content, record.metadata)
         except Exception as exc:
             vector = self.embedding_service._local_hash_embedding(content, self.database.vector_dimensions)
-            record.metadata["embedding_fallback"] = {
-                "provider": "local_hash",
-                "reason": str(exc),
-            }
-            self.database.execute(
-                """
-                UPDATE memory_records
-                SET metadata_json = ?, updated_at = ?
-                WHERE memory_id = ?
-                """,
-                (
-                    dump_json(record.metadata),
-                    record.updated_at,
-                    record.memory_id,
-                ),
-            )
+            if self._embedding_provider(record.metadata) != "local_hash":
+                record.metadata["embedding_fallback"] = {
+                    "provider": "local_hash",
+                    "reason": str(exc),
+                }
+                self.database.execute(
+                    """
+                    UPDATE memory_records
+                    SET metadata_json = ?, updated_at = ?
+                    WHERE memory_id = ?
+                    """,
+                    (
+                        dump_json(record.metadata),
+                        record.updated_at,
+                        record.memory_id,
+                    ),
+                )
         self.database.upsert_vector(
             record.memory_id,
             self.embedding_service.vector_literal(vector),
@@ -203,6 +205,8 @@ class MemoryStore:
             query_vector = self.embedding_service.vector_literal(fallback)
         for row in self.database.search_vectors(query_vector, context.limit):
             record = self.get(str(row["memory_id"]))
+            if not self._is_search_visible(record, context):
+                continue
             hits[record.memory_id] = {
                 "memory_id": record.memory_id,
                 "source": "sqlite_vec",
@@ -227,6 +231,8 @@ class MemoryStore:
                         continue
                     if canonical:
                         record = self.get(canonical)
+                        if not self._is_search_visible(record, context):
+                            continue
                         hits[canonical] = {
                             "memory_id": canonical,
                             "source": "openmemory",
@@ -292,7 +298,8 @@ class MemoryStore:
                         connection.execute("DELETE FROM memory_embeddings")
                         connection.execute("DELETE FROM memory_embedding_map")
                     for row in rows:
-                        vector = self.embedding_service.embed_text(str(row["content"]))
+                        metadata = json.loads(str(row["metadata_json"]))
+                        vector = self._embed_for_record(str(row["content"]), metadata)
                         self.database.upsert_vector(
                             str(row["memory_id"]),
                             self.embedding_service.vector_literal(vector),
@@ -306,6 +313,12 @@ class MemoryStore:
                 self.openmemory = OpenMemoryAdapter(self.paths, self.embedding_strategy, self.secret_resolver)
                 for row in rows:
                     record = self._row_to_memory_record(row)
+                    if not self._openmemory_enabled(record.metadata):
+                        self.database.execute(
+                            "UPDATE memory_records SET openmemory_id = ?, updated_at = ? WHERE memory_id = ?",
+                            (None, record.updated_at, record.memory_id),
+                        )
+                        continue
                     added = self.openmemory.add_record(record)
                     record.openmemory_id = added.get("id") or added.get("root_memory_id")
                     self.database.execute(
@@ -346,3 +359,28 @@ class MemoryStore:
             created_at=str(row["created_at"]),
             updated_at=str(row["updated_at"]),
         )
+
+    def _embed_for_record(self, content: str, metadata: dict[str, Any]) -> list[float]:
+        if self._embedding_provider(metadata) == "local_hash":
+            return self.embedding_service._local_hash_embedding(content, self.database.vector_dimensions)
+        return self.embedding_service.embed_text(content)
+
+    @staticmethod
+    def _embedding_provider(metadata: dict[str, Any]) -> str:
+        provider = str(metadata.get("embedding_provider") or "").strip().lower()
+        return provider or "default"
+
+    @staticmethod
+    def _openmemory_enabled(metadata: dict[str, Any]) -> bool:
+        value = metadata.get("openmemory_enabled")
+        if value is None:
+            return True
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    @staticmethod
+    def _is_search_visible(record: MemoryRecord, context: RetrievalContext) -> bool:
+        if context.include_private_full:
+            return True
+        return str(record.metadata.get("privacy_view") or "").strip().lower() != "full"

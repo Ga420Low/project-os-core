@@ -41,7 +41,15 @@
     "operator_delivery_max_attempts": 4,
     "operator_delivery_retry_base_seconds": 30,
     "operator_delivery_retry_max_seconds": 900,
-    "operator_delivery_max_pending": 64
+    "operator_delivery_max_pending": 64,
+    "local_model_enabled": false,
+    "local_model_provider": "ollama",
+    "local_model_base_url": "http://127.0.0.1:11434",
+    "local_model_name": "local-llm",
+    "local_model_timeout_seconds": 90.0,
+    "local_model_health_timeout_seconds": 5.0,
+    "privacy_guard_enabled": true,
+    "s3_requires_local_model": true
   },
   "github_config": {
     "repo": "Ga420Low/project-os-core",
@@ -54,12 +62,44 @@
       "audit-finding"
     ]
   },
+  "openclaw_config": {
+    "binary_command": "openclaw",
+    "runtime_root": "D:/ProjectOS/openclaw-runtime",
+    "state_root": "D:/ProjectOS/runtime/openclaw",
+    "plugin_id": "project-os-gateway-adapter",
+    "plugin_source_path": null,
+    "enabled_channels": [
+      "discord",
+      "webchat"
+    ],
+    "trusted_plugin_ids": [
+      "project-os-gateway-adapter",
+      "discord",
+      "device-pair",
+      "memory-core"
+    ],
+    "send_ack_replies": false,
+    "discord_thread_bindings_required": true,
+    "discord_auto_presence_required": true,
+    "discord_exec_approvals_required": true,
+    "discord_exec_target": "dm",
+    "discord_exec_approver_ids": [],
+    "timeout_ms": 45000,
+    "require_replay_before_live": true,
+    "live_validation_max_age_hours": 168,
+    "pairing_rotation_max_age_days": 30,
+    "windows_gateway_task_name": "OpenClaw Gateway"
+  },
   "tier_manager_config": {
     "enabled": true,
     "auto_archive_on_write": true,
     "warm_min_age_hours": 6,
     "keep_latest_warm_records": 8,
     "max_archive_batch_size": 32
+  },
+  "learning_config": {
+    "auto_sync_runbook_deferred": false,
+    "runbook_deferred_globs": []
   },
   "api_dashboard_config": {
     "host": "127.0.0.1",

@@ -1,14 +1,17 @@
 ﻿from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from datetime import datetime, timezone
 
 from ..database import CanonicalDatabase, dump_json
+from ..local_model import LocalModelClient
 from ..memory.store import MemoryStore
 from ..models import (
     ChannelEvent,
     CommunicationMode,
+    DiscordThreadBinding,
     DiscordChannelClass,
     DiscordRunCard,
     GatewayDispatchResult,
@@ -18,9 +21,11 @@ from ..models import (
     PromotionAction,
     RoutingDecision,
     RoutingDecisionTrace,
+    SensitivityClass,
     new_id,
     to_jsonable,
 )
+from ..privacy_guard import sanitize_sensitive_text
 from ..router.service import MissionRouter
 from ..runtime.journal import LocalJournal
 from ..session.state import PersistentSessionState, ResolvedIntent
@@ -39,6 +44,7 @@ class GatewayService:
         memory: MemoryStore,
         session_state: PersistentSessionState,
         secret_resolver=None,
+        local_model_client: LocalModelClient | None = None,
         selective_sync: SelectiveSyncPromoter | None = None,
     ) -> None:
         self.database = database
@@ -47,6 +53,7 @@ class GatewayService:
         self.memory = memory
         self.session_state = session_state
         self.secret_resolver = secret_resolver
+        self.local_model_client = local_model_client or getattr(router, "local_model_client", None)
         self.selective_sync = selective_sync or SelectiveSyncPromoter()
 
     def dispatch_event(
@@ -59,6 +66,19 @@ class GatewayService:
         metadata: dict | None = None,
     ) -> GatewayDispatchResult:
         candidate = self.selective_sync.build_candidate(event)
+        duplicate_event_id = self._duplicate_channel_event_id(event)
+        if duplicate_event_id:
+            self.journal.append(
+                "gateway_duplicate_ingress_ignored",
+                "gateway",
+                {
+                    "channel_event_id": event.event_id,
+                    "duplicate_of_event_id": duplicate_event_id,
+                    "message_id": event.message.message_id,
+                    "surface": event.surface,
+                },
+            )
+            return self._build_duplicate_dispatch(event, duplicate_event_id)
         promotion = self.selective_sync.decide_promotion(candidate)
         human_artifacts = self.selective_sync.build_human_artifacts(event)
         candidate.metadata["human_artifacts"] = [to_jsonable(item) for item in human_artifacts]
@@ -79,6 +99,8 @@ class GatewayService:
                 "channel_event_id": event.event_id,
                 "message_kind": candidate.classification.value,
                 "channel_class": channel_class.value,
+                "sensitivity_class": candidate.metadata.get("sensitivity_class", SensitivityClass.S1.value),
+                "sensitivity_reason": candidate.metadata.get("sensitivity_reason"),
                 "thread_ref": to_jsonable(event.message.thread_ref),
                 "attachments": [to_jsonable(item) for item in event.message.attachments],
                 "human_artifact_ids": [item.artifact_id for item in human_artifacts],
@@ -105,6 +127,14 @@ class GatewayService:
                 channel_class=channel_class,
                 human_artifacts=human_artifacts,
             )
+            thread_binding = self._upsert_discord_thread_binding(
+                event=event,
+                dispatch=dispatch,
+                channel_class=channel_class,
+            )
+            if thread_binding is not None:
+                dispatch.metadata["thread_binding_id"] = thread_binding.binding_id
+                dispatch.metadata["thread_binding_kind"] = thread_binding.binding_kind
             self._persist_dispatch(dispatch)
             self.journal.append(
                 "gateway_session_dispatch_completed",
@@ -122,21 +152,39 @@ class GatewayService:
         decision, trace, mission_run = self.router.route_intent(intent, persist=True)
         promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
 
-        # For simple Discord chat routes, call GPT directly for an intelligent response
-        if decision.allowed and decision.route_reason == "discord_simple_route":
-            gpt_response = self._call_simple_chat(
-                message=event.message.text.strip(),
+        if decision.allowed and self._should_inline_chat(event, decision):
+            message_for_model = self._message_for_route(candidate, decision)
+            inline_response = self._call_inline_chat(
+                message=message_for_model,
+                model=decision.model_route.model,
+                provider=decision.model_route.provider,
+                sensitivity=self._candidate_sensitivity(candidate),
             )
-            if gpt_response:
+            if inline_response:
                 reply = OperatorReply(
                     reply_id=new_id("reply"),
                     channel=event.message.channel,
                     envelope_id=envelope.envelope_id,
                     thread_ref=event.message.thread_ref,
-                    summary=gpt_response,
+                    summary=inline_response,
                     mission_run_id=mission_run.mission_run_id if mission_run else None,
                     decision_id=decision.decision_id,
                     reply_kind="chat_response",
+                    communication_mode=decision.communication_mode,
+                    operator_language=decision.operator_language,
+                    audience=decision.audience,
+                    metadata={"surface": event.surface, "speech_policy": decision.speech_policy.value},
+                )
+            elif decision.model_route.provider == "local":
+                reply = OperatorReply(
+                    reply_id=new_id("reply"),
+                    channel=event.message.channel,
+                    envelope_id=envelope.envelope_id,
+                    thread_ref=event.message.thread_ref,
+                    summary="Message bloque: la voie locale sensible est indisponible. Rien n'a ete envoye au cloud.",
+                    mission_run_id=mission_run.mission_run_id if mission_run else None,
+                    decision_id=decision.decision_id,
+                    reply_kind="blocked",
                     communication_mode=decision.communication_mode,
                     operator_language=decision.operator_language,
                     audience=decision.audience,
@@ -170,12 +218,21 @@ class GatewayService:
             metadata={
                 "routing_trace_id": trace.trace_id,
                 "classification": candidate.classification.value,
+                "sensitivity_class": candidate.metadata.get("sensitivity_class", SensitivityClass.S1.value),
                 "reply_kind": reply.reply_kind,
                 "channel_class": channel_class.value,
                 "communication_mode": communication_mode.value,
                 "human_artifact_ids": [item.artifact_id for item in human_artifacts],
             },
         )
+        thread_binding = self._upsert_discord_thread_binding(
+            event=event,
+            dispatch=dispatch,
+            channel_class=channel_class,
+        )
+        if thread_binding is not None:
+            dispatch.metadata["thread_binding_id"] = thread_binding.binding_id
+            dispatch.metadata["thread_binding_kind"] = thread_binding.binding_kind
         self._persist_dispatch(dispatch)
         self.journal.append(
             "gateway_dispatch_completed",
@@ -559,18 +616,65 @@ class GatewayService:
         if promotion.action is not PromotionAction.PROMOTE or promotion.memory_type is None or promotion.tier is None:
             return []
         promoted_candidate = self.selective_sync.promote_ready_candidate(candidate)
+        sensitivity = self._candidate_sensitivity(promoted_candidate)
+        base_metadata = {
+            **promoted_candidate.metadata,
+            "conversation_thread": to_jsonable(promoted_candidate.thread_ref),
+            "source_event_id": promoted_candidate.source_event_id,
+            "summary": promoted_candidate.summary,
+        }
+        if sensitivity is SensitivityClass.S2:
+            full_record = self.memory.remember(
+                content=promoted_candidate.content,
+                user_id=promoted_candidate.actor_id,
+                memory_type=promotion.memory_type,
+                tier=promotion.tier,
+                tags=[*promoted_candidate.tags, "privacy_full"],
+                metadata={
+                    **base_metadata,
+                    "privacy_view": "full",
+                    "openmemory_enabled": False,
+                    "embedding_provider": "local_hash",
+                },
+            )
+            clean_content = str(promoted_candidate.metadata.get("clean_content") or promoted_candidate.summary)
+            clean_record = self.memory.remember(
+                content=clean_content,
+                user_id=promoted_candidate.actor_id,
+                memory_type=promotion.memory_type,
+                tier=promotion.tier,
+                tags=[tag for tag in promoted_candidate.tags if tag != "privacy_guard"] + ["privacy_clean"],
+                metadata={
+                    **base_metadata,
+                    "privacy_view": "clean",
+                    "clean_source_memory_id": full_record.memory_id,
+                    "full_content_redacted": True,
+                },
+            )
+            promotion.memory_id = clean_record.memory_id
+            return [full_record.memory_id, clean_record.memory_id]
+
+        record_metadata = dict(base_metadata)
+        record_tags = list(promoted_candidate.tags)
+        if sensitivity is SensitivityClass.S3:
+            record_metadata.update(
+                {
+                    "privacy_view": "full",
+                    "openmemory_enabled": False,
+                    "embedding_provider": "local_hash",
+                    "cloud_route_blocked": True,
+                }
+            )
+            record_tags.append("privacy_full")
+        else:
+            record_metadata.setdefault("privacy_view", "clean")
         record = self.memory.remember(
             content=promoted_candidate.content,
             user_id=promoted_candidate.actor_id,
             memory_type=promotion.memory_type,
             tier=promotion.tier,
-            tags=promoted_candidate.tags,
-            metadata={
-                **promoted_candidate.metadata,
-                "conversation_thread": to_jsonable(promoted_candidate.thread_ref),
-                "source_event_id": promoted_candidate.source_event_id,
-                "summary": promoted_candidate.summary,
-            },
+            tags=record_tags,
+            metadata=record_metadata,
         )
         promotion.memory_id = record.memory_id
         return [record.memory_id]
@@ -600,6 +704,147 @@ class GatewayService:
         except Exception as exc:
             logging.getLogger("project_os.gateway").warning("simple_chat Claude call failed: %s", exc)
             return None
+
+    def _call_local_chat(
+        self,
+        *,
+        message: str,
+        model: str | None,
+        sensitivity: SensitivityClass,
+    ) -> str | None:
+        if self.local_model_client is None:
+            return None
+        try:
+            response = self.local_model_client.chat(
+                message=message,
+                model=model,
+                system=self._local_system_prompt(sensitivity),
+            )
+        except Exception as exc:
+            logging.getLogger("project_os.gateway").warning("local_chat call failed: %s", exc)
+            return None
+        rendered = response.content.strip()
+        if sensitivity is not SensitivityClass.S1:
+            rendered = sanitize_sensitive_text(rendered)
+        return rendered or None
+
+    def _call_inline_chat(
+        self,
+        *,
+        message: str,
+        model: str | None,
+        provider: str,
+        sensitivity: SensitivityClass,
+    ) -> str | None:
+        if provider == "local":
+            return self._call_local_chat(message=message, model=model, sensitivity=sensitivity)
+        return self._call_simple_chat(message=message, model=model or "claude-sonnet-4-20250514")
+
+    @staticmethod
+    def _candidate_sensitivity(candidate) -> SensitivityClass:
+        raw = str(candidate.metadata.get("sensitivity_class") or "").strip().lower()
+        try:
+            return SensitivityClass(raw)
+        except Exception:
+            return SensitivityClass.S1
+
+    @staticmethod
+    def _message_for_cloud(candidate) -> str:
+        sensitivity = GatewayService._candidate_sensitivity(candidate)
+        if sensitivity is SensitivityClass.S2:
+            clean_content = str(candidate.metadata.get("clean_content") or "").strip()
+            if clean_content:
+                return clean_content
+        return candidate.content
+
+    @staticmethod
+    def _should_inline_chat(event: ChannelEvent, decision: RoutingDecision) -> bool:
+        if event.surface != "discord" or not decision.allowed:
+            return False
+        if decision.model_route.provider == "local":
+            return decision.communication_mode in {CommunicationMode.DISCUSSION, CommunicationMode.ARCHITECT}
+        return decision.route_reason == "discord_simple_route"
+
+    @staticmethod
+    def _message_for_route(candidate, decision: RoutingDecision) -> str:
+        if decision.model_route.provider == "local":
+            return candidate.content
+        return GatewayService._message_for_cloud(candidate)
+
+    @staticmethod
+    def _local_system_prompt(sensitivity: SensitivityClass) -> str:
+        base = (
+            "Tu es Project OS sur une voie locale Windows-first. "
+            "Tu reponds en francais, de facon concise, utile et concrete. "
+            "Ne fais pas de theatre, ne promets pas d'actions non executees."
+        )
+        if sensitivity is SensitivityClass.S3:
+            return (
+                base
+                + " Le message contient des donnees tres sensibles et doit rester local. "
+                + "N'affiche jamais de secret, token, cle, email ou valeur sensible verbatim dans ta reponse. "
+                + "Explique seulement ce qu'il faut faire ou retenir, en version redactee."
+            )
+        if sensitivity is SensitivityClass.S2:
+            return (
+                base
+                + " Le message peut contenir des donnees personnelles ou sensibles. "
+                + "Ne repete pas les informations identifiantes verbatim."
+            )
+        return base
+
+    def _duplicate_channel_event_id(self, event: ChannelEvent) -> str | None:
+        dedup_key = self._ingress_dedup_key(event)
+        if not dedup_key:
+            return None
+        row = self.database.fetchone(
+            "SELECT event_id FROM channel_events WHERE ingress_dedup_key = ?",
+            (dedup_key,),
+        )
+        if row is None:
+            return None
+        return str(row["event_id"])
+
+    def _build_duplicate_dispatch(self, event: ChannelEvent, duplicate_event_id: str) -> GatewayDispatchResult:
+        reply = OperatorReply(
+            reply_id=new_id("reply"),
+            channel=event.message.channel,
+            envelope_id=new_id("envelope"),
+            thread_ref=event.message.thread_ref,
+            summary="Doublon OpenClaw ignore. Rien n'est relance.",
+            reply_kind="ack",
+            communication_mode=CommunicationMode.DISCUSSION,
+            operator_language="fr",
+            audience=OperatorAudience.NON_DEVELOPER,
+            metadata={"surface": event.surface, "duplicate_of_event_id": duplicate_event_id},
+        )
+        return GatewayDispatchResult(
+            dispatch_id=new_id("dispatch"),
+            channel_event_id=duplicate_event_id,
+            envelope_id=reply.envelope_id,
+            intent_id=new_id("intent"),
+            decision_id=None,
+            mission_run_id=None,
+            operator_reply=reply,
+            promoted_memory_ids=[],
+            memory_candidate_id=None,
+            promotion_decision_id=None,
+            discord_run_card=None,
+            metadata={"duplicate_ingress": True, "duplicate_of_event_id": duplicate_event_id},
+        )
+
+    @staticmethod
+    def _ingress_dedup_key(event: ChannelEvent) -> str | None:
+        source = str(event.raw_payload.get("source") or event.message.metadata.get("source") or "").strip().lower()
+        if source != "openclaw":
+            return None
+        source_message_id = str(event.message.metadata.get("message_id") or event.message.message_id or "").strip()
+        conversation_key = str(event.message.thread_ref.external_thread_id or event.message.thread_ref.thread_id or "").strip()
+        if not source_message_id or not conversation_key:
+            return None
+        content_hash = hashlib.sha256(event.message.text.strip().encode("utf-8")).hexdigest()
+        raw = f"{event.surface}|{event.message.channel}|{source_message_id}|{conversation_key}|{content_hash}"
+        return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
     def _build_reply(
         self,
@@ -713,10 +958,12 @@ class GatewayService:
             "monthly_budget_exceeded": "le budget mensuel est depasse",
             "exceptional_requires_founder_approval": "une validation fondateur est obligatoire",
             "daily_budget_soft_exceeded": "le budget journalier souple est depasse",
+            "s3_requires_local_model": "le contenu est trop sensible pour le cloud et aucune voie locale sure n'est disponible",
         }
         return ", ".join(mapping.get(item, item) for item in reasons)
 
     def _persist_channel_event(self, event: ChannelEvent, candidate) -> None:
+        ingress_dedup_key = self._ingress_dedup_key(event)
         self.database.upsert(
             "channel_events",
             {
@@ -726,6 +973,9 @@ class GatewayService:
                 "actor_id": event.message.actor_id,
                 "channel": event.message.channel,
                 "message_kind": candidate.classification.value,
+                "source_message_id": event.message.metadata.get("message_id"),
+                "conversation_key": event.message.thread_ref.external_thread_id or event.message.thread_ref.thread_id,
+                "ingress_dedup_key": ingress_dedup_key,
                 "thread_ref_json": dump_json(to_jsonable(event.message.thread_ref)),
                 "message_json": dump_json(to_jsonable(event.message)),
                 "raw_payload_json": dump_json(event.raw_payload),
@@ -793,4 +1043,90 @@ class GatewayService:
             conflict_columns="dispatch_id",
             immutable_columns=["created_at"],
         )
+
+    def _upsert_discord_thread_binding(
+        self,
+        *,
+        event: ChannelEvent,
+        dispatch: GatewayDispatchResult,
+        channel_class: DiscordChannelClass,
+    ) -> DiscordThreadBinding | None:
+        if event.surface.strip().lower() != "discord":
+            return None
+
+        thread_ref = event.message.thread_ref
+        thread_key_source = str(thread_ref.external_thread_id or thread_ref.thread_id or "").strip()
+        if not thread_key_source:
+            return None
+
+        binding_key = hashlib.sha256(
+            f"{event.surface.strip().lower()}|{event.message.channel}|{thread_key_source}".encode("utf-8")
+        ).hexdigest()
+        existing = self.database.fetchone(
+            "SELECT binding_id, created_at FROM discord_thread_bindings WHERE binding_key = ?",
+            (binding_key,),
+        )
+        binding = DiscordThreadBinding(
+            binding_id=str(existing["binding_id"]) if existing else new_id("discord_binding"),
+            binding_key=binding_key,
+            surface=event.surface.strip().lower(),
+            channel=event.message.channel,
+            thread_id=thread_ref.thread_id,
+            external_thread_id=thread_ref.external_thread_id,
+            parent_thread_id=thread_ref.parent_thread_id,
+            channel_event_id=event.event_id,
+            dispatch_id=dispatch.dispatch_id,
+            envelope_id=dispatch.envelope_id,
+            decision_id=dispatch.decision_id,
+            mission_run_id=dispatch.mission_run_id,
+            binding_kind=self._discord_binding_kind_for(channel_class=channel_class, dispatch=dispatch),
+            status="blocked" if dispatch.operator_reply.reply_kind == "blocked" else "active",
+            metadata={
+                "channel_class": channel_class.value,
+                "reply_kind": dispatch.operator_reply.reply_kind,
+                "source_message_id": event.message.metadata.get("message_id"),
+                "conversation_key": thread_key_source,
+            },
+            created_at=str(existing["created_at"]) if existing else event.created_at,
+            updated_at=event.created_at,
+        )
+        self.database.upsert(
+            "discord_thread_bindings",
+            {
+                "binding_id": binding.binding_id,
+                "binding_key": binding.binding_key,
+                "surface": binding.surface,
+                "channel": binding.channel,
+                "thread_id": binding.thread_id,
+                "external_thread_id": binding.external_thread_id,
+                "parent_thread_id": binding.parent_thread_id,
+                "channel_event_id": binding.channel_event_id,
+                "dispatch_id": binding.dispatch_id,
+                "envelope_id": binding.envelope_id,
+                "decision_id": binding.decision_id,
+                "mission_run_id": binding.mission_run_id,
+                "binding_kind": binding.binding_kind,
+                "status": binding.status,
+                "metadata_json": dump_json(binding.metadata),
+                "created_at": binding.created_at,
+                "updated_at": binding.updated_at,
+            },
+            conflict_columns="binding_key",
+            immutable_columns=["binding_id", "created_at"],
+        )
+        return binding
+
+    @staticmethod
+    def _discord_binding_kind_for(
+        *,
+        channel_class: DiscordChannelClass,
+        dispatch: GatewayDispatchResult,
+    ) -> str:
+        if channel_class is DiscordChannelClass.INCIDENTS:
+            return "incident"
+        if channel_class is DiscordChannelClass.APPROVALS:
+            return "approval"
+        if dispatch.mission_run_id:
+            return "run"
+        return "discussion"
 

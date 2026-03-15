@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from ..database import CanonicalDatabase, dump_json
+from ..local_model import LocalModelClient
 from ..models import (
     ActionRiskClass,
     AdaptiveModelRoute,
@@ -18,6 +19,7 @@ from ..models import (
     MissionIntent,
     MissionRun,
     MissionStatus,
+    ModelRouteClass,
     ModelRoute,
     OperatorAudience,
     OperatorEnvelope,
@@ -26,6 +28,7 @@ from ..models import (
     RoutingDecision,
     RoutingDecisionTrace,
     RunSpeechPolicy,
+    SensitivityClass,
     RuntimeState,
     RuntimeVerdict,
     new_id,
@@ -46,6 +49,7 @@ class MissionRouter:
         path_policy: PathPolicy,
         secret_resolver: SecretResolver,
         execution_policy: ExecutionPolicy,
+        local_model_client: LocalModelClient | None = None,
         profile_capabilities: dict[str, ProfileCapability] | None = None,
     ):
         self.database = database
@@ -53,7 +57,120 @@ class MissionRouter:
         self.path_policy = path_policy
         self.secret_resolver = secret_resolver
         self.execution_policy = execution_policy
+        self.local_model_client = local_model_client
         self.profile_capabilities = profile_capabilities or default_profile_capabilities()
+
+    def model_stack_health_snapshot(self) -> dict[str, Any]:
+        openai_available = bool(self.secret_resolver.get_optional("OPENAI_API_KEY"))
+        anthropic_available = bool(self.secret_resolver.get_optional("ANTHROPIC_API_KEY"))
+        local_health = self._local_model_health_snapshot()
+        local_enabled = bool(self.execution_policy.local_model_enabled)
+        api_ready_count = int(openai_available) + int(anthropic_available)
+        if api_ready_count >= 2:
+            api_status = "ready"
+        elif api_ready_count == 1:
+            api_status = "degraded"
+        else:
+            api_status = "blocked"
+        return {
+            "tiers": {
+                ModelRouteClass.FAST.value: {
+                    "status": "ready",
+                    "reason": "deterministic_first_available",
+                },
+                ModelRouteClass.LOCAL.value: local_health,
+                ModelRouteClass.API.value: {
+                    "status": api_status,
+                    "reason": "providers_available" if api_ready_count else "no_api_provider_available",
+                    "preferred_provider": self._preferred_api_provider(openai_available, anthropic_available),
+                },
+            },
+            "providers": {
+                "openai": {
+                    "available": openai_available,
+                    "model": self.execution_policy.default_model,
+                },
+                "anthropic": {
+                    "available": anthropic_available,
+                    "model": self.execution_policy.discord_simple_model,
+                },
+                "local": {
+                    "available": local_health["status"] == "ready",
+                    "enabled": local_enabled,
+                    "provider": local_health.get("provider"),
+                    "model": local_health.get("model") if local_enabled else None,
+                    "base_url": local_health.get("base_url") if local_enabled else None,
+                    "latency_ms": local_health.get("latency_ms"),
+                    "reason": local_health.get("reason"),
+                },
+            },
+        }
+
+    def _local_model_health_snapshot(self) -> dict[str, Any]:
+        if not self.execution_policy.local_model_enabled:
+            return {
+                "status": "absent",
+                "reason": "not_configured",
+                "provider": None,
+                "model": None,
+                "base_url": None,
+            }
+        if self.local_model_client is None:
+            return {
+                "status": "blocked",
+                "reason": "local_model_client_missing",
+                "provider": self.execution_policy.local_model_provider,
+                "model": self.execution_policy.local_model_name,
+                "base_url": self.execution_policy.local_model_base_url,
+            }
+        health = dict(self.local_model_client.health())
+        health.setdefault("provider", self.execution_policy.local_model_provider)
+        health.setdefault("model", self.execution_policy.local_model_name)
+        health.setdefault("base_url", self.execution_policy.local_model_base_url)
+        return health
+
+    def proactive_briefing(self, *, branch_name: str | None = None, limit: int | None = None) -> dict[str, Any]:
+        bounded_limit = max(1, min(int(limit or self.execution_policy.proactive_briefing_max_items), 5))
+        params: list[Any] = []
+        where_clause = ""
+        if branch_name:
+            where_clause = "WHERE req.branch_name = ?"
+            params.append(branch_name)
+        params.append(bounded_limit)
+        rows = self.database.fetchall(
+            f"""
+            SELECT req.branch_name, req.mode, req.objective, req.target_profile, req.status AS request_status,
+                   req.updated_at AS request_updated_at,
+                   res.run_id, res.model, res.status AS result_status, res.updated_at AS result_updated_at
+            FROM api_run_requests req
+            LEFT JOIN api_run_results res ON res.run_request_id = req.run_request_id
+            {where_clause}
+            ORDER BY COALESCE(res.updated_at, req.updated_at) DESC
+            LIMIT ?
+            """,
+            tuple(params),
+        )
+        items = [
+            {
+                "branch_name": str(row["branch_name"]),
+                "mode": str(row["mode"]),
+                "objective": str(row["objective"]),
+                "target_profile": str(row["target_profile"]) if row["target_profile"] else None,
+                "request_status": str(row["request_status"]),
+                "result_status": str(row["result_status"]) if row["result_status"] else None,
+                "model": str(row["model"]) if row["model"] else None,
+                "updated_at": str(row["result_updated_at"] or row["request_updated_at"]),
+                "run_id": str(row["run_id"]) if row["run_id"] else None,
+            }
+            for row in rows
+        ]
+        if not items:
+            return {}
+        return {
+            "count": len(items),
+            "items": items,
+            "summary": f"{len(items)} recent session summaries available.",
+        }
 
     def envelope_to_intent(self, envelope: OperatorEnvelope) -> MissionIntent:
         return MissionIntent(
@@ -296,29 +413,81 @@ class MissionRouter:
         budget_state: BudgetState,
         approval_gate: ApprovalGate,
     ) -> ModelRoute:
+        model_health = self.model_stack_health_snapshot()
         message_kind = str(intent.metadata.get("message_kind") or "")
+        sensitivity = self._sensitivity_class(intent)
+        if self.execution_policy.privacy_guard_enabled and sensitivity is SensitivityClass.S3:
+            if model_health["tiers"][ModelRouteClass.LOCAL.value]["status"] == "ready":
+                return ModelRoute(
+                    provider="local",
+                    model=self.execution_policy.local_model_name,
+                    reasoning_effort=self.execution_policy.local_model_reasoning_effort,
+                    route_class=mission_cost_class,
+                    route_tier=ModelRouteClass.LOCAL,
+                    allowed=True,
+                    reason="s3_local_route",
+                )
+            if self.execution_policy.s3_requires_local_model:
+                return ModelRoute(
+                    provider="local",
+                    model=self.execution_policy.local_model_name if self.execution_policy.local_model_enabled else None,
+                    reasoning_effort=self.execution_policy.local_model_reasoning_effort
+                    if self.execution_policy.local_model_enabled
+                    else None,
+                    route_class=mission_cost_class,
+                    route_tier=ModelRouteClass.LOCAL,
+                    allowed=False,
+                    reason="s3_requires_local_model",
+                )
+            return self._api_model_route(
+                mission_cost_class=mission_cost_class,
+                budget_state=budget_state,
+                approval_gate=approval_gate,
+                reason_override="s3_policy_override_api",
+            )
+
         if (
             intent.channel == "discord"
             and mission_cost_class is CostClass.CHEAP
             and message_kind in {OperatorMessageKind.CHAT.value, OperatorMessageKind.STATUS_REQUEST.value}
         ):
             return ModelRoute(
-                provider="openai",
-                model=self.execution_policy.default_model,
+                provider="anthropic",
+                model=self.execution_policy.discord_simple_model,
                 reasoning_effort=self.execution_policy.discord_simple_reasoning_effort,
                 route_class=mission_cost_class,
+                route_tier=ModelRouteClass.FAST,
                 allowed=True,
                 reason="discord_simple_route",
             )
 
+        if bool(intent.metadata.get("prefer_local_model")):
+            if model_health["tiers"][ModelRouteClass.LOCAL.value]["status"] == "ready":
+                return ModelRoute(
+                    provider="local",
+                    model=self.execution_policy.local_model_name,
+                    reasoning_effort=self.execution_policy.local_model_reasoning_effort,
+                    route_class=mission_cost_class,
+                    route_tier=ModelRouteClass.LOCAL,
+                    allowed=True,
+                    reason="local_route",
+                )
+            return self._api_model_route(
+                mission_cost_class=mission_cost_class,
+                budget_state=budget_state,
+                approval_gate=approval_gate,
+                reason_override="local_unavailable_escalated_to_api",
+            )
+
         if mission_cost_class is CostClass.CHEAP:
             return ModelRoute(
-                provider="local",
-                model=None,
-                reasoning_effort=None,
+                provider="project_os",
+                model="deterministic-fastpath",
+                reasoning_effort="none",
                 route_class=mission_cost_class,
+                route_tier=ModelRouteClass.FAST,
                 allowed=True,
-                reason="deterministic_first",
+                reason="deterministic_fast_route",
             )
 
         if mission_cost_class is CostClass.EXCEPTIONAL:
@@ -328,6 +497,7 @@ class MissionRouter:
                     model=self.execution_policy.exceptional_model,
                     reasoning_effort="xhigh",
                     route_class=mission_cost_class,
+                    route_tier=ModelRouteClass.API,
                     allowed=False,
                     reason="exceptional_requires_founder_approval",
                 )
@@ -336,6 +506,7 @@ class MissionRouter:
                 model=self.execution_policy.exceptional_model,
                 reasoning_effort="xhigh",
                 route_class=mission_cost_class,
+                route_tier=ModelRouteClass.API,
                 allowed=True,
                 reason="exceptional_approved",
             )
@@ -347,6 +518,7 @@ class MissionRouter:
                     model=self.execution_policy.default_model,
                     reasoning_effort=self.execution_policy.default_reasoning_effort,
                     route_class=CostClass.STANDARD,
+                    route_tier=ModelRouteClass.API,
                     allowed=True,
                     reason="downgraded_due_to_daily_budget",
                 )
@@ -355,6 +527,7 @@ class MissionRouter:
                 model=self.execution_policy.default_model,
                 reasoning_effort=self.execution_policy.escalation_reasoning_effort,
                 route_class=mission_cost_class,
+                route_tier=ModelRouteClass.API,
                 allowed=True,
                 reason="hard_route",
             )
@@ -364,9 +537,18 @@ class MissionRouter:
             model=self.execution_policy.default_model,
             reasoning_effort=self.execution_policy.default_reasoning_effort,
             route_class=mission_cost_class,
+            route_tier=ModelRouteClass.API,
             allowed=True,
             reason="standard_route",
         )
+
+    @staticmethod
+    def _sensitivity_class(intent: MissionIntent) -> SensitivityClass:
+        raw = str(intent.metadata.get("sensitivity_class") or "").strip().lower()
+        try:
+            return SensitivityClass(raw)
+        except Exception:
+            return SensitivityClass.S1
 
     def _communication_mode(self, intent: MissionIntent, chosen_worker: str | None) -> CommunicationMode:
         if intent.metadata.get("channel_class") == "incidents":
@@ -415,6 +597,71 @@ class MissionRouter:
             deterministic_first=self.execution_policy.deterministic_first,
             reason=model_route.reason,
         )
+
+    def _api_model_route(
+        self,
+        *,
+        mission_cost_class: CostClass,
+        budget_state: BudgetState,
+        approval_gate: ApprovalGate,
+        reason_override: str | None = None,
+    ) -> ModelRoute:
+        if mission_cost_class is CostClass.EXCEPTIONAL:
+            if not approval_gate.approved or not approval_gate.required:
+                return ModelRoute(
+                    provider="openai",
+                    model=self.execution_policy.exceptional_model,
+                    reasoning_effort="xhigh",
+                    route_class=mission_cost_class,
+                    route_tier=ModelRouteClass.API,
+                    allowed=False,
+                    reason="exceptional_requires_founder_approval",
+                )
+            return ModelRoute(
+                provider="openai",
+                model=self.execution_policy.exceptional_model,
+                reasoning_effort="xhigh",
+                route_class=mission_cost_class,
+                route_tier=ModelRouteClass.API,
+                allowed=True,
+                reason=reason_override or "exceptional_approved",
+            )
+        if mission_cost_class is CostClass.HARD:
+            if not budget_state.within_daily_soft:
+                return ModelRoute(
+                    provider="openai",
+                    model=self.execution_policy.default_model,
+                    reasoning_effort=self.execution_policy.default_reasoning_effort,
+                    route_class=CostClass.STANDARD,
+                    route_tier=ModelRouteClass.API,
+                    allowed=True,
+                    reason=reason_override or "downgraded_due_to_daily_budget",
+                )
+            return ModelRoute(
+                provider="openai",
+                model=self.execution_policy.default_model,
+                reasoning_effort=self.execution_policy.escalation_reasoning_effort,
+                route_class=mission_cost_class,
+                route_tier=ModelRouteClass.API,
+                allowed=True,
+                reason=reason_override or "hard_route",
+            )
+        return ModelRoute(
+            provider="openai",
+            model=self.execution_policy.default_model,
+            reasoning_effort=self.execution_policy.default_reasoning_effort,
+            route_class=mission_cost_class,
+            route_tier=ModelRouteClass.API,
+            allowed=True,
+            reason=reason_override or "standard_route",
+        )
+
+    def _preferred_api_provider(self, openai_available: bool, anthropic_available: bool) -> str | None:
+        if openai_available:
+            return "openai"
+        if anthropic_available:
+            return "anthropic"
+        return None
 
     def _execution_class(
         self,

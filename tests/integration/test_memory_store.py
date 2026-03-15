@@ -20,6 +20,46 @@ from project_os_core.secrets import SecretResolver
 from project_os_core.services import build_app_services
 
 
+def _build_services(tmp_path: Path):
+    storage_payload = {
+        "runtime_root": str(tmp_path / "runtime"),
+        "memory_hot_root": str(tmp_path / "memory_hot"),
+        "memory_warm_root": str(tmp_path / "memory_warm"),
+        "index_root": str(tmp_path / "indexes"),
+        "session_root": str(tmp_path / "sessions"),
+        "cache_root": str(tmp_path / "cache"),
+        "archive_drive": "Z:",
+        "archive_do_not_touch_root": str(tmp_path / "archive" / "DO_NOT_TOUCH"),
+        "archive_root": str(tmp_path / "archive"),
+        "archive_episodes_root": str(tmp_path / "archive" / "episodes"),
+        "archive_evidence_root": str(tmp_path / "archive" / "evidence"),
+        "archive_screens_root": str(tmp_path / "archive" / "screens"),
+        "archive_reports_root": str(tmp_path / "archive" / "reports"),
+        "archive_logs_root": str(tmp_path / "archive" / "logs"),
+        "archive_snapshots_root": str(tmp_path / "archive" / "snapshots"),
+    }
+    config_path = tmp_path / "storage_roots.json"
+    config_path.write_text(json.dumps(storage_payload), encoding="utf-8")
+    policy_payload = {
+        "secret_config": {
+            "mode": "infisical_first",
+            "required_secret_names": ["OPENAI_API_KEY"],
+            "local_fallback_path": str(tmp_path / "secrets.json"),
+        },
+        "embedding_policy": {
+            "provider_mode": "local_hash",
+            "quality": "balanced",
+            "local_model": "local-hash-v1",
+            "local_dimensions": 64,
+        },
+    }
+    policy_path = tmp_path / "runtime_policy.json"
+    policy_path.write_text(json.dumps(policy_payload), encoding="utf-8")
+    services = build_app_services(config_path=str(config_path), policy_path=str(policy_path))
+    services.secret_resolver.write_local_fallback("OPENAI_API_KEY", "sk-test-secret")
+    return services
+
+
 class MemoryStoreTests(unittest.TestCase):
     def test_memory_round_trip_and_cold_archive(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -228,6 +268,64 @@ class MemoryStoreTests(unittest.TestCase):
                 self.assertEqual(rows[first.memory_id]["tier"], MemoryTier.COLD.value)
                 self.assertEqual(rows[latest.memory_id]["tier"], MemoryTier.WARM.value)
                 self.assertTrue(Path(str(rows[first.memory_id]["archived_artifact_path"])).exists())
+            finally:
+                services.close()
+
+    def test_private_full_memory_is_hidden_from_default_search(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            services = _build_services(tmp_path)
+            try:
+                full_record = services.memory.remember(
+                    content="Founder secret token stays local only.",
+                    user_id="founder",
+                    metadata={
+                        "privacy_view": "full",
+                        "openmemory_enabled": False,
+                        "embedding_provider": "local_hash",
+                    },
+                )
+                clean_record = services.memory.remember(
+                    content="Founder sensitive reference stays local only.",
+                    user_id="founder",
+                    metadata={"privacy_view": "clean"},
+                )
+
+                default_hits = services.memory.search(RetrievalContext(query="local only", user_id="founder", limit=5))
+                full_hits = services.memory.search(
+                    RetrievalContext(query="local only", user_id="founder", limit=5, include_private_full=True)
+                )
+
+                self.assertNotIn(full_record.memory_id, [item["memory_id"] for item in default_hits])
+                self.assertIn(clean_record.memory_id, [item["memory_id"] for item in default_hits])
+                self.assertIn(full_record.memory_id, [item["memory_id"] for item in full_hits])
+            finally:
+                services.close()
+
+    def test_local_only_memory_skips_openmemory_even_after_reindex(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            services = _build_services(tmp_path)
+            try:
+                def _forbidden_add(record):
+                    raise AssertionError("openmemory add_record should not be called for local-only memory")
+
+                services.memory.openmemory.add_record = _forbidden_add  # type: ignore[method-assign]
+                record = services.memory.remember(
+                    content="OPENCLAW_GATEWAY_TOKEN stays local.",
+                    user_id="founder",
+                    metadata={
+                        "privacy_view": "full",
+                        "openmemory_enabled": False,
+                        "embedding_provider": "local_hash",
+                    },
+                )
+
+                report = services.memory.reindex()
+                refreshed = services.memory.get(record.memory_id)
+
+                self.assertIn(report["status"], {"completed"})
+                self.assertIsNone(refreshed.openmemory_id)
             finally:
                 services.close()
 

@@ -397,6 +397,15 @@ Regles obligatoires:
 - pas de vision sans ordre d'execution
 - nomenclature stricte, contrats stricts, etats stricts, priorites strictes, criteres de kill stricts
 - persistance des standards, de la doctrine et de la qualite entre projets et entre sessions
+- politique de langue stricte:
+  - doctrine et outputs operateur en francais
+  - contrats machine, schemas, enums et noms canoniques en anglais
+  - reference: `docs/architecture/DOCUMENTATION_LANGUAGE_POLICY.md`
+- gate documentaire de cloture:
+  - a la fin de toute issue, tout lot, toute roadmap step ou toute decision marquee comme `faite`, lancer `py scripts/project_os_entry.py docs audit`
+  - si la cloture touche aussi le runtime ou OpenClaw, preferer `powershell -File scripts/project_os_tests.ps1 -Suite full -WithStrictDoctor -WithOpenClawDoctor -WithDocAudit`
+  - ne jamais annoncer une cloture sans mentionner le verdict de l'audit doc
+  - si l'audit doc echoue, corriger la doc ou enregistrer explicitement un defer canonique avant de fermer
 
 ## Git et livraison
 

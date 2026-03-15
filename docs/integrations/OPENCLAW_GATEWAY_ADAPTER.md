@@ -61,7 +61,7 @@ py D:/ProjectOS/project-os-core/scripts/project_os_entry.py --config-path D:/Pro
 - `OpenClaw` ne route pas lui-meme les missions
 - `OpenClaw` ne contourne pas le `Mission Router`
 - les acks de canal restent optionnels et desactives par defaut
-- aucune validation live n'est consideree acquise sans un message reel Discord/WebChat
+- aucune preuve operateur humaine n'est consideree acquise sans un vrai message Discord/WebChat
 - tant que le replay ou le doctor sont rouges, le mode live doit echouer ferme
 
 ## Runtime reel retenu
@@ -104,15 +104,110 @@ Le doctor verifie:
 - entree Python callable
 - channels actifs
 - policy `silence + fin`
+- socle Discord Pack 2:
+  - `threadBindings`
+  - `autoPresence`
+  - `execApprovals`
+- voie locale Windows-first:
+  - `local_model_route`
 - plugin visible dans `OpenClaw`
 - config `OpenClaw` valide
 - statut gateway lisible
+
+## Trust plugin pairing
+
+Le durcissement `plugin + pairing` est maintenant audite par une commande dediee:
+
+```bash
+py D:/ProjectOS/project-os-core/scripts/project_os_entry.py --config-path D:/ProjectOS/project-os-core/config/storage_roots.local.json --policy-path D:/ProjectOS/project-os-core/config/runtime_policy.local.json openclaw trust-audit
+```
+
+Cette commande prouve localement:
+
+- l'allowlist plugin active
+- la provenance d'installation du plugin Project OS
+- la coherence du store de pairing local
+- la rotation des tokens device
+- l'absence de fuite de secrets plugin/pairing dans les surfaces visibles scannees
+
+Runbook detaille:
+
+- [OPENCLAW_PLUGIN_PAIRING_HARDENING.md](OPENCLAW_PLUGIN_PAIRING_HARDENING.md)
+- [OPENCLAW_DISCORD_OPERATIONS_UX.md](OPENCLAW_DISCORD_OPERATIONS_UX.md)
 
 Le verdict doit rester comprehensible pour un non-developpeur:
 
 - `OK`
 - `bloque`
 - `a corriger`
+
+## Workflow de tests retenu
+
+Le workflow canonique de verification locale passe par:
+
+```powershell
+powershell -File scripts/project_os_tests.ps1 -Suite smoke
+powershell -File scripts/project_os_tests.ps1 -Suite gateway
+powershell -File scripts/project_os_tests.ps1 -Suite full -WithStrictDoctor -WithOpenClawDoctor
+```
+
+Regles:
+
+- `smoke` = boucle rapide developpeur, fail fast sur les surfaces coeur (`router`, `mission chain`, `api runs`, `dashboard`)
+- `gateway` = verifie la boucle OpenClaw/Discord/doctor sans attendre toute l'integration
+- `full` = validation avant merge, avec doctors inclus
+- `pytest -q` a la racine du repo doit rester borne a `tests/unit` + `tests/integration` via `pytest.ini`
+- `third_party` ne doit jamais rendre un faux rouge sur le coeur du projet
+
+## Installation Windows retenue
+
+Le mode cible reste une installation gateway geree par `OpenClaw`.
+
+Commande canonique en session PowerShell admin:
+
+```powershell
+powershell -File scripts/project_os_install_openclaw_gateway_admin.ps1
+```
+
+Ce script:
+
+1. exige une session admin
+2. verifie que `openclaw.json` utilise deja des SecretRefs `env`
+3. verifie la presence de `DISCORD_BOT_TOKEN` et `OPENCLAW_GATEWAY_TOKEN` au niveau utilisateur Windows
+4. installe le gateway gere via `openclaw gateway install --force`
+5. relance le service
+6. supprime le fallback `Startup` si le service gere est sain
+
+Tant que ce script n'a pas tourne en admin avec succes, le fallback `Startup` peut rester en place pour maintenir un runtime vivant, mais ce n'est pas l'etat final cible.
+
+Verification canonique post-install:
+
+```powershell
+py D:/ProjectOS/project-os-core/scripts/project_os_entry.py --config-path D:/ProjectOS/project-os-core/config/storage_roots.local.json --policy-path D:/ProjectOS/project-os-core/config/runtime_policy.local.json openclaw truth-health --channel discord
+```
+
+Lecture attendue:
+
+- `OK` si la sante machine est bonne et qu'une preuve live recente existe deja
+- `a_corriger` si la machine est saine mais qu'aucune preuve canonique recente n'a encore ete prouvee jusqu'au `Mission Router`
+- `bloque` si le gateway ou la config restent bancals
+
+Attention:
+
+- la preuve runtime retenue par `truth-health` et `validate-live` est aujourd'hui une `preuve canonique enregistree`
+- elle exige un event `source=openclaw` qui atteint `Gateway -> Mission Router`
+- cette preuve peut venir soit d'un vrai event amont `OpenClaw`, soit d'un payload canonique injecte via `gateway ingest-openclaw-event`
+- une preuve operateur Discord reelle reste un cran plus strict, utile pour une cloture humaine finale
+
+Le champ `service.runtime.status` peut rester `unknown` sur Windows meme quand la tache planifiee et le listener sont sains. Ne pas utiliser ce champ seul comme critere de succes.
+
+La verite live Windows retenue est:
+
+- `service.loaded = true`
+- `port.status = busy`
+- `rpc.ok = true` si disponible
+- absence de fallback `Startup`
+- projection `discord_thread_bindings` visible dans le runtime des qu'un event Discord recent existe
 
 ## Replay retenu
 
@@ -135,17 +230,45 @@ Le replay doit prouver:
 - aucun bypass memoire canonique
 - aucun bypass `Mission Router`
 
-## Validation live
+## Pack 2 Discord UX
 
-La validation live minimale est volontairement fail-closed.
+Le socle UX Discord retenu repose d'abord sur les primitives upstream `OpenClaw`, pas sur des handlers custom fragiles:
+
+- `session.threadBindings`
+- `channels.discord.threadBindings`
+- `channels.discord.autoPresence`
+- `channels.discord.execApprovals`
+
+Project OS ajoute seulement ce qui manque pour garder la verite canonique:
+
+- projection `discord_thread_bindings` dans SQLite
+- checks doctor/truth-health
+- payloads sortants Discord plus precis quand un target/reply/components explicite existe
+
+La policy retenue reste sobre:
+
+- `execApprovals` en `dm`
+- `threadBindings` actifs
+- `autoPresence` actif
+- pas de components metier riches tant qu'ils ne sont pas prouvables sans ambiguite
+
+## Validation live
 
 La commande:
 
 ```bash
-py D:/ProjectOS/project-os-core/scripts/project_os_entry.py openclaw validate-live --channel discord --payload-file fixtures/openclaw/simple_text.json
+py D:/ProjectOS/project-os-core/scripts/project_os_entry.py openclaw validate-live --channel discord
 ```
 
-doit rester bloquee tant qu'un vrai message Discord/WebChat n'a pas ete prouve.
+reste bloquee tant qu'aucune preuve canonique recente `OpenClaw -> Mission Router` n'a ete enregistree.
+
+Elle reussit des qu'une preuve canonique recente laisse une trace:
+
+- `channel_event`
+- `gateway_dispatch_result`
+- `decision_id` ou `mission_run_id`
+
+Pour une cloture operateur plus stricte, faire ensuite un vrai message `Discord` / `WebChat` amont et verifier la meme chaine de preuve.
 
 ## Etat du lot
 
@@ -154,8 +277,18 @@ Ce lot est maintenant:
 - code
 - teste au niveau repo
 - bootstrappe sur le poste
+- trust-audite sur le poste
 - valide par doctor
 - valide par replay
-- bloque proprement en live tant qu'aucun canal reel n'est branche
+- capable de conclure proprement entre `OK`, `a_corriger` et `bloque` cote verite live
 
-Il n'est pas encore considere 100% termine tant qu'un runtime `OpenClaw` reel n'a pas ete branche sur `Discord` ou `WebChat` avec un message entrant reel jusqu'au `Mission Router`.
+Il n'est pas encore considere 100% termine tant qu'un runtime `OpenClaw` reel n'a pas ete rejoue avec un message entrant utilisateur `Discord` ou `WebChat` jusqu'au `Mission Router`.
+
+Etat 2026-03-15:
+
+- preuve canonique `validate-live`: `OK`
+- preuve operateur manuelle Discord reelle: encore a rejouer si on veut une cloture humaine finale distincte
+
+La suite canonique du durcissement et de l'upgrade operateur est detaillee dans:
+
+- `docs/roadmap/OPENCLAW_REINFORCEMENT_PLAN.md`

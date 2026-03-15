@@ -10,6 +10,7 @@ from .github.service import GitHubLearningService
 from .embedding import EmbeddingStrategy, choose_embedding_strategy
 from .gateway.service import GatewayService
 from .learning.service import LearningService
+from .local_model import LocalModelClient
 from .memory.store import MemoryStore
 from .memory.tiering import TierManagerService
 from .mission.chain import MissionChainService
@@ -31,6 +32,7 @@ class AppServices:
     path_policy: PathPolicy
     secret_resolver: SecretResolver
     embedding_strategy: EmbeddingStrategy
+    local_model_client: LocalModelClient
     database: CanonicalDatabase
     journal: LocalJournal
     memory: MemoryStore
@@ -61,6 +63,14 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
     secret_resolver = SecretResolver(config.secret_config, repo_root=config.repo_root)
     secret_resolver.migrate_repo_dotenv()
     embedding_strategy = choose_embedding_strategy(config, secret_resolver)
+    local_model_client = LocalModelClient(
+        enabled=config.execution_policy.local_model_enabled,
+        provider=config.execution_policy.local_model_provider,
+        base_url=config.execution_policy.local_model_base_url,
+        model=config.execution_policy.local_model_name,
+        timeout_seconds=config.execution_policy.local_model_timeout_seconds,
+        health_timeout_seconds=config.execution_policy.local_model_health_timeout_seconds,
+    )
     database = CanonicalDatabase(paths.canonical_db_path, vector_dimensions=embedding_strategy.dimensions)
     journal = LocalJournal(database, paths.journal_file_path)
     logger = StructuredLogger(paths, path_policy)
@@ -78,6 +88,10 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         database=database,
         journal=journal,
         memory=memory,
+        paths=paths,
+        path_policy=path_policy,
+        auto_sync_runbook_deferred=config.learning_config.auto_sync_runbook_deferred,
+        runbook_deferred_globs=config.learning_config.runbook_deferred_globs,
     )
     github = GitHubLearningService(
         config=config.github_config,
@@ -94,6 +108,7 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         path_policy=path_policy,
         secret_resolver=secret_resolver,
         execution_policy=config.execution_policy,
+        local_model_client=local_model_client,
     )
     api_runs = ApiRunService(
         database=database,
@@ -102,6 +117,7 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         path_policy=path_policy,
         secret_resolver=secret_resolver,
         logger=logger,
+        router=router,
         execution_policy=config.execution_policy,
         dashboard_config=config.api_dashboard_config,
         learning=learning,
@@ -121,6 +137,7 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         memory=memory,
         session_state=session_state,
         secret_resolver=secret_resolver,
+        local_model_client=local_model_client,
     )
     openclaw = OpenClawLiveService(
         config=config,
@@ -129,6 +146,7 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         runtime=runtime,
         database=database,
         logger=logger,
+        local_model_client=local_model_client,
     )
     orchestration = CanonicalMissionGraph(
         database=database,
@@ -140,6 +158,7 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         path_policy=path_policy,
         secret_resolver=secret_resolver,
         embedding_strategy=embedding_strategy,
+        local_model_client=local_model_client,
         database=database,
         journal=journal,
         memory=memory,

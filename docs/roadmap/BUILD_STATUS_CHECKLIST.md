@@ -120,9 +120,13 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
   - [x] Bootstrap natif `plugins install --link` valide sur le poste
   - [x] `project-os openclaw doctor` vert sur le poste
   - [x] Replay harness obligatoire vert sur le poste
-  - [x] Validation live en mode fail-closed posee
+  - [x] Commande `openclaw truth-health` posee pour la verite live Windows
+  - [x] Validation live canonique enregistree via `openclaw validate-live`
   - [x] Cartes Discord compactes preparees dans le modele operateur
-  - [ ] Runtime `OpenClaw` reel connecte sur Discord/WebChat du poste
+  - [x] Runtime `OpenClaw` configure sur Discord du poste
+  - [ ] Preuve operateur manuelle depuis un vrai message Discord/WebChat amont
+  - [x] Voie locale Windows-first `Ollama + qwen2.5:14b` visible dans `router model-health`
+  - [x] `S3` traite localement quand la voie locale est `ready`
 - [x] Operating Model v2 - Dual Model (ADR 0013)
   - [x] ADR 0013 redige (supersede ADR 0010)
   - [x] Workflow quotidien fondateur documente

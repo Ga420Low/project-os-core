@@ -104,13 +104,20 @@ Verdicts possibles:
 
 ### Verification actuelle
 
-- verifier via `py -m pytest tests/unit tests/integration -q`
+- boucle rapide fiable: `powershell -File scripts/project_os_tests.ps1 -Suite smoke`
+  - couvre seulement les surfaces critiques (`router`, `mission chain`, `api runs`, `dashboard`)
+- gateway/OpenClaw: `powershell -File scripts/project_os_tests.ps1 -Suite gateway`
+- validation complete fiable: `powershell -File scripts/project_os_tests.ps1 -Suite full -WithStrictDoctor -WithOpenClawDoctor`
+- audit documentaire canonique: `py scripts/project_os_entry.py docs audit`
+- cloture d'issue / lot / roadmap step: `powershell -File scripts/project_os_tests.ps1 -Suite full -WithStrictDoctor -WithOpenClawDoctor -WithDocAudit` quand la surface touche runtime, policy, interfaces, docs ou OpenClaw
+- `py -m pytest -q` doit rester borne au coeur du repo via `pytest.ini` et ne plus collecter `third_party`
 - completer au besoin avec des suites ciblees par sous-systeme
 - garder les chiffres de tests hors de cette doc pour eviter le drift
 
 ### Outil
 
 - `pytest` avec fixtures locales
+- `scripts/project_os_tests.ps1` comme entree canonique pour eviter les faux timeouts et standardiser les suites
 - Pas de CI/CD externe en v1 - les tests tournent localement avant merge
 
 ## Performance

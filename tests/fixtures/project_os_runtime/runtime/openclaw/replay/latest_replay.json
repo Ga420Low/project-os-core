@@ -1,11 +1,11 @@
 {
   "failed": 4,
   "passed": 0,
-  "report_id": "openclaw_replay_report_1800322fc8d844cc853357f36f5a458d",
+  "report_id": "openclaw_replay_report_cbcb0273babf4eb99e04b91e951b8b9a",
   "results": [
     {
       "artifact_count": 0,
-      "created_at": "2026-03-14T02:16:51.360567+00:00",
+      "created_at": "2026-03-15T02:16:51.294344+00:00",
       "dispatch_status": "failed",
       "evidence_refs": [],
       "fixture_id": "simple_text",
@@ -17,22 +17,23 @@
           "reply_kind": "ack"
         },
         "infos": [
-          "[project-os-gateway-adapter] polling disabled (enablePolling=false)"
+          "[project-os-gateway-adapter] polling disabled (enablePolling=false)",
+          "[project-os-gateway-adapter] inbound message_received channel=discord account=default conversation=channel-pilotage"
         ],
         "warnings": [
-          "[project-os-gateway-adapter] Error: spawn EPERM"
+          "[project-os-gateway-adapter] Error: spawn EPERM\n    at ChildProcess.spawn (node:internal/child_process:421:11)\n    at spawn (node:child_process:796:9)\n    at file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:24:19\n    at new Promise (<anonymous>)\n    at runCommandWithInput (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:23:10)\n    at Object.runCommandWithTimeout (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:155:18)\n    at dispatchToProjectOs (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/index.js:211:43)\n    at handleMessageReceived (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/index.js:541:42)\n    at main (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:176:9)\n    at file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:205:1"
         ]
       },
       "passed": false,
       "policy_verdict": "plugin_or_cli_failed",
       "promoted_memory_count": 0,
-      "replay_result_id": "openclaw_replay_3fe58da351e44fd0bb3cc509caa31764",
+      "replay_result_id": "openclaw_replay_47e81dfb0e27414abb59718166a1a9bb",
       "router_verdict": "missing_dispatch_result",
       "run_card": {}
     },
     {
       "artifact_count": 0,
-      "created_at": "2026-03-14T02:16:51.404296+00:00",
+      "created_at": "2026-03-15T02:16:51.342452+00:00",
       "dispatch_status": "failed",
       "evidence_refs": [],
       "fixture_id": "small_talk_skip",
@@ -44,22 +45,23 @@
           "reply_kind": "ack"
         },
         "infos": [
-          "[project-os-gateway-adapter] polling disabled (enablePolling=false)"
+          "[project-os-gateway-adapter] polling disabled (enablePolling=false)",
+          "[project-os-gateway-adapter] inbound message_received channel=discord account=default conversation=channel-pilotage"
         ],
         "warnings": [
-          "[project-os-gateway-adapter] Error: spawn EPERM"
+          "[project-os-gateway-adapter] Error: spawn EPERM\n    at ChildProcess.spawn (node:internal/child_process:421:11)\n    at spawn (node:child_process:796:9)\n    at file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:24:19\n    at new Promise (<anonymous>)\n    at runCommandWithInput (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:23:10)\n    at Object.runCommandWithTimeout (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:155:18)\n    at dispatchToProjectOs (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/index.js:211:43)\n    at handleMessageReceived (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/index.js:541:42)\n    at main (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:176:9)\n    at file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:205:1"
         ]
       },
       "passed": false,
       "policy_verdict": "plugin_or_cli_failed",
       "promoted_memory_count": 0,
-      "replay_result_id": "openclaw_replay_24dfce04d68f4a059e1359552ef18268",
+      "replay_result_id": "openclaw_replay_e18d10ee63894ba1b37aea6fa64c9230",
       "router_verdict": "missing_dispatch_result",
       "run_card": {}
     },
     {
       "artifact_count": 0,
-      "created_at": "2026-03-14T02:16:51.448290+00:00",
+      "created_at": "2026-03-15T02:16:51.388997+00:00",
       "dispatch_status": "failed",
       "evidence_refs": [],
       "fixture_id": "tasking_browser",
@@ -71,22 +73,23 @@
           "reply_kind": "ack"
         },
         "infos": [
-          "[project-os-gateway-adapter] polling disabled (enablePolling=false)"
+          "[project-os-gateway-adapter] polling disabled (enablePolling=false)",
+          "[project-os-gateway-adapter] inbound message_received channel=discord account=default conversation=channel-pilotage"
         ],
         "warnings": [
-          "[project-os-gateway-adapter] Error: spawn EPERM"
+          "[project-os-gateway-adapter] Error: spawn EPERM\n    at ChildProcess.spawn (node:internal/child_process:421:11)\n    at spawn (node:child_process:796:9)\n    at file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:24:19\n    at new Promise (<anonymous>)\n    at runCommandWithInput (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:23:10)\n    at Object.runCommandWithTimeout (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:155:18)\n    at dispatchToProjectOs (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/index.js:211:43)\n    at handleMessageReceived (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/index.js:541:42)\n    at main (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:176:9)\n    at file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:205:1"
         ]
       },
       "passed": false,
       "policy_verdict": "plugin_or_cli_failed",
       "promoted_memory_count": 0,
-      "replay_result_id": "openclaw_replay_ffae4ebdcdcb460eb861afe462aeed0e",
+      "replay_result_id": "openclaw_replay_7dff561bf0674b18af13799a6265ad82",
       "router_verdict": "missing_dispatch_result",
       "run_card": {}
     },
     {
       "artifact_count": 0,
-      "created_at": "2026-03-14T02:16:51.491148+00:00",
+      "created_at": "2026-03-15T02:16:51.438957+00:00",
       "dispatch_status": "failed",
       "evidence_refs": [],
       "fixture_id": "with_attachment",
@@ -98,16 +101,17 @@
           "reply_kind": "ack"
         },
         "infos": [
-          "[project-os-gateway-adapter] polling disabled (enablePolling=false)"
+          "[project-os-gateway-adapter] polling disabled (enablePolling=false)",
+          "[project-os-gateway-adapter] inbound message_received channel=discord account=default conversation=channel-pilotage"
         ],
         "warnings": [
-          "[project-os-gateway-adapter] Error: spawn EPERM"
+          "[project-os-gateway-adapter] Error: spawn EPERM\n    at ChildProcess.spawn (node:internal/child_process:421:11)\n    at spawn (node:child_process:796:9)\n    at file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:24:19\n    at new Promise (<anonymous>)\n    at runCommandWithInput (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:23:10)\n    at Object.runCommandWithTimeout (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:155:18)\n    at dispatchToProjectOs (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/index.js:211:43)\n    at handleMessageReceived (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/index.js:541:42)\n    at main (file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:176:9)\n    at file:///D:/ProjectOS/project-os-core/integrations/openclaw/project-os-gateway-adapter/replay_harness.mjs:205:1"
         ]
       },
       "passed": false,
       "policy_verdict": "plugin_or_cli_failed",
       "promoted_memory_count": 0,
-      "replay_result_id": "openclaw_replay_0f2c471bc36442499aaf28c60da27084",
+      "replay_result_id": "openclaw_replay_2463127699ba456197bde92f8dfc0851",
       "router_verdict": "missing_dispatch_result",
       "run_card": {}
     }

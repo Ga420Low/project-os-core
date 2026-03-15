@@ -188,6 +188,61 @@ class ApiRunServiceTests(unittest.TestCase):
                 learning_context = context_pack.runtime_facts["learning_context"]
                 self.assertEqual(len(learning_context["decisions"]), 1)
                 self.assertEqual(learning_context["decisions"][0]["scope"], f"api_run:audit:{branch_name}")
+                self.assertIn("model_stack_health", context_pack.runtime_facts)
+                self.assertEqual(context_pack.runtime_facts["model_stack_health"]["tiers"]["fast"]["status"], "ready")
+            finally:
+                services.close()
+
+    def test_build_context_pack_injects_recent_session_briefing_for_same_branch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                branch_name = "project-os/briefing-branch"
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.AUDIT,
+                    objective="Create a prior run for the same branch.",
+                    branch_name=branch_name,
+                    skill_tags=["audit", "history"],
+                )
+                payload = services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
+                    response_runner=lambda request, prompt, context: {
+                        "model": "gpt-5.4",
+                        "output_text": json.dumps(
+                            {
+                                "decision": "Previous run completed.",
+                                "why": "A prior result exists for proactive briefing.",
+                                "alternatives": [],
+                                "files_to_change": [],
+                                "interfaces": [],
+                                "patch_outline": [],
+                                "tests": [],
+                                "risks": [],
+                                "acceptance_criteria": [],
+                                "open_questions": [],
+                                "clarification_needed": False,
+                                "blocking_reason": "",
+                                "recommended_contract_change": "",
+                                "question_for_founder": "",
+                            }
+                        ),
+                        "usage": {"input_tokens": 10, "output_tokens": 10},
+                    },
+                )
+                self.assertEqual(payload["result"].status.value, "completed")
+
+                context_pack = services.api_runs.build_context_pack(
+                    mode=ApiRunMode.AUDIT,
+                    objective="Rebuild context with recent session briefing.",
+                    branch_name=branch_name,
+                    skill_tags=["audit", "history"],
+                )
+
+                briefing = context_pack.runtime_facts.get("recent_session_briefing")
+                self.assertIsNotNone(briefing)
+                self.assertEqual(briefing["count"], 1)
+                self.assertEqual(briefing["items"][0]["branch_name"], branch_name)
             finally:
                 services.close()
 
@@ -209,6 +264,12 @@ class ApiRunServiceTests(unittest.TestCase):
                     source_ids=["run_1"],
                     metadata={"branch_name": branch_name},
                 )
+                services.learning.record_deferred_decision(
+                    scope=f"openclaw:pack2:{branch_name}",
+                    summary="Keep ambiguous Discord business buttons out of scope until callbacks are replay-safe.",
+                    next_trigger="when Discord callbacks carry a stable action id",
+                    metadata={"branch_name": branch_name},
+                )
 
                 context_pack = services.api_runs.build_context_pack(
                     mode=ApiRunMode.PATCH_PLAN,
@@ -221,6 +282,8 @@ class ApiRunServiceTests(unittest.TestCase):
                 self.assertIn("## Learning Context (lessons from recent runs)", prompt.rendered_prompt)
                 self.assertIn("High-severity signals from recent runs:", prompt.rendered_prompt)
                 self.assertIn("Recent confirmed decisions:", prompt.rendered_prompt)
+                self.assertIn("Known intentional deferrals / accepted gaps:", prompt.rendered_prompt)
+                self.assertIn("Revisit when: when Discord callbacks carry a stable action id", prompt.rendered_prompt)
             finally:
                 services.close()
 
@@ -258,6 +321,7 @@ class ApiRunServiceTests(unittest.TestCase):
 
                 self.assertEqual(context_pack.runtime_facts["learning_context"]["error"], "learning_db_down")
                 self.assertEqual(context_pack.runtime_facts["learning_context"]["decisions"], [])
+                self.assertEqual(context_pack.runtime_facts["learning_context"]["deferred_decisions"], [])
             finally:
                 services.close()
 

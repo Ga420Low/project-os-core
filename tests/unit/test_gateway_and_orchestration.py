@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -17,9 +18,35 @@ from project_os_core.models import (
     OperatorMessage,
     RuntimeState,
     RuntimeVerdict,
+    SensitivityClass,
     new_id,
 )
 from project_os_core.services import build_app_services
+
+
+class StubLocalModelClient:
+    def __init__(self, content: str = "Traite localement. Secret non reproduit.") -> None:
+        self.content = content
+        self.messages: list[str] = []
+
+    def health(self, *, force: bool = False) -> dict[str, object]:
+        return {
+            "status": "ready",
+            "reason": "model_ready",
+            "provider": "ollama",
+            "model": "qwen2.5:14b",
+            "base_url": "http://127.0.0.1:11434",
+        }
+
+    def chat(self, *, message: str, system: str, model: str | None = None):
+        self.messages.append(message)
+        return SimpleNamespace(content=self.content)
+
+
+class FailingLocalModelClient(StubLocalModelClient):
+    def chat(self, *, message: str, system: str, model: str | None = None):
+        self.messages.append(message)
+        raise RuntimeError("local_runtime_down")
 
 
 class GatewayAndOrchestrationTests(unittest.TestCase):
@@ -188,6 +215,189 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 record = services.memory.get(dispatch.promoted_memory_ids[0])
                 self.assertIn("openmemory_warning", record.metadata)
                 self.assertIn("embedding_fallback", record.metadata)
+            finally:
+                services.close()
+
+    def test_gateway_s2_sensitive_message_creates_full_and_clean_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                session = services.runtime.open_session(profile_name="core", owner="founder")
+                services.runtime.record_runtime_state(
+                    RuntimeState(
+                        runtime_state_id=new_id("runtime_state"),
+                        session_id=session.session_id,
+                        verdict=RuntimeVerdict.READY,
+                        active_profile="core",
+                    )
+                )
+                captured_messages: list[str] = []
+
+                def _stub_simple_chat(message: str, model: str = "claude-sonnet-4-20250514") -> str:
+                    captured_messages.append(message)
+                    return "ok"
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="Salut, garde le bot token dans l'env et reviens vers founder@example.com.",
+                        thread_ref=ConversationThreadRef(thread_id="thread_s2", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(dispatch.metadata["sensitivity_class"], SensitivityClass.S2.value)
+                self.assertEqual(len(dispatch.promoted_memory_ids), 2)
+                self.assertEqual(len(captured_messages), 1)
+                self.assertNotIn("founder@example.com", captured_messages[0])
+                self.assertNotIn("bot token", captured_messages[0].lower())
+                records = [services.memory.get(memory_id) for memory_id in dispatch.promoted_memory_ids]
+                full_record = next(record for record in records if record.metadata.get("privacy_view") == "full")
+                clean_record = next(record for record in records if record.metadata.get("privacy_view") == "clean")
+                self.assertIn("founder@example.com", full_record.content)
+                self.assertIn("bot token", full_record.content.lower())
+                self.assertNotIn("founder@example.com", clean_record.content)
+                self.assertEqual(full_record.metadata.get("openmemory_enabled"), False)
+                self.assertEqual(full_record.metadata.get("embedding_provider"), "local_hash")
+            finally:
+                services.close()
+
+    def test_gateway_s3_sensitive_message_blocks_cloud_route_and_stores_local_only_memory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                session = services.runtime.open_session(profile_name="core", owner="founder")
+                services.runtime.record_runtime_state(
+                    RuntimeState(
+                        runtime_state_id=new_id("runtime_state"),
+                        session_id=session.session_id,
+                        verdict=RuntimeVerdict.READY,
+                        active_profile="core",
+                    )
+                )
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="Decision: OPENCLAW_GATEWAY_TOKEN=sk-super-secret-123456789",
+                        thread_ref=ConversationThreadRef(thread_id="thread_s3", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "blocked")
+                self.assertEqual(dispatch.metadata["sensitivity_class"], SensitivityClass.S3.value)
+                self.assertEqual(len(dispatch.promoted_memory_ids), 1)
+                record = services.memory.get(dispatch.promoted_memory_ids[0])
+                self.assertEqual(record.metadata.get("privacy_view"), "full")
+                self.assertEqual(record.metadata.get("openmemory_enabled"), False)
+                self.assertEqual(record.metadata.get("embedding_provider"), "local_hash")
+                self.assertIn("trop sensible pour le cloud", dispatch.operator_reply.summary)
+            finally:
+                services.close()
+
+    def test_gateway_s3_sensitive_message_executes_locally_when_local_lane_is_ready(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.config.execution_policy.local_model_enabled = True
+                services.config.execution_policy.local_model_name = "qwen2.5:14b"
+                services.router.execution_policy.local_model_enabled = True
+                services.router.execution_policy.local_model_name = "qwen2.5:14b"
+                stub_local = StubLocalModelClient(content="Secret recu. Garde-le hors cloud.")
+                services.router.local_model_client = stub_local
+                services.gateway.local_model_client = stub_local
+                services.openclaw.local_model_client = stub_local
+                session = services.runtime.open_session(profile_name="core", owner="founder")
+                services.runtime.record_runtime_state(
+                    RuntimeState(
+                        runtime_state_id=new_id("runtime_state"),
+                        session_id=session.session_id,
+                        verdict=RuntimeVerdict.READY,
+                        active_profile="core",
+                    )
+                )
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="Decision: OPENCLAW_GATEWAY_TOKEN=sk-super-secret-123456789",
+                        thread_ref=ConversationThreadRef(thread_id="thread_s3_local", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(dispatch.metadata["sensitivity_class"], SensitivityClass.S3.value)
+                self.assertEqual(len(dispatch.promoted_memory_ids), 1)
+                self.assertEqual(len(stub_local.messages), 1)
+                self.assertIn("OPENCLAW_GATEWAY_TOKEN", stub_local.messages[0])
+                self.assertNotIn("sk-super-secret-123456789", dispatch.operator_reply.summary)
+                self.assertIn("hors cloud", dispatch.operator_reply.summary)
+                record = services.memory.get(dispatch.promoted_memory_ids[0])
+                self.assertEqual(record.metadata.get("privacy_view"), "full")
+                self.assertEqual(record.metadata.get("openmemory_enabled"), False)
+                self.assertEqual(record.metadata.get("embedding_provider"), "local_hash")
+            finally:
+                services.close()
+
+    def test_gateway_s3_sensitive_message_stays_blocked_when_local_execution_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.config.execution_policy.local_model_enabled = True
+                services.config.execution_policy.local_model_name = "qwen2.5:14b"
+                services.router.execution_policy.local_model_enabled = True
+                services.router.execution_policy.local_model_name = "qwen2.5:14b"
+                failing_local = FailingLocalModelClient()
+                services.router.local_model_client = failing_local
+                services.gateway.local_model_client = failing_local
+                services.openclaw.local_model_client = failing_local
+                session = services.runtime.open_session(profile_name="core", owner="founder")
+                services.runtime.record_runtime_state(
+                    RuntimeState(
+                        runtime_state_id=new_id("runtime_state"),
+                        session_id=session.session_id,
+                        verdict=RuntimeVerdict.READY,
+                        active_profile="core",
+                    )
+                )
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="Decision: OPENCLAW_GATEWAY_TOKEN=sk-super-secret-123456789",
+                        thread_ref=ConversationThreadRef(thread_id="thread_s3_local_down", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "blocked")
+                self.assertIn("Rien n'a ete envoye au cloud", dispatch.operator_reply.summary)
+                self.assertEqual(len(failing_local.messages), 1)
             finally:
                 services.close()
 

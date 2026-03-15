@@ -30,6 +30,7 @@ class RuntimeConfig:
     openclaw_config: OpenClawConfig
     api_dashboard_config: ApiDashboardConfig
     tier_manager_config: TierManagerConfig
+    learning_config: LearningConfig
 
 
 @dataclass(slots=True)
@@ -72,9 +73,18 @@ class OpenClawConfig:
     plugin_id: str = "project-os-gateway-adapter"
     plugin_source_path: str | None = None
     enabled_channels: list[str] = field(default_factory=lambda: ["discord", "webchat"])
+    trusted_plugin_ids: list[str] = field(default_factory=lambda: ["project-os-gateway-adapter", "discord", "device-pair", "memory-core"])
     send_ack_replies: bool = False
+    discord_thread_bindings_required: bool = True
+    discord_auto_presence_required: bool = True
+    discord_exec_approvals_required: bool = True
+    discord_exec_target: str = "dm"
+    discord_exec_approver_ids: list[str] = field(default_factory=list)
     timeout_ms: int = 45000
     require_replay_before_live: bool = True
+    live_validation_max_age_hours: int = 168
+    pairing_rotation_max_age_days: int = 30
+    windows_gateway_task_name: str = "OpenClaw Gateway"
 
 
 @dataclass(slots=True)
@@ -98,6 +108,12 @@ class TierManagerConfig:
     warm_min_age_hours: int = 6
     keep_latest_warm_records: int = 8
     max_archive_batch_size: int = 32
+
+
+@dataclass(slots=True)
+class LearningConfig:
+    auto_sync_runbook_deferred: bool = False
+    runbook_deferred_globs: list[str] = field(default_factory=list)
 
 
 def _storage_from_dict(payload: dict[str, str]) -> StorageRoots:
@@ -130,6 +146,7 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "default_reasoning_effort": "high",
             "escalation_reasoning_effort": "xhigh",
             "exceptional_model": "gpt-5.4-pro",
+            "discord_simple_model": "claude-sonnet-4-20250514",
             "daily_soft_limit_eur": 1.5,
             "monthly_limit_eur": 50.0,
             "daily_budget_limit_eur": 5.0,
@@ -147,6 +164,16 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "operator_delivery_retry_base_seconds": 30,
             "operator_delivery_retry_max_seconds": 900,
             "operator_delivery_max_pending": 64,
+            "local_model_enabled": False,
+            "local_model_provider": "ollama",
+            "local_model_base_url": "http://127.0.0.1:11434",
+            "local_model_name": "local-llm",
+            "local_model_timeout_seconds": 90.0,
+            "local_model_health_timeout_seconds": 5.0,
+            "local_model_reasoning_effort": "medium",
+            "proactive_briefing_max_items": 3,
+            "privacy_guard_enabled": True,
+            "s3_requires_local_model": True,
         },
         "github_config": {
             "repo": "Ga420Low/project-os-core",
@@ -162,9 +189,18 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "plugin_id": "project-os-gateway-adapter",
             "plugin_source_path": None,
             "enabled_channels": ["discord", "webchat"],
+            "trusted_plugin_ids": ["project-os-gateway-adapter", "discord", "device-pair", "memory-core"],
             "send_ack_replies": False,
+            "discord_thread_bindings_required": True,
+            "discord_auto_presence_required": True,
+            "discord_exec_approvals_required": True,
+            "discord_exec_target": "dm",
+            "discord_exec_approver_ids": [],
             "timeout_ms": 45000,
             "require_replay_before_live": True,
+            "live_validation_max_age_hours": 168,
+            "pairing_rotation_max_age_days": 30,
+            "windows_gateway_task_name": "OpenClaw Gateway",
         },
         "api_dashboard_config": {
             "host": "127.0.0.1",
@@ -185,13 +221,17 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "keep_latest_warm_records": 8,
             "max_archive_batch_size": 32,
         },
+        "learning_config": {
+            "auto_sync_runbook_deferred": False,
+            "runbook_deferred_globs": [],
+        },
     }
 
 
 def _load_runtime_policy(
     root: Path,
     policy_path: str | Path | None = None,
-) -> tuple[SecretConfig, EmbeddingPolicy, ExecutionPolicy, GitHubConfig, OpenClawConfig, ApiDashboardConfig, TierManagerConfig]:
+) -> tuple[SecretConfig, EmbeddingPolicy, ExecutionPolicy, GitHubConfig, OpenClawConfig, ApiDashboardConfig, TierManagerConfig, LearningConfig]:
     env_override = os.getenv("PROJECT_OS_RUNTIME_POLICY")
     chosen = Path(policy_path) if policy_path else (Path(env_override) if env_override else None)
     if chosen is None:
@@ -210,6 +250,7 @@ def _load_runtime_policy(
             "openclaw_config",
             "api_dashboard_config",
             "tier_manager_config",
+            "learning_config",
         ):
             if key in loaded and isinstance(loaded[key], dict):
                 payload[key].update(loaded[key])
@@ -232,7 +273,8 @@ def _load_runtime_policy(
     openclaw_config = OpenClawConfig(**openclaw_payload)
     api_dashboard_config = ApiDashboardConfig(**payload["api_dashboard_config"])
     tier_manager_config = TierManagerConfig(**payload["tier_manager_config"])
-    return secret_config, embedding_policy, execution_policy, github_config, openclaw_config, api_dashboard_config, tier_manager_config
+    learning_config = LearningConfig(**payload["learning_config"])
+    return secret_config, embedding_policy, execution_policy, github_config, openclaw_config, api_dashboard_config, tier_manager_config, learning_config
 
 
 def load_runtime_config(config_path: str | Path | None = None, policy_path: str | Path | None = None) -> RuntimeConfig:
@@ -252,7 +294,7 @@ def load_runtime_config(config_path: str | Path | None = None, policy_path: str 
     ).resolve(strict=False)
     storage_roots = _storage_from_dict(payload)
     policy = ForbiddenZonePolicy(roots=[storage_roots.archive_do_not_touch_root])
-    secret_config, embedding_policy, execution_policy, github_config, openclaw_config, api_dashboard_config, tier_manager_config = _load_runtime_policy(root, policy_path)
+    secret_config, embedding_policy, execution_policy, github_config, openclaw_config, api_dashboard_config, tier_manager_config, learning_config = _load_runtime_policy(root, policy_path)
     return RuntimeConfig(
         repo_root=root,
         storage_config_path=chosen_storage_path,
@@ -266,4 +308,5 @@ def load_runtime_config(config_path: str | Path | None = None, policy_path: str 
         openclaw_config=openclaw_config,
         api_dashboard_config=api_dashboard_config,
         tier_manager_config=tier_manager_config,
+        learning_config=learning_config,
     )

@@ -9,6 +9,8 @@ from typing import Any
 
 from .api_runs.dashboard import serve_dashboard
 from .bootstrap import bootstrap_environment, doctor_report, health_snapshot
+from .config import repo_root as resolve_repo_root
+from .docs_audit import audit_docs
 from .gateway.openclaw_adapter import build_dispatch_from_openclaw_payload
 from .mission.chain import STANDARD_CHAINS
 from .models import (
@@ -56,6 +58,11 @@ def main(argv: list[str] | None = None) -> int:
     health_sub = health_parser.add_subparsers(dest="health_command", required=True)
     health_sub.add_parser("snapshot")
 
+    docs_parser = subparsers.add_parser("docs")
+    docs_sub = docs_parser.add_subparsers(dest="docs_command", required=True)
+    docs_audit_parser = docs_sub.add_parser("audit")
+    docs_audit_parser.add_argument("--include-historical", action="store_true")
+
     secrets_parser = subparsers.add_parser("secrets")
     secrets_sub = secrets_parser.add_subparsers(dest="secrets_command", required=True)
     secrets_sub.add_parser("doctor")
@@ -82,6 +89,7 @@ def main(argv: list[str] | None = None) -> int:
     memory_search.add_argument("--mission-id")
     memory_search.add_argument("--tag", action="append", default=[])
     memory_search.add_argument("--limit", type=int, default=5)
+    memory_search.add_argument("--include-private-full", action="store_true")
 
     memory_sub.add_parser("reindex")
     memory_sub.add_parser("tier-report")
@@ -141,6 +149,11 @@ def main(argv: list[str] | None = None) -> int:
     router_route = router_sub.add_parser("route-intent")
     _add_router_args(router_route)
 
+    router_sub.add_parser("model-health")
+    router_briefing = router_sub.add_parser("proactive-briefing")
+    router_briefing.add_argument("--branch-name")
+    router_briefing.add_argument("--limit", type=int)
+
     gateway_parser = subparsers.add_parser("gateway")
     gateway_sub = gateway_parser.add_subparsers(dest="gateway_command", required=True)
     gateway_discord = gateway_sub.add_parser("ingest-discord")
@@ -162,9 +175,14 @@ def main(argv: list[str] | None = None) -> int:
     openclaw_replay = openclaw_sub.add_parser("replay")
     openclaw_replay.add_argument("--fixture")
     openclaw_replay.add_argument("--all", action="store_true")
+    openclaw_truth = openclaw_sub.add_parser("truth-health")
+    openclaw_truth.add_argument("--channel", default="discord")
+    openclaw_truth.add_argument("--max-age-hours", type=int)
+    openclaw_sub.add_parser("trust-audit")
     openclaw_live = openclaw_sub.add_parser("validate-live")
     openclaw_live.add_argument("--channel", required=True)
-    openclaw_live.add_argument("--payload-file", required=True)
+    openclaw_live.add_argument("--payload-file")
+    openclaw_live.add_argument("--max-age-hours", type=int)
 
     orchestration_parser = subparsers.add_parser("orchestration")
     orchestration_sub = orchestration_parser.add_subparsers(dest="orchestration_command", required=True)
@@ -256,6 +274,22 @@ def main(argv: list[str] | None = None) -> int:
     learning_change = learning_sub.add_parser("change-decision")
     _add_learning_decision_args(learning_change)
 
+    learning_defer = learning_sub.add_parser("defer-decision")
+    _add_learning_decision_args(learning_defer)
+    learning_defer.add_argument("--next-trigger")
+
+    learning_list_deferred = learning_sub.add_parser("list-deferred")
+    learning_list_deferred.add_argument("--scope-prefix")
+    learning_list_deferred.add_argument("--objective")
+    learning_list_deferred.add_argument("--limit", type=int, default=10)
+    learning_list_deferred.add_argument("--lookback-hours", type=int, default=24 * 90)
+
+    learning_sync_deferred = learning_sub.add_parser("sync-runbook-deferred")
+    learning_sync_deferred.add_argument("--glob", action="append", default=[])
+
+    learning_cleanup_deferred = learning_sub.add_parser("cleanup-deferred")
+    learning_cleanup_deferred.add_argument("--dry-run", action="store_true")
+
     learning_loop = learning_sub.add_parser("record-loop")
     learning_loop.add_argument("--pattern", required=True)
     learning_loop.add_argument("--impacted-area", required=True)
@@ -325,6 +359,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "health" and args.health_command == "snapshot":
         print(json.dumps(health_snapshot(), indent=2, ensure_ascii=True, sort_keys=True))
         return 0
+    if args.command == "docs" and args.docs_command == "audit":
+        report = audit_docs(resolve_repo_root(), include_historical=bool(args.include_historical))
+        print(json.dumps(report, indent=2, ensure_ascii=True, sort_keys=True))
+        return 0 if report["verdict"] == "OK" else 1
 
     services = build_app_services(config_path=args.config_path, policy_path=args.policy_path)
     try:
@@ -361,6 +399,7 @@ def main(argv: list[str] | None = None) -> int:
                     mission_id=args.mission_id,
                     tags=args.tag,
                     limit=args.limit,
+                    include_private_full=bool(args.include_private_full),
                 )
                 print(json.dumps(services.memory.search(context), indent=2, ensure_ascii=True, sort_keys=True))
                 return 0
@@ -444,6 +483,22 @@ def main(argv: list[str] | None = None) -> int:
                 return 0
 
         if args.command == "router":
+            if args.router_command == "model-health":
+                print(json.dumps(services.router.model_stack_health_snapshot(), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.router_command == "proactive-briefing":
+                print(
+                    json.dumps(
+                        services.router.proactive_briefing(
+                            branch_name=args.branch_name,
+                            limit=args.limit,
+                        ),
+                        indent=2,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    )
+                )
+                return 0
             intent = _router_intent_from_args(args)
             decision, trace, mission_run = services.router.route_intent(
                 intent,
@@ -496,8 +551,16 @@ def main(argv: list[str] | None = None) -> int:
                 report = services.openclaw.replay(fixture_id=args.fixture, run_all=bool(args.all))
                 print(json.dumps(report, indent=2, ensure_ascii=True, sort_keys=True))
                 return 0 if report["verdict"] == "OK" else 1
+            if args.openclaw_command == "truth-health":
+                report = services.openclaw.truth_health(channel=args.channel, max_age_hours=args.max_age_hours)
+                print(json.dumps(to_jsonable(report), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0 if report.verdict == "OK" else 1
+            if args.openclaw_command == "trust-audit":
+                report = services.openclaw.trust_audit()
+                print(json.dumps(to_jsonable(report), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0 if report.verdict == "OK" else 1
             if args.openclaw_command == "validate-live":
-                report = services.openclaw.validate_live(channel=args.channel, payload_file=args.payload_file)
+                report = services.openclaw.validate_live(channel=args.channel, payload_file=args.payload_file, max_age_hours=args.max_age_hours)
                 print(json.dumps(to_jsonable(report), indent=2, ensure_ascii=True, sort_keys=True))
                 return 0 if report.success else 1
 
@@ -656,6 +719,49 @@ def main(argv: list[str] | None = None) -> int:
                     metadata=_json_arg(args.metadata),
                 )
                 print(json.dumps(to_jsonable(record), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.learning_command == "defer-decision":
+                record = services.learning.record_deferred_decision(
+                    scope=args.scope,
+                    summary=args.summary,
+                    next_trigger=args.next_trigger,
+                    source_run_id=args.source_run_id,
+                    metadata=_json_arg(args.metadata),
+                )
+                print(json.dumps(to_jsonable(record), indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.learning_command == "list-deferred":
+                items = services.learning.list_deferred_decisions(
+                    scope_prefix=args.scope_prefix,
+                    objective=args.objective,
+                    limit=args.limit,
+                    lookback_hours=args.lookback_hours,
+                )
+                print(
+                    json.dumps(
+                        {
+                            "count": len(items),
+                            "items": items,
+                            "lookback_hours": int(args.lookback_hours),
+                            "scope_prefix": args.scope_prefix,
+                        },
+                        indent=2,
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    )
+                )
+                return 0
+            if args.learning_command == "sync-runbook-deferred":
+                payload = services.learning.sync_runbook_deferred_decisions(
+                    glob_patterns=args.glob or None,
+                )
+                print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+                return 0
+            if args.learning_command == "cleanup-deferred":
+                payload = services.learning.cleanup_duplicate_deferred_decisions(
+                    dry_run=bool(args.dry_run),
+                )
+                print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
                 return 0
             if args.learning_command == "record-loop":
                 loop_signal = services.learning.record_loop_signal(

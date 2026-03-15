@@ -73,6 +73,7 @@ def doctor_report(strict: bool = False) -> dict[str, object]:
                 "quality": services.embedding_strategy.quality,
                 "source": services.embedding_strategy.source,
             },
+            "model_stack_health": services.router.model_stack_health_snapshot(),
             "path_policy": {
                 "forbidden_zone_enforced": services.path_policy.is_forbidden(services.paths.archive_do_not_touch_root),
                 "runtime_root_managed": services.path_policy.is_managed(services.paths.runtime_root),
@@ -112,6 +113,7 @@ def health_snapshot() -> dict[str, Any]:
                     "dimensions": services.embedding_strategy.dimensions,
                     "source": services.embedding_strategy.source,
                 },
+                "model_stack_health": services.router.model_stack_health_snapshot(),
                 "secrets": services.secret_resolver.source_report(),
                 "bootstrap_state": to_jsonable(state),
             },
@@ -150,6 +152,7 @@ def _collect_checks(services, *, strict: bool) -> dict[str, Any]:
         "roots": roots_status,
         "database": database_status,
         "embedding_provider": services.embedding_strategy.provider,
+        "model_stack_health": services.router.model_stack_health_snapshot(),
         "openai_probe": openai_probe,
         "anthropic_reviewer_probe": anthropic_reviewer_probe,
         "anthropic_translator_probe": anthropic_translator_probe,
@@ -182,6 +185,15 @@ def _bootstrap_state(services, checks: dict[str, Any], *, strict: bool) -> Boots
         failures.append("anthropic_reviewer_invalid")
     if checks["anthropic_translator_probe"]["ok"] is False:
         failures.append("anthropic_translator_invalid")
+    api_tier_status = checks["model_stack_health"]["tiers"]["api"]["status"]
+    if api_tier_status == "blocked":
+        failures.append("model_api_tier_blocked")
+    elif api_tier_status == "degraded":
+        warnings.append("model_api_tier_degraded")
+    if services.config.execution_policy.local_model_enabled:
+        local_tier_status = checks["model_stack_health"]["tiers"]["local"]["status"]
+        if local_tier_status != "ready":
+            failures.append("model_local_tier_not_ready")
     if checks["secrets"]["infisical"]["binary_present"] is False:
         warnings.append("infisical_cli_missing")
     if checks["secrets"]["infisical"]["auth_mode"] == "user_session_fallback":
