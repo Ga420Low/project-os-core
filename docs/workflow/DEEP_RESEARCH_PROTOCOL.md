@@ -1,22 +1,52 @@
 # Deep Research Protocol
 
-## Objet
+## Purpose
 
-Ce document fixe le protocole canonique quand `Project OS` doit faire une recherche approfondie sur:
+`Deep research` is the canonical workflow when `Project OS` must produce a durable research artifact instead of a short conversational answer.
 
-- un systeme
-- une stack
-- un repo GitHub
-- des forks
-- un benchmark
-- une categorie produit ou recherche
+It is designed to:
 
-Le but n'est pas de produire un joli resume.
-Le but est de produire une recherche exploitable, reliee au repo reel, avec une barre de preuve plus haute.
+- start from the real repo, not from generic public advice
+- search external sources with a higher proof bar
+- translate findings into concrete `Project OS` decisions
+- persist results as machine-readable `Markdown` plus reader-friendly `PDF`
 
-## Declencheurs
+Deep research is a separate system from normal conversation mode.
 
-Les formulations suivantes doivent activer ce protocole:
+For now, it must only activate when the founder explicitly writes a trigger such as `deep research` or `recherche approfondie` in the message.
+
+Normal conversation, even if serious, long, or expensive, must not silently switch into deep research.
+
+This document is the umbrella entry point. It defines the common contract and points to the more specific standards.
+
+## Core Concepts
+
+Deep research now has two independent axes:
+
+- `kind`
+  - storage axis only
+  - `audit` -> `docs/audits/`
+  - `system` -> `docs/systems/`
+- `research_profile`
+  - reasoning axis
+  - `project_audit`
+  - `component_discovery`
+  - `domain_audit`
+- `research_intensity`
+  - execution depth axis
+  - `simple`
+  - `complex`
+  - `extreme`
+
+In short:
+
+- `kind` decides where the artifact lives
+- `research_profile` decides what questions the engine must answer
+- `research_intensity` decides how hard the engine goes
+
+## Trigger Phrases
+
+The following phrases must activate deep research handling:
 
 - `deep research`
 - `recherche approfondie`
@@ -26,183 +56,177 @@ Les formulations suivantes doivent activer ce protocole:
 - `regarde les forks`
 - `va chercher plus loin`
 
-Si la demande ressemble clairement a ce mode sans reprendre ces mots exacts, le protocole s'applique quand meme.
+The trigger also applies when the wording is clearly equivalent, even with typos.
 
-## Protocole obligatoire
+Hard boundary:
+
+- deep research is not a generic escalation of a conversation
+- it is a dedicated workflow with its own dossier, approval flow, and detached execution
+- it only starts from an explicit founder trigger in the message itself
+
+## Mandatory Operator Flow
+
+When deep research is detected, the operator flow is:
+
+1. detect the request
+2. scaffold the dossier path
+3. ask for `research_profile`
+4. ask for `research_intensity`
+5. once both are explicit, show:
+   - dossier path
+   - estimated cost
+   - estimated time
+   - API/model
+6. wait for `go` or `stop`
+7. launch the detached job only after approval
+
+Important rule:
+
+- the bot must always ask for mode before launch
+- it may recommend a profile and intensity
+- it must not silently launch based only on inferred defaults
+
+The detailed operator UX is defined in:
+
+- [DEEP_RESEARCH_APPROVAL_FLOW.md](./DEEP_RESEARCH_APPROVAL_FLOW.md)
+
+## Common Execution Contract
+
+Every deep research run must follow these common rules:
 
 ### 1. Repo-first
 
-Avant la veille externe, il faut:
+Before the serious web pass:
 
-- inspecter le repo reel
-- relire les docs et ADR pertinentes
-- identifier les packages deja presents
-- lister les contraintes qui rendent certaines pistes inutiles, prematurees ou dangereuses
+- inspect the repo snapshot
+- inspect relevant local docs
+- inspect active packages and touched areas
+- identify existing constraints and local truth
 
-Pourquoi:
+### 2. Source discipline
 
-- pour eviter les recommandations deconferencees du projet
-- pour ne pas proposer une seconde verite architecturale
-- pour distinguer `ce qui manque` de `ce qui existe deja mal exploite`
+Prefer, in order:
 
-### 2. Sources primaires et recence
+- official docs and standards bodies
+- official product pages and changelogs
+- official repositories
+- benchmark homes and original papers
+- strong ecosystem repos and registries
 
-La recherche doit privilegier:
+Do not let weak signals dominate the final thesis.
 
-- docs officielles
-- pages produit officielles
-- papiers originaux
-- repos officiels
-- changelogs, releases et pages benchmark officielles
+### 3. GitHub lane when relevant
 
-La reponse doit:
+When repos matter, inspect:
 
-- preferer des dates explicites quand le sujet est recent
-- signaler clairement quand une affirmation est une inference
-- distinguer `source primaire`, `source secondaire` et `signal faible`
+- README
+- license
+- recent activity
+- releases
+- install surface
+- visible limitations
+- forks and satellites when relevant
 
-Pourquoi:
+### 4. Project OS translation
 
-- OpenAI decrit la deep research comme une recherche multi-etapes basee sur des centaines de sources avec citations et navigation adaptative, pas comme un simple resume de surface
-- pour les sujets recents, la valeur vient souvent des mises a jour et non du papier d'origine seulement
-
-### 3. Lane GitHub obligatoire
-
-Quand un repo est central a la question, il faut inspecter au minimum:
-
-- le `README`
-- la licence
-- l'activite recente
-- les releases si elles existent
-- la surface d'installation
-- les issues ou limitations evidentes
-- la dependency graph et les signaux de securite si disponibles
-
-Pourquoi:
-
-- GitHub expose des graphes et des vues utiles sur l'activite, les dependances, les contributeurs, le traffic, la network graph et les forks
-- une pepite repo n'est pas seulement une idee; c'est aussi un objet maintenable, installable et licitement reutilisable
-
-### 4. Lane forks et satellites
-
-Quand les forks comptent, il faut:
-
-- verifier la liste des forks et la network graph
-- dire s'il existe un vrai fork actif ou seulement des mirrors
-- inspecter aussi les repos satellites et wrappers, souvent plus utiles que les forks directs
-
-Pourquoi:
-
-- dans beaucoup de categories, les vraies pepites ne sont pas dans les forks bruts de l'upstream mais dans les bridges, plugins, wrappers et benchmarks adjacents
-
-### 5. Lane integration Project OS
-
-Toute recherche doit finir par une traduction `Project OS`:
+The research is not done until it becomes a Project OS decision:
 
 - `KEEP`
 - `ADAPT`
 - `DEFER`
 - `REJECT`
 
-Et pour chaque element retenu:
+For every actionable item, say:
 
-- `ce qu'on recupere`
-- `ce qu'on n'importe pas`
-- `ou cela entre dans Project OS`
-- `quelle preuve il faut obtenir`
+- what to take
+- what not to import
+- where it lands in Project OS
+- what proof is required
 
-Pourquoi:
+## Canonical Output Contract
 
-- une recherche sans traduction d'integration reste un document de veille, pas un levier produit
+Deep research produces two artifacts:
 
-### 6. Sortie canonique
+- canonical `Markdown` in English for machines
+- reader `PDF` in French for humans
 
-Si le sujet est durable et structurel:
+The canonical repo artifact lives under:
 
-- produire ou mettre a jour un dossier dans `docs/systems/`
+- `docs/audits/` for audits
+- `docs/systems/` for system dossiers
 
-Si le sujet est une enquete ponctuelle ou une note de travail:
+The cold archive keeps:
 
-- produire un audit dans `docs/audits/`
+- `Markdown`
+- `PDF`
+- `manifest.json`
+- runtime artifacts
 
-Si la recherche debouche sur un ordre d'execution:
+Filename and archive slug must derive from the English SEO title.
 
-- produire ensuite une roadmap dans `docs/roadmap/`
+## Profile Standards
 
-## Mecanique repo
+Profiles are defined in:
 
-Commande de scaffold:
+- [DEEP_RESEARCH_PROFILES_STANDARD.md](./DEEP_RESEARCH_PROFILES_STANDARD.md)
 
-```powershell
-py scripts/project_os_entry.py docs scaffold-research --title "Nom du sujet" --kind audit
-```
+Summary:
 
-Pour un dossier systeme:
+- `project_audit` = whole Project OS ambition
+- `component_discovery` = a system, stack, feature, subsystem, or improvement area
+- `domain_audit` = an outside topic where Project OS fit is secondary
 
-```powershell
-py scripts/project_os_entry.py docs scaffold-research --title "Nom du systeme" --kind system
-```
+## Intensity Standards
 
-Le scaffold injecte:
+Intensity is defined in:
 
-- les mots declencheurs
-- le protocole obligatoire
-- les references locales detectees
-- les packages coeur detectes
+- [DEEP_RESEARCH_INTENSITY_STANDARD.md](./DEEP_RESEARCH_INTENSITY_STANDARD.md)
 
-## Integration Discord / OpenClaw
+Summary:
 
-Quand un message entrant contient un declencheur `deep research`, le gateway peut preparer automatiquement un scaffold de recherche avant le routage missionnel, lancer un job detache de recherche, puis faire revenir le rapport sur Discord.
+- `simple` = one strong worker
+- `complex` = light committee with in-process parallel scouts, source reputation, and stateful synthesis
+- `extreme` = War Room with child-worker mesh, source safety gate, persistent reputation, and stateful synthesis
+- current debug note: `extreme` may temporarily route research passes through `Anthropic Sonnet` for lower-risk system testing, while keeping the reader PDF translation on `OpenAI`
 
-Effet attendu:
+## Quality and Safety
 
-- creation d'un fichier dans `docs/systems/` ou `docs/audits/`
-- ajout du chemin du dossier dans les metadonnees de dispatch
-- lancement d'un job asynchrone qui inspecte le repo, fait la veille web, puis remplit le dossier
-- retour final sur Discord avec un resume compact et le `.md` joint en piece jointe
-- le dossier dans le repo devient la source durable de la recherche, pas seulement le message Discord
+Quality, trust, and publication rules are defined in:
 
-Implementation locale:
+- [DEEP_RESEARCH_QUALITY_STANDARD.md](./DEEP_RESEARCH_QUALITY_STANDARD.md)
 
-- le scaffold manuel reste disponible via `py scripts/project_os_entry.py docs scaffold-research --title "..."`
-- le runner interne passe par `py scripts/project_os_entry.py research run-job --job-path ...`
-- le job ecrit ses artefacts runtime sous `runtime/deep_research/`, met a jour le dossier du projet, puis publie le resume final via la queue `operator_deliveries`
+At minimum:
 
-## Pourquoi cette mecanique existe
+- suspicious domains are downgraded or quarantined
+- `Markdown` must stay machine-clean
+- `PDF` must stay readable on mobile
+- a weak run may archive artifacts but must not pretend to be canonical success
 
-Le projet a besoin d'une recherche plus proche d'un `analyst workflow` que d'une simple reponse conversationnelle.
+## Canonical Dossiers
 
-On reprend ici:
+Execution mode dossiers live in:
 
-- d'OpenAI: l'idee de recherche multi-etapes avec citations, navigation adaptee, sources nombreuses et possibilité de restreindre la recherche a des sources de confiance
-- d'OpenAI Evals: l'idee que la qualite doit etre testable et que les sorties doivent alimenter une boucle d'amelioration
-- d'Anthropic: l'idee qu'une tache complexe gagne a etre decoupee en sous-etapes et en outils specialises
-- de GitHub: l'idee qu'un repo doit etre juge aussi par ses graphes, ses dependances, ses forks, ses contributeurs et sa maintenance
-- de DeepSeek-R1: l'idee que les taches difficiles beneficient d'une trajectoire de raisonnement plus structuree et non d'une reponse improvisée
+- [DEEP_RESEARCH_SIMPLE_MODE_DOSSIER.md](../systems/DEEP_RESEARCH_SIMPLE_MODE_DOSSIER.md)
+- [DEEP_RESEARCH_COMPLEX_MODE_DOSSIER.md](../systems/DEEP_RESEARCH_COMPLEX_MODE_DOSSIER.md)
+- [DEEP_RESEARCH_WAR_ROOM_DOSSIER.md](../systems/DEEP_RESEARCH_WAR_ROOM_DOSSIER.md)
+
+## Runtime Integration
+
+The Discord/OpenClaw runtime must:
+
+- prepare the dossier scaffold
+- require explicit profile + intensity
+- require `go` before launch
+- run the detached deep research job
+- write the final repo dossier
+- send the PDF and Markdown back to Discord
+- archive the cold bundle
 
 ## Sources
 
-### OpenAI
-
-- [Introducing deep research, 2 fevrier 2025, avec mises a jour jusqu'au 10 fevrier 2026](https://openai.com/index/introducing-deep-research/)
-- [Deep research in ChatGPT FAQ](https://help.openai.com/en/articles/10500283-deep-research)
-- [Graders guide](https://platform.openai.com/docs/guides/graders)
-- [Eval Driven System Design - From Prototype to Production](https://cookbook.openai.com/examples/partners/eval_driven_system_design/receipt_inspection)
-
-### Anthropic
-
-- [Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)
-- [Tool use with Claude](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview)
-- [Computer use tool](https://docs.anthropic.com/en/docs/build-with-claude/computer-use)
-- [Chain prompts](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering/chain-prompts)
-
-### GitHub
-
-- [About repository graphs](https://docs.github.com/en/repositories/viewing-activity-and-data-for-your-repository/about-repository-graphs)
-- [Understanding connections between repositories](https://docs.github.com/en/repositories/viewing-activity-and-data-for-your-repository/understanding-connections-between-repositories)
-- [About forks](https://docs.github.com/pull-requests/collaborating-with-pull-requests/working-with-forks/about-forks)
-- [About the dependency graph](https://docs.github.com/en/code-security/supply-chain-security/understanding-your-software-supply-chain/about-the-dependency-graph)
-
-### DeepSeek
-
-- [deepseek-ai/DeepSeek-R1](https://github.com/deepseek-ai/DeepSeek-R1)
+- [OpenAI - Introducing deep research](https://openai.com/index/introducing-deep-research/)
+- [OpenAI - Deep research FAQ](https://help.openai.com/en/articles/10500283-deep-research)
+- [OpenAI - Graders guide](https://platform.openai.com/docs/guides/graders)
+- [Anthropic - Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)
+- [GitHub Docs - About repository graphs](https://docs.github.com/en/repositories/viewing-activity-and-data-for-your-repository/about-repository-graphs)
+- [GitHub Docs - About forks](https://docs.github.com/pull-requests/collaborating-with-pull-requests/working-with-forks/about-forks)

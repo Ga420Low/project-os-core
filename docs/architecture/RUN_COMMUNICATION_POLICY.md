@@ -12,6 +12,7 @@ Regle produit complementaire:
 - les artefacts runtime sont des preuves
 - ils ne sont pas une interface humaine suffisante
 - un humain ne doit pas avoir besoin d'ouvrir un JSON pour comprendre la vie d'un run
+- si un message affiche un `cout estime`, il doit venir du calculateur canonique partage (`src/project_os_core/costing.py`)
 
 ## Objectif
 

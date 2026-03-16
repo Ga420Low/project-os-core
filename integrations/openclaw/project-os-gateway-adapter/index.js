@@ -6,12 +6,14 @@ const DEFAULT_PROJECT_OS_REPO_ROOT = "D:/ProjectOS/project-os-core";
 const DEFAULT_PYTHON_COMMAND = process.platform === "win32" ? "py" : "python3";
 const DEFAULT_CHANNELS = new Set(["discord", "webchat"]);
 const DEFAULT_OPERATOR_POLLING_INTERVAL_MS = 8000;
+const DEFAULT_PROJECT_OS_TIMEOUT_MS = 10 * 60 * 1000;
 const INGRESS_DEDUP_TTL_MS = 10 * 60 * 1000;
 const PENDING_DISCORD_REPLY_TTL_MS = 2 * 60 * 1000;
 const DISCORD_MESSAGE_MAX_LENGTH = 2000;
 const DISCORD_SAFE_CHUNK_LENGTH = 1850;
 const DISCORD_FAILURE_NOTICE_MAX_LENGTH = 320;
 const DISCORD_MAX_LINES_PER_MESSAGE = 17;
+const DISCORD_TYPING_REFRESH_MS = 5000;
 const SAFE_ENV_KEYS = new Set([
   "APPDATA",
   "COMSPEC",
@@ -98,7 +100,7 @@ function resolveConfig(api) {
   const timeoutMs =
     typeof raw.timeoutMs === "number" && Number.isFinite(raw.timeoutMs) && raw.timeoutMs > 0
       ? Math.floor(raw.timeoutMs)
-      : 45000;
+      : DEFAULT_PROJECT_OS_TIMEOUT_MS;
   const discordAccountId =
     typeof raw.discordAccountId === "string" && raw.discordAccountId.trim()
       ? raw.discordAccountId.trim()
@@ -502,6 +504,50 @@ async function sendDiscordMessageDirectOnce(channelId, token, text, options = {}
   return response.json();
 }
 
+async function sendDiscordTypingDirectOnce(channelId, token) {
+  const response = await fetch(`https://discord.com/api/v10/channels/${channelId}/typing`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bot ${token}`,
+    },
+  });
+  if (!response.ok) {
+    const body = await response.text();
+    throw new Error(`discord typing send failed (${response.status}): ${body}`);
+  }
+}
+
+async function startDiscordTypingLoop(api, target) {
+  const token = resolveDiscordRestToken();
+  if (!token) {
+    return null;
+  }
+  let channelId = null;
+  try {
+    channelId = await resolveDiscordRestChannelId(target, token);
+    await sendDiscordTypingDirectOnce(channelId, token);
+  } catch (error) {
+    api.logger.warn(`[project-os-gateway-adapter] discord typing start failed: ${String(error)}`);
+    return null;
+  }
+  let stopped = false;
+  const interval = setInterval(() => {
+    if (stopped) {
+      return;
+    }
+    void sendDiscordTypingDirectOnce(channelId, token).catch((error) => {
+      api.logger.warn(`[project-os-gateway-adapter] discord typing refresh failed: ${String(error)}`);
+    });
+  }, DISCORD_TYPING_REFRESH_MS);
+  detachTimer(interval);
+  return {
+    stop() {
+      stopped = true;
+      clearInterval(interval);
+    },
+  };
+}
+
 async function sendDiscordMessageDirect(api, target, text, options = {}) {
   const token = resolveDiscordRestToken();
   if (!token) {
@@ -571,6 +617,12 @@ async function maybeSendDiscordImmediateReply(api, event, ctx, parsed, config) {
   }
   const responseManifest = extractResponseManifest(reply);
   const replyKind = typeof reply.reply_kind === "string" ? reply.reply_kind.trim().toLowerCase() : "";
+  const isDeepResearchLaunch =
+    replyKind === "ack" &&
+    Boolean(parsed?.metadata?.deep_research_job_id || reply?.metadata?.deep_research_job_id);
+  if (isDeepResearchLaunch) {
+    return;
+  }
   if (replyKind === "ack" && !config.sendAckReplies) {
     return;
   }
@@ -748,6 +800,13 @@ function ingressDedupCache(api) {
   return api._projectOsIngressDedupCache;
 }
 
+function operatorDeliveryInflightCache(api) {
+  if (!api._projectOsOperatorDeliveryInflight) {
+    api._projectOsOperatorDeliveryInflight = new Set();
+  }
+  return api._projectOsOperatorDeliveryInflight;
+}
+
 function pruneIngressDedupCache(api, now = Date.now()) {
   const cache = ingressDedupCache(api);
   for (const [key, timestamp] of cache.entries()) {
@@ -818,72 +877,85 @@ async function flushOperatorDeliveries(api, config) {
     if (!deliveryId) {
       continue;
     }
-
-    const payload = delivery.payload && typeof delivery.payload === "object" ? delivery.payload : {};
-    const channelHint = typeof delivery.channel_hint === "string" ? delivery.channel_hint : "runs_live";
-    const deliveryGuarantee =
-      typeof delivery.delivery_guarantee === "string" && delivery.delivery_guarantee.trim()
-        ? delivery.delivery_guarantee.trim()
-        : typeof payload.delivery_guarantee === "string" && payload.delivery_guarantee.trim()
-          ? payload.delivery_guarantee.trim()
-          : "important";
-    const target = resolveOperatorDeliveryTarget(config, payload, channelHint);
-
-    if (!target) {
-      await ackOperatorDelivery(api, config, deliveryId, "pending", "discord_target_not_configured", {
-        channel_hint: channelHint,
-        delivery_guarantee: deliveryGuarantee,
-        delivery_blocker: "discord_target_not_configured",
-      });
+    const inflight = operatorDeliveryInflightCache(api);
+    if (inflight.has(deliveryId)) {
       continue;
     }
-
-    const responseManifest = extractResponseManifest(payload);
-    const text =
-      typeof responseManifest?.discord_summary === "string" && responseManifest.discord_summary.trim()
-        ? responseManifest.discord_summary.trim()
-        : typeof payload.text === "string" && payload.text.trim()
-          ? payload.text.trim()
-          : `[Project OS] ${channelHint}`;
-    const replyTo = typeof payload.reply_to === "string" && payload.reply_to.trim() ? payload.reply_to.trim() : undefined;
-    const components = payload.components && typeof payload.components === "object" ? payload.components : undefined;
-    const accountId =
-      typeof payload.account_id === "string" && payload.account_id.trim()
-        ? payload.account_id.trim()
-        : config.discordAccountId;
+    inflight.add(deliveryId);
 
     try {
-      await sendDiscordMessageDirect(api, target, text, {
-        replyTo,
-        components,
-        attachments: responseManifest?.attachments,
-      });
-      await ackOperatorDelivery(api, config, deliveryId, "delivered", undefined, {
-        channel_hint: channelHint,
-        target,
-        reply_to: replyTo,
-        components_enabled: Boolean(components),
-        attachment_count: Array.isArray(responseManifest?.attachments) ? responseManifest.attachments.length : 0,
-        account_id: accountId,
-        delivery_guarantee: deliveryGuarantee,
-      });
-    } catch (error) {
-      const failureNoticeSent = await sendDiscordDeliveryFailureNotice(api, target, error, { replyTo });
-      await ackOperatorDelivery(api, config, deliveryId, "pending", String(error), {
-        channel_hint: channelHint,
-        target,
-        reply_to: replyTo,
-        components_enabled: Boolean(components),
-        attachment_count: Array.isArray(responseManifest?.attachments) ? responseManifest.attachments.length : 0,
-        account_id: accountId,
-        delivery_guarantee: deliveryGuarantee,
-        failure_notice_sent: failureNoticeSent,
-      });
+      const payload = delivery.payload && typeof delivery.payload === "object" ? delivery.payload : {};
+      const channelHint = typeof delivery.channel_hint === "string" ? delivery.channel_hint : "runs_live";
+      const deliveryGuarantee =
+        typeof delivery.delivery_guarantee === "string" && delivery.delivery_guarantee.trim()
+          ? delivery.delivery_guarantee.trim()
+          : typeof payload.delivery_guarantee === "string" && payload.delivery_guarantee.trim()
+            ? payload.delivery_guarantee.trim()
+            : "important";
+      const target = resolveOperatorDeliveryTarget(config, payload, channelHint);
+
+      if (!target) {
+        await ackOperatorDelivery(api, config, deliveryId, "pending", "discord_target_not_configured", {
+          channel_hint: channelHint,
+          delivery_guarantee: deliveryGuarantee,
+          delivery_blocker: "discord_target_not_configured",
+        });
+        continue;
+      }
+
+      const responseManifest = extractResponseManifest(payload);
+      const text =
+        typeof responseManifest?.discord_summary === "string" && responseManifest.discord_summary.trim()
+          ? responseManifest.discord_summary.trim()
+          : typeof payload.text === "string" && payload.text.trim()
+            ? payload.text.trim()
+            : `[Project OS] ${channelHint}`;
+      const replyTo = typeof payload.reply_to === "string" && payload.reply_to.trim() ? payload.reply_to.trim() : undefined;
+      const components = payload.components && typeof payload.components === "object" ? payload.components : undefined;
+      const accountId =
+        typeof payload.account_id === "string" && payload.account_id.trim()
+          ? payload.account_id.trim()
+          : config.discordAccountId;
+
+      try {
+        await sendDiscordMessageDirect(api, target, text, {
+          replyTo,
+          components,
+          attachments: responseManifest?.attachments,
+        });
+        await ackOperatorDelivery(api, config, deliveryId, "delivered", undefined, {
+          channel_hint: channelHint,
+          target,
+          reply_to: replyTo,
+          components_enabled: Boolean(components),
+          attachment_count: Array.isArray(responseManifest?.attachments) ? responseManifest.attachments.length : 0,
+          account_id: accountId,
+          delivery_guarantee: deliveryGuarantee,
+        });
+      } catch (error) {
+        const failureNoticeSent = await sendDiscordDeliveryFailureNotice(api, target, error, { replyTo });
+        await ackOperatorDelivery(api, config, deliveryId, "pending", String(error), {
+          channel_hint: channelHint,
+          target,
+          reply_to: replyTo,
+          components_enabled: Boolean(components),
+          attachment_count: Array.isArray(responseManifest?.attachments) ? responseManifest.attachments.length : 0,
+          account_id: accountId,
+          delivery_guarantee: deliveryGuarantee,
+          failure_notice_sent: failureNoticeSent,
+        });
+      }
+    } finally {
+      inflight.delete(deliveryId);
     }
   }
 }
 
 function startOperatorDeliveryPolling(api) {
+  if (api._projectOsOperatorDeliveryPollingStarted) {
+    return;
+  }
+  api._projectOsOperatorDeliveryPollingStarted = true;
   let busy = false;
 
   const tick = async () => {
@@ -924,6 +996,10 @@ function startOperatorDeliveryPolling(api) {
 }
 
 function startSchedulerPolling(api) {
+  if (api._projectOsSchedulerPollingStarted) {
+    return;
+  }
+  api._projectOsSchedulerPollingStarted = true;
   let busy = false;
 
   const tick = async () => {
@@ -1010,10 +1086,17 @@ const plugin = {
         return;
       }
 
-      const payload = buildPayload(event, ctx, runtimeConfig);
+    const payload = buildPayload(event, ctx, runtimeConfig);
       rememberIngressKey(api, ingressDedupKey);
+      let typingHandle = null;
 
       try {
+        if (liveChannelId === "discord") {
+          const target = resolveDiscordTarget(event, ctx);
+          if (target) {
+            typingHandle = await startDiscordTypingLoop(api, target);
+          }
+        }
         const { result, parsed } = await dispatchToProjectOs(api, payload, runtimeConfig);
 
         if (result.code !== 0 && !parsed) {
@@ -1040,6 +1123,8 @@ const plugin = {
         api.logger.warn(
           `[project-os-gateway-adapter] ${error?.stack || error?.message || String(error)}`
         );
+      } finally {
+        typingHandle?.stop?.();
       }
     };
 

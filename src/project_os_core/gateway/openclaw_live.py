@@ -73,6 +73,26 @@ class OpenClawLiveService:
             runtime_policy_path=str(self.config.runtime_policy_path),
         )
 
+    def discord_calibration_snapshot(
+        self,
+        *,
+        limit: int = 6,
+        log_lines: int = 20,
+        max_age_hours: int = 24,
+    ) -> dict[str, Any]:
+        runtime_config = self._load_json_payload(self.paths.openclaw_state_root / "openclaw.json")
+        gateway_status = self._gateway_truth_details_from_command(self._gateway_status_command(runtime_config if isinstance(runtime_config, dict) else None))
+        live_proof = self._latest_live_bridge_evidence(normalized_channel="discord", max_age_hours=max_age_hours)
+        return {
+            "channel": "discord",
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "gateway_status": gateway_status,
+            "live_proof": live_proof,
+            "recent_events": self._recent_discord_calibration_events(limit=limit),
+            "recent_deliveries": self._recent_discord_operator_deliveries(limit=limit),
+            "openclaw_log_tail": self._latest_openclaw_log_tail(max_lines=log_lines),
+        }
+
     def bootstrap(self, *, install_if_missing: bool = False) -> OpenClawBootstrapReport:
         runtime_roots = self.runtime_roots()
         checks: list[dict[str, Any]] = []
@@ -310,7 +330,9 @@ class OpenClawLiveService:
         checks.append(discord_operations_check)
         blocking = blocking or discord_operations_check["status"] == "bloque"
         if discord_operations_check["status"] == "bloque":
-            actionable_fixes.append("Active `threadBindings`, `autoPresence` et `execApprovals` Discord selon la policy Pack 2 retenue.")
+            actionable_fixes.append(
+                "Active `threadBindings`, `typingMode=instant`, `typingIntervalSeconds=6`, `autoPresence` et `execApprovals` Discord selon la policy Pack 2 retenue."
+            )
 
         privacy_guard_check = self._doctor_privacy_guard_policy()
         checks.append(privacy_guard_check)
@@ -1175,6 +1197,32 @@ class OpenClawLiveService:
             auto_presence = discord.get("autoPresence")
             if not (isinstance(auto_presence, dict) and auto_presence.get("enabled") is True):
                 issues.append({"path": "channels.discord.autoPresence.enabled", "reason": "missing_or_disabled"})
+
+        agent_defaults = runtime_config.get("agents", {}).get("defaults") if isinstance(runtime_config.get("agents"), dict) else None
+        required_typing_mode = str(self.config.openclaw_config.discord_typing_mode_required or "").strip().lower()
+        required_typing_interval = int(self.config.openclaw_config.discord_typing_interval_seconds or 0)
+        if required_typing_mode:
+            typing_mode = str(agent_defaults.get("typingMode") or "").strip().lower() if isinstance(agent_defaults, dict) else ""
+            if typing_mode != required_typing_mode:
+                issues.append(
+                    {
+                        "path": "agents.defaults.typingMode",
+                        "reason": "unexpected_value",
+                        "value": typing_mode or None,
+                        "expected": required_typing_mode,
+                    }
+                )
+        if required_typing_interval > 0:
+            typing_interval = agent_defaults.get("typingIntervalSeconds") if isinstance(agent_defaults, dict) else None
+            if not isinstance(typing_interval, int) or typing_interval != required_typing_interval:
+                issues.append(
+                    {
+                        "path": "agents.defaults.typingIntervalSeconds",
+                        "reason": "unexpected_value",
+                        "value": typing_interval,
+                        "expected": required_typing_interval,
+                    }
+                )
 
         if self.config.openclaw_config.discord_exec_approvals_required:
             exec_approvals = discord.get("execApprovals")
@@ -2130,6 +2178,170 @@ class OpenClawLiveService:
                 "created_at": row["created_at"],
             }
         return None
+
+    def _recent_discord_calibration_events(self, *, limit: int) -> list[dict[str, Any]]:
+        rows = self.database.fetchall(
+            """
+            SELECT
+                ce.event_id,
+                ce.surface,
+                ce.channel,
+                ce.source_message_id,
+                ce.conversation_key,
+                ce.thread_ref_json,
+                ce.message_json,
+                ce.raw_payload_json,
+                ce.created_at,
+                gdr.dispatch_id,
+                gdr.decision_id,
+                gdr.mission_run_id,
+                gdr.reply_json,
+                gdr.metadata_json,
+                dtb.binding_id,
+                dtb.binding_kind,
+                dtb.status AS binding_status,
+                dtb.updated_at AS binding_updated_at
+            FROM channel_events AS ce
+            LEFT JOIN gateway_dispatch_results AS gdr
+              ON gdr.channel_event_id = ce.event_id
+            LEFT JOIN discord_thread_bindings AS dtb
+              ON dtb.channel_event_id = ce.event_id
+            WHERE ce.surface = ?
+            ORDER BY ce.created_at DESC
+            LIMIT ?
+            """,
+            ("discord", max(1, int(limit))),
+        )
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            message_payload = self._json_loads_or_empty(row["message_json"])
+            raw_payload = self._json_loads_or_empty(row["raw_payload_json"])
+            reply_payload = self._json_loads_or_empty(row["reply_json"])
+            metadata_payload = self._json_loads_or_empty(row["metadata_json"])
+            approval_metadata = metadata_payload.get("approval_metadata") if isinstance(metadata_payload.get("approval_metadata"), dict) else {}
+            routing_preview = approval_metadata.get("routing_preview") if isinstance(approval_metadata.get("routing_preview"), dict) else {}
+            source = str(raw_payload.get("source") or message_payload.get("metadata", {}).get("source") or "").strip() or None
+            items.append(
+                {
+                    "created_at": row["created_at"],
+                    "event_id": row["event_id"],
+                    "dispatch_id": row["dispatch_id"],
+                    "decision_id": row["decision_id"],
+                    "mission_run_id": row["mission_run_id"],
+                    "thread_id": self._json_loads_or_empty(row["thread_ref_json"]).get("thread_id"),
+                    "conversation_key": row["conversation_key"],
+                    "source_message_id": row["source_message_id"],
+                    "source": source,
+                    "actor_id": message_payload.get("actor_id"),
+                    "text": str(message_payload.get("text") or "").strip(),
+                    "reply_kind": reply_payload.get("reply_kind"),
+                    "reply_summary": str(reply_payload.get("summary") or "").strip(),
+                    "communication_mode": metadata_payload.get("communication_mode"),
+                    "route_reason": routing_preview.get("route_reason") or metadata_payload.get("route_reason"),
+                    "model_provider": metadata_payload.get("model_provider") or approval_metadata.get("estimated_api_provider"),
+                    "model": metadata_payload.get("model") or approval_metadata.get("estimated_api_model"),
+                    "approval_type": approval_metadata.get("approval_type"),
+                    "estimated_cost_eur": approval_metadata.get("estimated_cost_eur"),
+                    "estimated_time_band": approval_metadata.get("estimated_time_band"),
+                    "estimated_api_label": approval_metadata.get("estimated_api_label"),
+                    "binding_id": row["binding_id"],
+                    "binding_kind": row["binding_kind"],
+                    "binding_status": row["binding_status"],
+                    "binding_updated_at": row["binding_updated_at"],
+                }
+            )
+        return items
+
+    def _recent_discord_operator_deliveries(self, *, limit: int) -> list[dict[str, Any]]:
+        rows = self.database.fetchall(
+            """
+            SELECT
+                d.delivery_id,
+                d.lifecycle_event_id,
+                d.channel_hint,
+                d.status,
+                d.attempts,
+                d.last_error,
+                d.created_at,
+                d.updated_at,
+                d.payload_json,
+                d.metadata_json,
+                e.kind,
+                e.title,
+                e.summary
+            FROM api_run_operator_deliveries AS d
+            JOIN api_run_lifecycle_events AS e ON e.lifecycle_event_id = d.lifecycle_event_id
+            WHERE d.surface = ?
+            ORDER BY d.created_at DESC
+            LIMIT ?
+            """,
+            ("discord", max(1, int(limit))),
+        )
+        items: list[dict[str, Any]] = []
+        for row in rows:
+            payload = self._json_loads_or_empty(row["payload_json"])
+            metadata = self._json_loads_or_empty(row["metadata_json"])
+            response_manifest = payload.get("response_manifest") if isinstance(payload.get("response_manifest"), dict) else {}
+            items.append(
+                {
+                    "delivery_id": row["delivery_id"],
+                    "lifecycle_event_id": row["lifecycle_event_id"],
+                    "channel_hint": row["channel_hint"],
+                    "status": row["status"],
+                    "attempts": int(row["attempts"] or 0),
+                    "last_error": str(row["last_error"]) if row["last_error"] else None,
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "kind": row["kind"],
+                    "title": row["title"],
+                    "summary": row["summary"],
+                    "delivery_mode": response_manifest.get("delivery_mode"),
+                    "target": payload.get("target"),
+                    "reply_to": payload.get("reply_to"),
+                    "delivery_guarantee": metadata.get("delivery_guarantee"),
+                }
+            )
+        return items
+
+    def _latest_openclaw_log_tail(self, *, max_lines: int) -> dict[str, Any] | None:
+        candidates = self._discover_openclaw_log_paths()
+        if not candidates:
+            return None
+        latest = candidates[0]
+        try:
+            lines = latest.read_text(encoding="utf-8", errors="replace").splitlines()
+        except OSError:
+            return {"path": str(latest), "exists": False, "lines": []}
+        tail = lines[-max(1, int(max_lines)) :]
+        return {"path": str(latest), "exists": True, "lines": tail}
+
+    def _discover_openclaw_log_paths(self) -> list[Path]:
+        roots: list[Path] = []
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        temp = os.environ.get("TEMP")
+        tmp = os.environ.get("TMP")
+        if local_appdata:
+            roots.append(Path(local_appdata) / "Temp" / "openclaw")
+        for raw in (temp, tmp):
+            if raw:
+                roots.append(Path(raw) / "openclaw")
+        roots.append(self.paths.openclaw_state_root / "logs")
+
+        seen: set[str] = set()
+        candidates: list[Path] = []
+        for root in roots:
+            try:
+                resolved = str(root.resolve(strict=False))
+            except OSError:
+                resolved = str(root)
+            if resolved in seen or not root.exists():
+                continue
+            seen.add(resolved)
+            for path in root.glob("openclaw-*.log"):
+                if path.is_file():
+                    candidates.append(path)
+        candidates.sort(key=lambda path: path.stat().st_mtime if path.exists() else 0, reverse=True)
+        return candidates
 
     def _live_evidence_matches_channel(
         self,

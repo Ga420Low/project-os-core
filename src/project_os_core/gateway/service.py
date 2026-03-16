@@ -6,21 +6,29 @@ import logging
 from pathlib import Path
 import re
 import sqlite3
+from types import SimpleNamespace
+import unicodedata
 from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
-from ..artifacts import write_json_artifact, write_text_artifact
+from ..artifacts import write_binary_artifact, write_json_artifact, write_text_artifact
+from ..costing import estimate_discussion_usage, estimate_text_tokens, estimate_usage_cost_eur
 from ..database import CanonicalDatabase, dump_json
 from ..deep_research import DeepResearchService
+from .reply_pdf import render_operator_reply_pdf
 from ..local_model import LocalModelClient
 from ..memory.store import MemoryStore
 from ..models import (
     ActionContract,
     ActionRiskClass,
+    ApprovalStatus,
     ArtifactPointer,
     ChannelEvent,
     CommunicationMode,
+    ConversationThreadRef,
+    CostClass,
+    MissionIntent,
     DelegationLevel,
     DiscordThreadBinding,
     DiscordChannelClass,
@@ -29,7 +37,9 @@ from ..models import (
     InteractionState,
     IntentKind,
     MemoryTier,
+    OperatorAttachment,
     OperatorAudience,
+    OperatorMessage,
     OperatorEnvelope,
     OperatorReply,
     OperatorReplyArtifact,
@@ -43,7 +53,12 @@ from ..models import (
 )
 from ..paths import PathPolicy, ProjectPaths
 from ..privacy_guard import sanitize_sensitive_text
-from ..research_scaffold import ResearchScaffoldRequest, detect_deep_research_request, scaffold_research
+from ..research_scaffold import (
+    ResearchScaffoldRequest,
+    detect_deep_research_request,
+    parse_research_mode_selection,
+    scaffold_research,
+)
 from ..router.service import MissionRouter
 from ..runtime.journal import LocalJournal
 from ..session.state import PersistentSessionState, ResolvedIntent
@@ -54,13 +69,76 @@ from .promotion import SelectiveSyncPromoter
 _LONG_CONTEXT_SEGMENT_TARGET = 1200
 _LONG_CONTEXT_SEGMENT_HARD_LIMIT = 1500
 _LONG_CONTEXT_MAX_ITEMS = 6
-_ARTIFACT_SUMMARY_RESPONSE_LENGTH = 1200
-_ARTIFACT_SUMMARY_LINE_THRESHOLD = 10
-_THREAD_CHUNK_RESPONSE_LENGTH = 700
-_THREAD_CHUNK_LINE_THRESHOLD = 6
+_ARTIFACT_SUMMARY_RESPONSE_LENGTH = 1800
+_ARTIFACT_SUMMARY_LINE_THRESHOLD = 20
+_THREAD_CHUNK_RESPONSE_LENGTH = 1800
+_THREAD_CHUNK_LINE_THRESHOLD = 20
 _DISCORD_ARTIFACT_SUMMARY_LIMIT = 900
 _RESPONSE_REVIEW_OVERVIEW_LIMIT = 320
 _RESPONSE_REVIEW_ITEM_LIMIT = 3
+_REASONING_ESCALATION_LENGTH_THRESHOLD = 140
+_REASONING_ESCALATION_WORD_THRESHOLD = 20
+_REASONING_ESCALATION_KEYWORDS = (
+    "architecture",
+    "roadmap",
+    "priorite",
+    "compromis",
+    "challenge",
+    "strategie",
+    "analyse",
+    "audit",
+    "compare",
+    "comparaison",
+    "tradeoff",
+    "persona",
+    "naming",
+    "modele",
+    "model",
+    "prompt",
+    "coherence",
+    "synthese",
+    "systeme",
+    "memoire",
+    "memory",
+    "inspiration",
+    "inspire",
+    "pattern",
+    "patterns",
+    "documentation",
+    "design",
+    "repo",
+)
+_REASONING_ESCALATION_LONGFORM_HINTS = (
+    "reponse longue",
+    "2000 caractere",
+    "2000 caracteres",
+    "3000 caractere",
+    "3000 caracteres",
+    "detaillee",
+    "detaille",
+    "approfondie",
+    "approfondi",
+    "complet",
+    "complete",
+    "fais un pdf",
+    "genere un pdf",
+    "genere la en pdf",
+    "mets le en pdf",
+    "mets la en pdf",
+    "en pdf",
+)
+_DISCUSSION_MODE_ALIASES = {
+    "simple": "simple",
+    "rapide": "simple",
+    "speed": "simple",
+    "avance": "avance",
+    "avancee": "avance",
+    "advanced": "avance",
+    "sonnet": "avance",
+    "extreme": "extreme",
+    "extremee": "extreme",
+    "opus": "extreme",
+}
 
 
 class GatewayService:
@@ -152,12 +230,6 @@ class GatewayService:
             candidate.metadata["research_scaffold_kind"] = research_scaffold.get("kind")
             candidate.metadata["research_scaffold_title"] = research_scaffold.get("title")
             candidate.metadata["research_scaffold_created"] = research_scaffold.get("created")
-        deep_research_job = self._maybe_launch_deep_research_job(normalized_event, research_scaffold)
-        if deep_research_job is not None:
-            candidate.metadata["deep_research_job"] = deep_research_job
-            candidate.metadata["deep_research_job_id"] = deep_research_job.get("job_id")
-            candidate.metadata["deep_research_job_path"] = deep_research_job.get("job_path")
-            candidate.metadata["deep_research_job_launched"] = deep_research_job.get("launched")
         action_contract = self._build_action_contract(
             event=normalized_event,
             candidate=candidate,
@@ -225,46 +297,10 @@ class GatewayService:
                 "research_scaffold_doc_name": candidate.metadata.get("research_scaffold", {}).get("doc_name")
                 if isinstance(candidate.metadata.get("research_scaffold"), dict)
                 else None,
-                "deep_research_job": candidate.metadata.get("deep_research_job"),
-                "deep_research_job_id": candidate.metadata.get("deep_research_job_id"),
-                "deep_research_job_path": candidate.metadata.get("deep_research_job_path"),
-                "deep_research_job_launched": candidate.metadata.get("deep_research_job_launched"),
                 **self._operator_override_metadata(normalized_event),
                 **(metadata or {}),
             },
         )
-        if deep_research_job is not None:
-            self._persist_promotion(candidate, promotion)
-            promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
-            dispatch = self._build_deep_research_dispatch(
-                event=normalized_event,
-                envelope=envelope,
-                promoted_memory_ids=promoted_memory_ids,
-                candidate_id=candidate.candidate_id,
-                promotion_decision_id=promotion.promotion_decision_id,
-                channel_class=channel_class,
-                job_payload=deep_research_job,
-            )
-            thread_binding = self._upsert_discord_thread_binding(
-                event=normalized_event,
-                dispatch=dispatch,
-                channel_class=channel_class,
-            )
-            if thread_binding is not None:
-                dispatch.metadata["thread_binding_id"] = thread_binding.binding_id
-                dispatch.metadata["thread_binding_kind"] = thread_binding.binding_kind
-            self._persist_dispatch(dispatch)
-            self.journal.append(
-                "gateway_deep_research_dispatch_completed",
-                "gateway",
-                {
-                    "dispatch_id": dispatch.dispatch_id,
-                    "channel_event_id": normalized_event.event_id,
-                    "deep_research_job_id": deep_research_job.get("job_id"),
-                    "promoted_memory_count": len(promoted_memory_ids),
-                },
-            )
-            return dispatch
         snapshot = self.session_state.load()
         resolved = self.session_state.resolve_intent(normalized_event.message.text, snapshot=snapshot)
         if resolved is not None:
@@ -272,6 +308,12 @@ class GatewayService:
             action_result = self._execute_resolved_intent(resolved)
             promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
             reply = self._build_session_reply(normalized_event, envelope.envelope_id, resolved, action_result)
+            self._finalize_session_resolved_reply_output(
+                event=normalized_event,
+                resolved=resolved,
+                action_result=action_result,
+                reply=reply,
+            )
             dispatch = self._build_session_dispatch(
                 event=normalized_event,
                 envelope=envelope,
@@ -343,13 +385,217 @@ class GatewayService:
                 },
             )
             return dispatch
+        if research_scaffold is not None and self.deep_research is not None:
+            if str(research_scaffold.get("error") or "").strip():
+                self._persist_promotion(candidate, promotion)
+                promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
+                dispatch = self._build_deep_research_dispatch(
+                    event=normalized_event,
+                    envelope=envelope,
+                    promoted_memory_ids=promoted_memory_ids,
+                    candidate_id=candidate.candidate_id,
+                    promotion_decision_id=promotion.promotion_decision_id,
+                    channel_class=channel_class,
+                    job_payload={
+                        "launched": False,
+                        "error": str(research_scaffold.get("error") or "Preparation du dossier impossible."),
+                    },
+                )
+                thread_binding = self._upsert_discord_thread_binding(
+                    event=normalized_event,
+                    dispatch=dispatch,
+                    channel_class=channel_class,
+                )
+                if thread_binding is not None:
+                    dispatch.metadata["thread_binding_id"] = thread_binding.binding_id
+                    dispatch.metadata["thread_binding_kind"] = thread_binding.binding_kind
+                self._persist_dispatch(dispatch)
+                self.journal.append(
+                    "gateway_deep_research_scaffold_blocked",
+                    "gateway",
+                    {
+                        "dispatch_id": dispatch.dispatch_id,
+                        "channel_event_id": normalized_event.event_id,
+                        "error": research_scaffold.get("error"),
+                    },
+                )
+                return dispatch
+            if not self._deep_research_mode_ready(research_scaffold):
+                self._persist_promotion(candidate, promotion)
+                promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
+                dispatch = self._build_deep_research_mode_selection_dispatch(
+                    event=normalized_event,
+                    envelope=envelope,
+                    scaffold=research_scaffold,
+                    channel_class=channel_class,
+                    candidate_id=candidate.candidate_id,
+                    promotion_decision_id=promotion.promotion_decision_id,
+                    promoted_memory_ids=promoted_memory_ids,
+                    human_artifacts=human_artifacts,
+                )
+                thread_binding = self._upsert_discord_thread_binding(
+                    event=normalized_event,
+                    dispatch=dispatch,
+                    channel_class=channel_class,
+                )
+                if thread_binding is not None:
+                    dispatch.metadata["thread_binding_id"] = thread_binding.binding_id
+                    dispatch.metadata["thread_binding_kind"] = thread_binding.binding_kind
+                self._persist_dispatch(dispatch)
+                self.journal.append(
+                    "gateway_deep_research_mode_selection_required",
+                    "gateway",
+                    {
+                        "dispatch_id": dispatch.dispatch_id,
+                        "channel_event_id": normalized_event.event_id,
+                        "approval_id": dispatch.metadata.get("approval_id"),
+                    },
+                )
+                return dispatch
+            self._persist_promotion(candidate, promotion)
+            promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
+            dispatch = self._build_deep_research_approval_dispatch(
+                event=normalized_event,
+                envelope=envelope,
+                scaffold=research_scaffold,
+                channel_class=channel_class,
+                candidate_id=candidate.candidate_id,
+                promotion_decision_id=promotion.promotion_decision_id,
+                promoted_memory_ids=promoted_memory_ids,
+                human_artifacts=human_artifacts,
+            )
+            thread_binding = self._upsert_discord_thread_binding(
+                event=normalized_event,
+                dispatch=dispatch,
+                channel_class=channel_class,
+            )
+            if thread_binding is not None:
+                dispatch.metadata["thread_binding_id"] = thread_binding.binding_id
+                dispatch.metadata["thread_binding_kind"] = thread_binding.binding_kind
+            self._persist_dispatch(dispatch)
+            self.journal.append(
+                "gateway_deep_research_approval_required",
+                "gateway",
+                {
+                    "dispatch_id": dispatch.dispatch_id,
+                    "channel_event_id": normalized_event.event_id,
+                    "approval_id": dispatch.metadata.get("approval_id"),
+                    "promoted_memory_count": len(promoted_memory_ids),
+                },
+            )
+            return dispatch
         intent = self.router.envelope_to_intent(envelope)
+        preview_decision, _, _ = self.router.route_intent(intent, persist=False)
+        gateway_approval = self._maybe_create_gateway_route_approval(
+            event=normalized_event,
+            envelope=envelope,
+            candidate=candidate,
+            intent=intent,
+            action_contract=action_contract,
+            decision=preview_decision,
+        )
+        if gateway_approval is not None:
+            self._persist_promotion(candidate, promotion)
+            promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
+            dispatch = self._build_gateway_approval_dispatch(
+                event=normalized_event,
+                envelope=envelope,
+                approval=gateway_approval["approval"],
+                reply=gateway_approval["reply"],
+                channel_class=channel_class,
+                candidate_id=candidate.candidate_id,
+                promotion_decision_id=promotion.promotion_decision_id,
+                promoted_memory_ids=promoted_memory_ids,
+                human_artifacts=human_artifacts,
+            )
+            thread_binding = self._upsert_discord_thread_binding(
+                event=normalized_event,
+                dispatch=dispatch,
+                channel_class=channel_class,
+            )
+            if thread_binding is not None:
+                dispatch.metadata["thread_binding_id"] = thread_binding.binding_id
+                dispatch.metadata["thread_binding_kind"] = thread_binding.binding_kind
+            self._persist_dispatch(dispatch)
+            self.journal.append(
+                "gateway_route_approval_required",
+                "gateway",
+                {
+                    "dispatch_id": dispatch.dispatch_id,
+                    "channel_event_id": normalized_event.event_id,
+                    "candidate_id": candidate.candidate_id,
+                    "approval_id": gateway_approval["approval"].approval_id,
+                    "proposal_kind": gateway_approval["metadata"]["proposal_kind"],
+                },
+            )
+            return dispatch
+        preview_inline_context: GatewayContextBundle | None = None
+        reasoning_escalation = None
+        if preview_decision.allowed and (
+            self._should_inline_chat(normalized_event, preview_decision)
+            or preview_decision.route_reason == "deterministic_fast_route"
+        ):
+            preview_inline_context = self.context_builder.build(
+                event=normalized_event,
+                envelope=envelope,
+                candidate=candidate,
+                decision=preview_decision,
+                snapshot=snapshot,
+                mission_run_id=None,
+            )
+            reasoning_escalation = self._maybe_create_reasoning_escalation_approval(
+                event=normalized_event,
+                envelope=envelope,
+                candidate=candidate,
+                intent=intent,
+                decision=preview_decision,
+                context_bundle=preview_inline_context,
+            )
+        if reasoning_escalation is not None:
+            self._persist_promotion(candidate, promotion)
+            promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
+            dispatch = self._build_gateway_approval_dispatch(
+                event=normalized_event,
+                envelope=envelope,
+                approval=reasoning_escalation["approval"],
+                reply=reasoning_escalation["reply"],
+                channel_class=channel_class,
+                candidate_id=candidate.candidate_id,
+                promotion_decision_id=promotion.promotion_decision_id,
+                promoted_memory_ids=promoted_memory_ids,
+                human_artifacts=human_artifacts,
+            )
+            thread_binding = self._upsert_discord_thread_binding(
+                event=normalized_event,
+                dispatch=dispatch,
+                channel_class=channel_class,
+            )
+            if thread_binding is not None:
+                dispatch.metadata["thread_binding_id"] = thread_binding.binding_id
+                dispatch.metadata["thread_binding_kind"] = thread_binding.binding_kind
+            self._persist_dispatch(dispatch)
+            self.journal.append(
+                "gateway_reasoning_escalation_required",
+                "gateway",
+                {
+                    "dispatch_id": dispatch.dispatch_id,
+                    "channel_event_id": normalized_event.event_id,
+                    "approval_id": reasoning_escalation["approval"].approval_id,
+                    "estimated_cost_eur": reasoning_escalation["metadata"]["estimated_cost_eur"],
+                },
+            )
+            return dispatch
+
         decision, trace, mission_run = self.router.route_intent(intent, persist=True)
         promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
         inline_context: GatewayContextBundle | None = None
 
         if decision.allowed and self._should_inline_chat(normalized_event, decision):
-            message_for_model = self._message_for_route(candidate, decision)
+            message_for_model = self._message_for_route(
+                candidate,
+                decision,
+                discussion_mode=str(envelope.metadata.get("discussion_mode") or ""),
+            )
             inline_context = self.context_builder.build(
                 event=normalized_event,
                 envelope=envelope,
@@ -638,6 +884,12 @@ class GatewayService:
             return self._approve_contract(resolved.target_id)
         if resolved.action == "reject_contract":
             return self._reject_contract(resolved.target_id)
+        if resolved.action == "approve_runtime_approval":
+            return self._approve_runtime_approval(resolved.target_id, resolved.metadata)
+        if resolved.action == "reject_runtime_approval":
+            return self._reject_runtime_approval(resolved.target_id)
+        if resolved.action == "update_runtime_approval_selection":
+            return self._update_runtime_approval_selection(resolved.target_id, resolved.metadata)
         if resolved.action == "answer_clarification":
             return self._answer_clarification(resolved.target_id, resolved.metadata.get("answer"))
         if resolved.action == "reject_clarification":
@@ -716,6 +968,405 @@ class GatewayService:
             "contract_id": contract.contract_id,
             "branch_name": contract.branch_name,
         }
+
+    def _approve_runtime_approval(self, approval_id: str | None, selection: dict[str, Any] | None = None) -> dict[str, object]:
+        context = self._load_runtime_approval_context(approval_id)
+        context_metadata = dict(context["metadata"])
+        selection = dict(selection or {})
+        if context_metadata.get("approval_type") == "reasoning_escalation" and selection.get("selected_mode"):
+            score = int(context_metadata.get("assessment_score") or 3)
+            objective = str(context_metadata.get("objective") or "").strip()
+            explicit_longform = bool(context_metadata.get("explicit_longform"))
+            recent_turn_count = int(context_metadata.get("recent_turn_count") or 0)
+            input_tokens_override = int(context_metadata.get("estimated_input_tokens") or 0)
+            selected_mode = self._resolve_discussion_mode(
+                str(selection.get("selected_mode") or context_metadata.get("selected_mode") or context_metadata.get("recommended_mode") or "extreme"),
+                fallback="extreme",
+            )
+            selected_spec = self._discussion_mode_spec(
+                selected_mode,
+                score=score,
+                message=objective,
+                explicit_longform=explicit_longform,
+                recent_turn_count=recent_turn_count,
+                input_tokens_override=input_tokens_override,
+            )
+            context_metadata = {
+                **context_metadata,
+                "selected_mode": selected_spec["mode"],
+                "requested_provider": selected_spec["requested_provider"],
+                "requested_model_family": selected_spec["requested_model_family"],
+                "requested_model": selected_spec["requested_model"],
+                "requested_model_mode": selected_spec["requested_model_mode"],
+                "estimated_cost_eur": selected_spec["estimated_cost_eur"],
+                "estimated_time_band": selected_spec["estimated_time_band"],
+                "estimated_api_provider": selected_spec["requested_provider"],
+                "estimated_api_model": selected_spec["requested_model"],
+                "estimated_input_tokens": int(selected_spec.get("estimated_input_tokens") or input_tokens_override),
+            }
+            self._update_runtime_approval_metadata(str(context["approval_id"]), context_metadata)
+            context = {**context, "metadata": context_metadata}
+        resolution_metadata = {
+            **context_metadata,
+            "resolved_at": datetime.now(timezone.utc).isoformat(),
+            "resolution": "approved",
+            "resolution_source": "discord",
+        }
+        self.router.runtime.resolve_approval(context["approval_id"], ApprovalStatus.APPROVED, metadata=resolution_metadata)
+        if context["metadata"].get("approval_type") == "gateway_route_proposal":
+            intent = self._rebuild_mission_intent(context["metadata"].get("intent_payload"))
+            intent.metadata["founder_approved"] = True
+            intent.metadata["approval_id"] = context["approval_id"]
+            intent.metadata["approval_resolution_source"] = "discord"
+            decision, trace, mission_run = self.router.route_intent(intent, persist=True)
+            self.journal.append(
+                "gateway_runtime_approval_applied",
+                "gateway",
+                {
+                    "approval_id": context["approval_id"],
+                    "decision_id": decision.decision_id,
+                    "mission_run_id": mission_run.mission_run_id if mission_run else None,
+                    "allowed": decision.allowed,
+                },
+            )
+            return {
+                "action": "approve_runtime_approval",
+                "status": "approved_and_launched" if decision.allowed else "approved_but_blocked",
+                "approval_id": context["approval_id"],
+                "objective": intent.objective,
+                "estimated_cost_eur": decision.budget_state.mission_estimate_eur,
+                "api_label": self._describe_runtime_api(
+                    provider=decision.model_route.provider,
+                    model=decision.model_route.model,
+                ),
+                "api_provider": decision.model_route.provider,
+                "api_model": decision.model_route.model,
+                "decision_id": decision.decision_id,
+                "run_id": mission_run.mission_run_id if mission_run else None,
+                "run_launched": decision.allowed,
+                "route_reason": decision.route_reason,
+                "blocked_reasons": list(decision.blocked_reasons or []),
+            }
+        if context["metadata"].get("approval_type") == "deep_research_launch":
+            scaffold = context["metadata"].get("research_scaffold")
+            event_payload = context["metadata"].get("event_payload")
+            event = self._rebuild_deep_research_event(event_payload)
+            try:
+                job_payload = self._maybe_launch_deep_research_job(event, scaffold if isinstance(scaffold, dict) else None) or {}
+            except Exception as exc:
+                job_payload = {"launched": False, "error": str(exc), "job_id": None, "job_path": None}
+            launched = bool(job_payload.get("launched"))
+            title = str(
+                context["metadata"].get("research_scaffold_title")
+                or (scaffold.get("title") if isinstance(scaffold, dict) else "")
+                or "Deep Research"
+            ).strip()
+            objective = f"Recherche approfondie: {title}"
+            self.journal.append(
+                "gateway_runtime_approval_applied",
+                "gateway",
+                {
+                    "approval_id": context["approval_id"],
+                    "approval_type": "deep_research_launch",
+                    "deep_research_job_id": job_payload.get("job_id"),
+                    "deep_research_job_path": job_payload.get("job_path"),
+                    "launched": launched,
+                    "error": job_payload.get("error"),
+                },
+            )
+            return {
+                "action": "approve_runtime_approval",
+                "status": "approved_and_launched" if launched else "approved_but_blocked",
+                "approval_id": context["approval_id"],
+                "approval_type": "deep_research_launch",
+                "objective": objective,
+                "estimated_cost_eur": float(context["metadata"].get("estimated_cost_eur") or 0.0),
+                "estimated_time_band": context["metadata"].get("estimated_time_band"),
+                "api_label": self._describe_runtime_api(
+                    provider=str(context["metadata"].get("estimated_api_provider") or "openai"),
+                    model=str(context["metadata"].get("estimated_api_model") or "") or None,
+                ),
+                "api_provider": str(context["metadata"].get("estimated_api_provider") or "openai"),
+                "api_model": str(context["metadata"].get("estimated_api_model") or "") or None,
+                "research_profile": context["metadata"].get("research_profile"),
+                "research_intensity": context["metadata"].get("research_intensity"),
+                "run_launched": launched,
+                "deep_research_job_id": job_payload.get("job_id"),
+                "deep_research_job_path": job_payload.get("job_path"),
+                "deep_research_job_launched": launched,
+                "dossier_relative_path": context["metadata"].get("research_scaffold_relative_path"),
+                "doc_name": context["metadata"].get("research_scaffold_doc_name"),
+                "error": job_payload.get("error"),
+            }
+        if context["metadata"].get("approval_type") == "reasoning_escalation":
+            payload = self._execute_reasoning_escalation(context["metadata"], approval_id=context["approval_id"])
+            self.journal.append(
+                "gateway_runtime_approval_applied",
+                "gateway",
+                {
+                    "approval_id": context["approval_id"],
+                    "approval_type": "reasoning_escalation",
+                    "decision_id": payload.get("decision_id"),
+                    "mission_run_id": payload.get("run_id"),
+                    "reply_kind": payload.get("reply_kind"),
+                },
+            )
+            return payload
+        return {
+            "action": "approve_runtime_approval",
+            "status": "approved",
+            "approval_id": context["approval_id"],
+        }
+
+    def _reject_runtime_approval(self, approval_id: str | None) -> dict[str, object]:
+        context = self._load_runtime_approval_context(approval_id)
+        resolution_metadata = {
+            **context["metadata"],
+            "resolved_at": datetime.now(timezone.utc).isoformat(),
+            "resolution": "rejected",
+            "resolution_source": "discord",
+        }
+        self.router.runtime.resolve_approval(context["approval_id"], ApprovalStatus.REJECTED, metadata=resolution_metadata)
+        self.journal.append(
+            "gateway_runtime_approval_rejected",
+            "gateway",
+            {"approval_id": context["approval_id"]},
+        )
+        return {
+            "action": "reject_runtime_approval",
+            "status": "rejected",
+            "approval_id": context["approval_id"],
+            "approval_type": context["metadata"].get("approval_type"),
+            "objective": (
+                context["metadata"].get("intent_payload", {}).get("objective")
+                or (
+                    f"Recherche approfondie: {context['metadata'].get('research_scaffold_title')}"
+                    if context["metadata"].get("approval_type") == "deep_research_launch"
+                    and context["metadata"].get("research_scaffold_title")
+                    else None
+                )
+            ),
+            "summary": (
+                (
+                    f"Ok, je ne lance pas le {self._discussion_mode_spec(str(context['metadata'].get('selected_mode') or context['metadata'].get('recommended_mode') or 'avance'), score=int(context['metadata'].get('assessment_score') or 3), message=str(context['metadata'].get('objective') or ''), explicit_longform=bool(context['metadata'].get('explicit_longform')), recent_turn_count=int(context['metadata'].get('recent_turn_count') or 0), input_tokens_override=int(context['metadata'].get('estimated_input_tokens') or 0))['label'].lower()}. On reste sur le fil normal."
+                )
+                if context["metadata"].get("approval_type") == "reasoning_escalation"
+                else "Choix du mode deep research annule. Rien n'est lance."
+                if context["metadata"].get("approval_type") == "deep_research_mode_selection"
+                else None
+            ),
+        }
+
+    def _update_runtime_approval_selection(self, approval_id: str | None, selection: dict[str, Any] | None) -> dict[str, object]:
+        context = self._load_runtime_approval_context(approval_id)
+        metadata = dict(context["metadata"])
+        approval_type = str(metadata.get("approval_type") or "").strip().lower()
+        if approval_type == "reasoning_escalation":
+            selection = dict(selection or {})
+            score = int(metadata.get("assessment_score") or 3)
+            recommended_mode = self._resolve_discussion_mode(
+                str(metadata.get("recommended_mode") or metadata.get("selected_mode") or "extreme"),
+                fallback="extreme",
+            )
+            selected_mode = self._resolve_discussion_mode(
+                str(selection.get("selected_mode") or metadata.get("selected_mode") or recommended_mode),
+                fallback=recommended_mode,
+            )
+            selected_spec = self._discussion_mode_spec(
+                selected_mode,
+                score=score,
+                message=str(metadata.get("objective") or ""),
+                explicit_longform=bool(metadata.get("explicit_longform")),
+                recent_turn_count=int(metadata.get("recent_turn_count") or 0),
+                input_tokens_override=int(metadata.get("estimated_input_tokens") or 0),
+            )
+            updated_metadata = {
+                **metadata,
+                "selected_mode": selected_spec["mode"],
+                "requested_provider": selected_spec["requested_provider"],
+                "requested_model_family": selected_spec["requested_model_family"],
+                "requested_model": selected_spec["requested_model"],
+                "requested_model_mode": selected_spec["requested_model_mode"],
+                "estimated_cost_eur": selected_spec["estimated_cost_eur"],
+                "estimated_time_band": selected_spec["estimated_time_band"],
+                "estimated_api_provider": selected_spec["requested_provider"],
+                "estimated_api_model": selected_spec["requested_model"],
+                "estimated_input_tokens": int(selected_spec.get("estimated_input_tokens") or metadata.get("estimated_input_tokens") or 0),
+            }
+            self._update_runtime_approval_metadata(str(context["approval_id"]), updated_metadata)
+            event = self._rebuild_deep_research_event(metadata.get("event_payload"))
+            reply = self._build_reasoning_escalation_reply(
+                event=event,
+                envelope_id=str(context["approval_id"]),
+                approval_id=str(context["approval_id"]),
+                estimated_cost_eur=float(selected_spec["estimated_cost_eur"]),
+                estimated_time_band=str(selected_spec["estimated_time_band"]),
+                target_provider=str(selected_spec["requested_provider"]),
+                target_model=str(selected_spec["requested_model"]),
+                reasons=[str(item) for item in metadata.get("rationale") or []],
+                selected_mode=selected_spec["mode"],
+                recommended_mode=recommended_mode,
+                score=score,
+                objective=str(metadata.get("objective") or ""),
+                explicit_longform=bool(metadata.get("explicit_longform")),
+                recent_turn_count=int(metadata.get("recent_turn_count") or 0),
+                input_tokens_override=int(selected_spec.get("estimated_input_tokens") or metadata.get("estimated_input_tokens") or 0),
+            )
+            self.journal.append(
+                "gateway_runtime_approval_selection_updated",
+                "gateway",
+                {
+                    "approval_id": context["approval_id"],
+                    "status": "awaiting_go",
+                    "discussion_mode": selected_spec["mode"],
+                    "requested_model": selected_spec["requested_model"],
+                },
+            )
+            return {
+                "action": "update_runtime_approval_selection",
+                "status": "awaiting_go",
+                "approval_id": context["approval_id"],
+                "approval_type": "reasoning_escalation",
+                "selected_mode": selected_spec["mode"],
+                "estimated_cost_eur": float(selected_spec["estimated_cost_eur"]),
+                "estimated_time_band": str(selected_spec["estimated_time_band"]),
+                "summary": reply.summary,
+                "reply_kind": "approval_required",
+                "communication_mode": CommunicationMode.GUARDIAN.value,
+                "reply_metadata": reply.metadata,
+            }
+        if approval_type not in {"deep_research_mode_selection", "deep_research_launch"}:
+            return {
+                "action": "update_runtime_approval_selection",
+                "status": "unsupported",
+                "approval_id": context["approval_id"],
+            }
+        scaffold = dict(metadata.get("research_scaffold") or {})
+        selection = dict(selection or {})
+        selected_profile = str(
+            selection.get("selected_profile")
+            or metadata.get("selected_profile")
+            or metadata.get("research_profile")
+            or scaffold.get("explicit_profile")
+            or ""
+        ).strip().lower()
+        selected_intensity = str(
+            selection.get("selected_intensity")
+            or metadata.get("selected_intensity")
+            or metadata.get("research_intensity")
+            or scaffold.get("explicit_intensity")
+            or ""
+        ).strip().lower()
+        recommended_profile = str(
+            metadata.get("recommended_profile")
+            or scaffold.get("recommended_profile")
+            or scaffold.get("research_profile")
+            or "domain_audit"
+        ).strip().lower()
+        recommended_intensity = str(
+            metadata.get("recommended_intensity")
+            or scaffold.get("recommended_intensity")
+            or scaffold.get("research_intensity")
+            or "simple"
+        ).strip().lower()
+        updated_scaffold = {
+            **scaffold,
+            "research_profile": selected_profile or recommended_profile,
+            "research_intensity": selected_intensity or recommended_intensity,
+            "recommended_profile": recommended_profile,
+            "recommended_intensity": recommended_intensity,
+            "explicit_profile": selected_profile or None,
+            "explicit_intensity": selected_intensity or None,
+        }
+        event = self._rebuild_deep_research_event(metadata.get("event_payload"))
+        if selected_profile and selected_intensity:
+            budget = self._estimated_deep_research_budget(updated_scaffold)
+            updated_metadata = {
+                **metadata,
+                "approval_type": "deep_research_launch",
+                "action_name": "deep_research_launch",
+                "research_scaffold": to_jsonable(updated_scaffold),
+                "research_scaffold_path": updated_scaffold.get("path"),
+                "research_scaffold_kind": updated_scaffold.get("kind"),
+                "research_scaffold_title": updated_scaffold.get("title"),
+                "research_scaffold_relative_path": updated_scaffold.get("relative_path"),
+                "research_scaffold_doc_name": updated_scaffold.get("doc_name"),
+                "research_profile": selected_profile,
+                "research_intensity": selected_intensity,
+                "recommended_profile": recommended_profile,
+                "recommended_intensity": recommended_intensity,
+                "selected_profile": selected_profile,
+                "selected_intensity": selected_intensity,
+                "estimated_cost_eur": float(budget.get("estimated_cost_eur") or 0.0),
+                "estimated_time_band": str(budget.get("estimated_time_band") or "moyen"),
+                "estimated_api_provider": str(budget.get("estimated_api_provider") or "openai"),
+                "estimated_api_model": str(budget.get("estimated_api_model") or "") or None,
+            }
+            self._update_runtime_approval_metadata(str(context["approval_id"]), updated_metadata)
+            reply = self._build_deep_research_approval_reply(
+                event=event,
+                envelope_id=str(context["approval_id"]),
+                approval_id=str(context["approval_id"]),
+                scaffold=updated_scaffold,
+                estimated_cost_eur=float(updated_metadata["estimated_cost_eur"]),
+                estimated_time_band=str(updated_metadata["estimated_time_band"]),
+                target_provider=str(updated_metadata["estimated_api_provider"] or "openai"),
+                target_model=str(updated_metadata["estimated_api_model"] or "") or None,
+            )
+            status = "awaiting_go"
+            reply_kind = "approval_required"
+        else:
+            updated_metadata = {
+                **metadata,
+                "approval_type": "deep_research_mode_selection",
+                "action_name": "deep_research_mode_selection",
+                "research_scaffold": to_jsonable(updated_scaffold),
+                "selected_profile": selected_profile or None,
+                "selected_intensity": selected_intensity or None,
+                "recommended_profile": recommended_profile,
+                "recommended_intensity": recommended_intensity,
+            }
+            self._update_runtime_approval_metadata(str(context["approval_id"]), updated_metadata)
+            reply = self._build_deep_research_mode_selection_reply(
+                event=event,
+                envelope_id=str(context["approval_id"]),
+                approval_id=str(context["approval_id"]),
+                scaffold=updated_scaffold,
+            )
+            status = "awaiting_mode"
+            reply_kind = "clarification_required"
+        self.journal.append(
+            "gateway_runtime_approval_selection_updated",
+            "gateway",
+            {
+                "approval_id": context["approval_id"],
+                "status": status,
+                "research_profile": updated_scaffold.get("research_profile"),
+                "research_intensity": updated_scaffold.get("research_intensity"),
+            },
+        )
+        return {
+            "action": "update_runtime_approval_selection",
+            "status": status,
+            "approval_id": context["approval_id"],
+            "approval_type": updated_metadata.get("approval_type"),
+            "research_profile": updated_scaffold.get("research_profile"),
+            "research_intensity": updated_scaffold.get("research_intensity"),
+            "summary": reply.summary,
+            "reply_kind": reply_kind,
+            "communication_mode": CommunicationMode.GUARDIAN.value,
+            "reply_metadata": reply.metadata,
+        }
+
+    def _update_runtime_approval_metadata(self, approval_id: str, metadata: dict[str, Any]) -> None:
+        self.database.execute(
+            """
+            UPDATE approval_records
+            SET payload_json = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE approval_id = ?
+            """,
+            (dump_json(metadata), approval_id),
+        )
 
     def _answer_clarification(self, report_id: str | None, answer: str | None) -> dict[str, object]:
         context = self._load_clarification_context(report_id)
@@ -870,6 +1521,205 @@ class GatewayService:
             "metadata": json.loads(row["metadata_json"]) if row["metadata_json"] else {},
         }
 
+    def _load_runtime_approval_context(self, approval_id: str | None) -> dict[str, object]:
+        if not approval_id:
+            raise KeyError("approval id is required")
+        row = self.database.fetchone(
+            """
+            SELECT approval_id, mission_run_id, requested_by, risk_tier, reason, status, payload_json, created_at, updated_at
+            FROM approval_records
+            WHERE approval_id = ?
+            """,
+            (approval_id,),
+        )
+        if row is None:
+            raise KeyError(f"Unknown approval: {approval_id}")
+        return {
+            "approval_id": str(row["approval_id"]),
+            "mission_run_id": str(row["mission_run_id"]) if row["mission_run_id"] else None,
+            "requested_by": str(row["requested_by"]),
+            "risk_tier": str(row["risk_tier"]),
+            "reason": str(row["reason"]),
+            "status": str(row["status"]),
+            "metadata": json.loads(row["payload_json"]) if row["payload_json"] else {},
+            "created_at": str(row["created_at"]),
+            "updated_at": str(row["updated_at"]),
+        }
+
+    def _rebuild_mission_intent(self, payload: object) -> MissionIntent:
+        raw = payload if isinstance(payload, dict) else {}
+        requested_risk_raw = str(raw.get("requested_risk_class") or "").strip().lower()
+        try:
+            requested_risk = ActionRiskClass(requested_risk_raw) if requested_risk_raw else None
+        except Exception:
+            requested_risk = None
+        communication_mode_raw = str(raw.get("communication_mode") or "").strip().lower()
+        try:
+            communication_mode = CommunicationMode(communication_mode_raw) if communication_mode_raw else CommunicationMode.DISCUSSION
+        except Exception:
+            communication_mode = CommunicationMode.DISCUSSION
+        audience_raw = str(raw.get("audience") or "").strip().lower()
+        try:
+            audience = OperatorAudience(audience_raw) if audience_raw else OperatorAudience.NON_DEVELOPER
+        except Exception:
+            audience = OperatorAudience.NON_DEVELOPER
+        metadata = raw.get("metadata")
+        return MissionIntent(
+            intent_id=new_id("intent"),
+            source="gateway_runtime_approval",
+            actor_id=str(raw.get("actor_id") or "founder"),
+            channel=str(raw.get("channel") or "discord"),
+            objective=str(raw.get("objective") or ""),
+            target_profile=str(raw.get("target_profile")) if raw.get("target_profile") else None,
+            requested_worker=str(raw.get("requested_worker")) if raw.get("requested_worker") else None,
+            requested_risk_class=requested_risk,
+            communication_mode=communication_mode,
+            operator_language=str(raw.get("operator_language") or "fr"),
+            audience=audience,
+            metadata=dict(metadata) if isinstance(metadata, dict) else {},
+        )
+
+    def _execute_reasoning_escalation(self, metadata: dict[str, Any], *, approval_id: str) -> dict[str, object]:
+        event = self._rebuild_deep_research_event(metadata.get("event_payload"))
+        selected_mode = self._resolve_discussion_mode(
+            str(metadata.get("selected_mode") or metadata.get("recommended_mode") or "extreme"),
+            fallback="extreme",
+        )
+        message_metadata = {
+            **event.message.metadata,
+            "requested_provider": str(metadata.get("requested_provider") or "anthropic"),
+            "requested_model_family": str(metadata.get("requested_model_family") or "claude"),
+            "requested_model": str(metadata.get("requested_model") or self.router.execution_policy.discord_opus_model),
+            "requested_model_mode": str(metadata.get("requested_model_mode") or "opus"),
+            "requested_route_mode": "approval_escalation",
+            "approval_id": approval_id,
+            "approval_resolution_source": "discord",
+            "founder_approved": True,
+            "discussion_mode": selected_mode,
+        }
+        escalated_event = replace(event, message=replace(event.message, metadata=message_metadata))
+        candidate = self.selective_sync.build_candidate(escalated_event)
+        channel_class = self._channel_class_for(
+            escalated_event.message.channel,
+            escalated_event.message.thread_ref.parent_thread_id,
+        )
+        communication_mode = self._communication_mode_for(
+            candidate.classification,
+            channel_class,
+            intent_kind=str(candidate.metadata.get("intent_kind") or ""),
+            delegation_level=str(candidate.metadata.get("delegation_level") or ""),
+        )
+        envelope = OperatorEnvelope(
+            envelope_id=new_id("envelope"),
+            actor_id=escalated_event.message.actor_id,
+            channel=escalated_event.message.channel,
+            objective=escalated_event.message.text.strip() or candidate.summary,
+            target_profile=str(metadata.get("target_profile") or "core"),
+            communication_mode=communication_mode,
+            operator_language="fr",
+            audience=OperatorAudience.NON_DEVELOPER,
+            metadata={
+                "channel_event_id": escalated_event.event_id,
+                "message_kind": candidate.classification.value,
+                "intent_kind": candidate.metadata.get("intent_kind"),
+                "delegation_level": candidate.metadata.get("delegation_level"),
+                "interaction_state": candidate.metadata.get("interaction_state"),
+                "suggested_next_state": candidate.metadata.get("suggested_next_state"),
+                "intent_confidence": candidate.metadata.get("intent_confidence"),
+                "intent_signals": candidate.metadata.get("intent_signals", []),
+                "state_transition": candidate.metadata.get("state_transition"),
+                "directive_detection": candidate.metadata.get("directive_detection"),
+                "channel_class": channel_class.value,
+                "sensitivity_class": candidate.metadata.get("sensitivity_class", SensitivityClass.S1.value),
+                "input_profile": candidate.metadata.get("input_profile"),
+                "requested_provider": message_metadata.get("requested_provider"),
+                "requested_model_family": message_metadata.get("requested_model_family"),
+                "requested_model": message_metadata.get("requested_model"),
+                "requested_model_mode": message_metadata.get("requested_model_mode"),
+                "requested_route_mode": message_metadata.get("requested_route_mode"),
+                "discussion_mode": selected_mode,
+                "approval_id": approval_id,
+            },
+        )
+        intent = self.router.envelope_to_intent(envelope)
+        decision, _, mission_run = self.router.route_intent(intent, persist=True)
+        snapshot = self.session_state.load()
+        if decision.allowed and self._should_inline_chat(escalated_event, decision):
+            context_bundle = self.context_builder.build(
+                event=escalated_event,
+                envelope=envelope,
+                candidate=candidate,
+                decision=decision,
+                snapshot=snapshot,
+                mission_run_id=mission_run.mission_run_id if mission_run else None,
+            )
+            inline_response = self._call_inline_chat(
+                message=self._message_for_route(candidate, decision, discussion_mode=selected_mode),
+                model=decision.model_route.model,
+                provider=decision.model_route.provider,
+                reasoning_effort=decision.model_route.reasoning_effort,
+                sensitivity=self._candidate_sensitivity(candidate),
+                route_reason=decision.route_reason,
+                context_bundle=context_bundle,
+            )
+            if inline_response:
+                return {
+                    "action": "approve_runtime_approval",
+                    "status": "approved_and_answered",
+                    "approval_id": approval_id,
+                    "approval_type": "reasoning_escalation",
+                    "objective": escalated_event.message.text,
+                    "estimated_cost_eur": float(metadata.get("estimated_cost_eur") or 0.0),
+                    "decision_id": decision.decision_id,
+                    "run_id": mission_run.mission_run_id if mission_run else None,
+                    "run_launched": False,
+                    "reply_kind": "chat_response",
+                    "communication_mode": decision.communication_mode.value,
+                    "summary": self._decorate_inline_reply_summary(inline_response, decision),
+                    "route_reason": decision.route_reason,
+                    "api_label": self._describe_runtime_api(
+                        provider=decision.model_route.provider,
+                        model=decision.model_route.model,
+                    ),
+                    "api_provider": decision.model_route.provider,
+                    "api_model": decision.model_route.model,
+                    "selected_mode": selected_mode,
+                    "input_profile": candidate.metadata.get("input_profile"),
+                    "force_artifact_summary": bool(metadata.get("explicit_longform")),
+                }
+            return {
+                "action": "approve_runtime_approval",
+                "status": "approved_but_blocked",
+                "approval_id": approval_id,
+                "approval_type": "reasoning_escalation",
+                "objective": escalated_event.message.text,
+                "estimated_cost_eur": float(metadata.get("estimated_cost_eur") or 0.0),
+                "decision_id": decision.decision_id,
+                "run_id": mission_run.mission_run_id if mission_run else None,
+                "run_launched": False,
+                "reply_kind": "blocked",
+                "communication_mode": CommunicationMode.GUARDIAN.value,
+                "summary": "Bascule Opus approuvee, mais la reponse n'a pas pu etre calculee.",
+                "route_reason": decision.route_reason,
+            }
+        reason = self._translate_block_reason(decision.blocked_reasons or [decision.route_reason])
+        return {
+            "action": "approve_runtime_approval",
+            "status": "approved_but_blocked",
+            "approval_id": approval_id,
+            "approval_type": "reasoning_escalation",
+            "objective": escalated_event.message.text,
+            "estimated_cost_eur": float(metadata.get("estimated_cost_eur") or 0.0),
+            "decision_id": decision.decision_id,
+            "run_id": mission_run.mission_run_id if mission_run else None,
+            "run_launched": False,
+            "reply_kind": "blocked",
+            "communication_mode": CommunicationMode.GUARDIAN.value,
+            "summary": f"Bascule Opus approuvee, mais la route reste bloquee: {reason}",
+            "route_reason": decision.route_reason,
+            "blocked_reasons": list(decision.blocked_reasons or []),
+        }
+
     def _update_clarification_resolution(
         self,
         *,
@@ -900,18 +1750,29 @@ class GatewayService:
         resolved: ResolvedIntent,
         action_result: dict,
     ) -> OperatorReply:
-        reply_kind = "ack" if str(action_result.get("status")) not in {"missing_target", "unhandled"} else "blocked"
-        communication_mode = (
-            CommunicationMode.GUARDIAN
-            if resolved.action in {
-                "approve_contract",
-                "reject_contract",
-                "answer_clarification",
-                "reject_clarification",
-                "guardian_override",
-            }
-            else CommunicationMode.DISCUSSION
+        reply_kind = str(
+            action_result.get("reply_kind")
+            or ("ack" if str(action_result.get("status")) not in {"missing_target", "unhandled"} else "blocked")
         )
+        communication_mode_raw = str(action_result.get("communication_mode") or "").strip().lower()
+        try:
+            communication_mode = CommunicationMode(communication_mode_raw) if communication_mode_raw else None
+        except Exception:
+            communication_mode = None
+        if communication_mode is None:
+            communication_mode = (
+                CommunicationMode.GUARDIAN
+                if resolved.action in {
+                    "approve_contract",
+                    "reject_contract",
+                    "approve_runtime_approval",
+                    "reject_runtime_approval",
+                    "answer_clarification",
+                    "reject_clarification",
+                    "guardian_override",
+                }
+                else CommunicationMode.DISCUSSION
+            )
         return OperatorReply(
             reply_id=new_id("reply"),
             channel=event.message.channel,
@@ -924,7 +1785,15 @@ class GatewayService:
             communication_mode=communication_mode,
             operator_language="fr",
             audience=OperatorAudience.NON_DEVELOPER,
-            metadata={"surface": event.surface, "resolved_action": resolved.action},
+            metadata={
+                "surface": event.surface,
+                "resolved_action": resolved.action,
+                **(
+                    dict(action_result.get("reply_metadata"))
+                    if isinstance(action_result.get("reply_metadata"), dict)
+                    else {}
+                ),
+            },
         )
 
     def _build_session_dispatch(
@@ -973,8 +1842,49 @@ class GatewayService:
                 "resolved_action": resolved.action,
                 "resolved_target_id": resolved.target_id,
                 "resolved_confidence": resolved.confidence,
+                "response_delivery_mode": reply.response_manifest.delivery_mode if reply.response_manifest else None,
+                "response_manifest_id": reply.response_manifest.metadata.get("manifest_artifact_id")
+                if reply.response_manifest
+                else None,
+                "response_review_artifact_id": reply.response_manifest.review_artifact_id if reply.response_manifest else None,
                 "action_result": to_jsonable(action_result),
             },
+        )
+
+    def _finalize_session_resolved_reply_output(
+        self,
+        *,
+        event: ChannelEvent,
+        resolved: ResolvedIntent,
+        action_result: dict[str, Any],
+        reply: OperatorReply,
+    ) -> None:
+        if resolved.action != "approve_runtime_approval":
+            return
+        if str(action_result.get("approval_type") or "").strip().lower() != "reasoning_escalation":
+            return
+        full_response = str(action_result.get("summary") or "").strip()
+        if not full_response:
+            return
+        candidate = self.selective_sync.build_candidate(event)
+        input_profile = str(action_result.get("input_profile") or "").strip().lower()
+        if input_profile:
+            candidate.metadata["input_profile"] = input_profile
+        if bool(action_result.get("force_artifact_summary")):
+            candidate.metadata["force_artifact_summary"] = True
+        decision_like = SimpleNamespace(
+            model_route=SimpleNamespace(
+                provider=str(action_result.get("api_provider") or "unknown").strip() or "unknown",
+                model=str(action_result.get("api_model") or "").strip() or None,
+            )
+        )
+        self._finalize_reply_artifact_output(
+            event=event,
+            candidate=candidate,
+            decision=decision_like,
+            reply=reply,
+            full_response=full_response,
+            context_bundle=None,
         )
 
     def _build_action_contract_clarification_reply(
@@ -1048,8 +1958,931 @@ class GatewayService:
             },
         )
 
+    def _maybe_create_gateway_route_approval(
+        self,
+        *,
+        event: ChannelEvent,
+        envelope: OperatorEnvelope,
+        candidate,
+        intent: MissionIntent,
+        action_contract: ActionContract,
+        decision: RoutingDecision,
+    ) -> dict[str, Any] | None:
+        proposal_kind = self._gateway_route_approval_kind(
+            event=event,
+            action_contract=action_contract,
+            decision=decision,
+        )
+        if proposal_kind is None:
+            return None
+        approval_reason = self._gateway_route_approval_reason(
+            action_contract=action_contract,
+            decision=decision,
+            proposal_kind=proposal_kind,
+        )
+        time_band = self._estimated_time_band(decision.budget_state.mission_cost_class)
+        approval_metadata = {
+            "approval_type": "gateway_route_proposal",
+            "proposal_kind": proposal_kind,
+            "estimated_cost_eur": decision.budget_state.mission_estimate_eur,
+            "estimated_time_band": time_band,
+            "routing_preview": to_jsonable(decision),
+            "action_contract": to_jsonable(action_contract),
+            "intent_payload": to_jsonable(intent),
+            "channel_event_id": event.event_id,
+            "thread_ref": to_jsonable(event.message.thread_ref),
+            "message_text": event.message.text,
+            "input_profile": candidate.metadata.get("input_profile"),
+        }
+        approval = self.router.runtime.create_approval(
+            requested_by="gateway_discord",
+            risk_tier=decision.risk_class.value,
+            reason=approval_reason,
+            metadata=approval_metadata,
+        )
+        reply = self._build_gateway_approval_reply(
+            event=event,
+            envelope_id=envelope.envelope_id,
+            approval_id=approval.approval_id,
+            action_contract=action_contract,
+            decision=decision,
+            proposal_kind=proposal_kind,
+            time_band=time_band,
+        )
+        return {"approval": approval, "reply": reply, "metadata": approval_metadata}
+
+    @staticmethod
+    def _gateway_route_approval_kind(
+        *,
+        event: ChannelEvent,
+        action_contract: ActionContract,
+        decision: RoutingDecision,
+    ) -> str | None:
+        if event.surface != "discord":
+            return None
+        if action_contract.intent_kind not in {IntentKind.DIRECTIVE_IMPLICIT, IntentKind.DIRECTIVE_EXPLICIT}:
+            return None
+        if decision.approval_gate.required and not decision.approval_gate.approved:
+            return "approval_gate"
+        if (
+            decision.allowed
+            and action_contract.execution_ready
+            and decision.communication_mode is CommunicationMode.BUILDER
+            and decision.model_route.route_class in {CostClass.HARD, CostClass.EXCEPTIONAL}
+        ):
+            return "cost_confirmation"
+        return None
+
+    @staticmethod
+    def _gateway_route_approval_reason(
+        *,
+        action_contract: ActionContract,
+        decision: RoutingDecision,
+        proposal_kind: str,
+    ) -> str:
+        if proposal_kind == "cost_confirmation":
+            return "confirmation_cout_operation"
+        if action_contract.needs_approval:
+            return action_contract.approval_reason or "validation_fondateur_requise"
+        if decision.approval_gate.reason:
+            return decision.approval_gate.reason
+        return "validation_fondateur_requise"
+
+    def _build_gateway_approval_reply(
+        self,
+        *,
+        event: ChannelEvent,
+        envelope_id: str,
+        approval_id: str,
+        action_contract: ActionContract,
+        decision: RoutingDecision,
+        proposal_kind: str,
+        time_band: str,
+    ) -> OperatorReply:
+        objective = action_contract.objective.strip() or "cette operation"
+        expected_output = action_contract.expected_output or "livrable"
+        estimated_cost = float(decision.budget_state.mission_estimate_eur or 0.0)
+        api_label = self._describe_runtime_api(provider=decision.model_route.provider, model=decision.model_route.model)
+        if proposal_kind == "cost_confirmation":
+            intro = "Je pense que lancer cette operation maintenant est le bon move."
+        elif action_contract.needs_approval:
+            intro = "Cette action demande une validation fondateur avant execution."
+        else:
+            intro = "Cette operation a besoin d'une validation explicite avant lancement."
+        lines = [
+            intro,
+            f"Objectif: {objective}",
+            f"Livrable attendu: {expected_output}",
+            f"Cout estime: ~{estimated_cost:.2f} EUR.",
+            f"Temps estime: {time_band}.",
+            f"API utilisee: {api_label}.",
+            "Reponds go pour lancer ou stop pour annuler.",
+        ]
+        return OperatorReply(
+            reply_id=new_id("reply"),
+            channel=event.message.channel,
+            envelope_id=envelope_id,
+            thread_ref=event.message.thread_ref,
+            summary="\n".join(lines),
+            mission_run_id=None,
+            decision_id=None,
+            reply_kind="approval_required",
+            communication_mode=CommunicationMode.GUARDIAN,
+            operator_language="fr",
+            audience=OperatorAudience.NON_DEVELOPER,
+            metadata={
+                "surface": event.surface,
+                "approval_id": approval_id,
+                "proposal_kind": proposal_kind,
+                "estimated_cost_eur": estimated_cost,
+                "estimated_time_band": time_band,
+                "estimated_api_label": api_label,
+                "estimated_api_provider": decision.model_route.provider,
+                "estimated_api_model": decision.model_route.model,
+                "action_contract": to_jsonable(action_contract),
+                "routing_preview": to_jsonable(decision),
+            },
+        )
+
+    def _build_gateway_approval_dispatch(
+        self,
+        *,
+        event: ChannelEvent,
+        envelope: OperatorEnvelope,
+        approval,
+        reply: OperatorReply,
+        channel_class: DiscordChannelClass,
+        candidate_id: str,
+        promotion_decision_id: str,
+        promoted_memory_ids: list[str],
+        human_artifacts: list,
+    ) -> GatewayDispatchResult:
+        return GatewayDispatchResult(
+            dispatch_id=new_id("dispatch"),
+            channel_event_id=event.event_id,
+            envelope_id=envelope.envelope_id,
+            intent_id=new_id("approval_intent"),
+            decision_id=None,
+            mission_run_id=None,
+            operator_reply=reply,
+            promoted_memory_ids=promoted_memory_ids,
+            memory_candidate_id=candidate_id,
+            promotion_decision_id=promotion_decision_id,
+            discord_run_card=None,
+            metadata={
+                "classification": envelope.metadata.get("message_kind"),
+                "reply_kind": reply.reply_kind,
+                "channel_class": channel_class.value,
+                "communication_mode": reply.communication_mode.value,
+                "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
+                "input_profile": envelope.metadata.get("input_profile"),
+                "intent_kind": envelope.metadata.get("intent_kind"),
+                "delegation_level": envelope.metadata.get("delegation_level"),
+                "interaction_state": envelope.metadata.get("interaction_state"),
+                "suggested_next_state": InteractionState.APPROVAL.value,
+                "intent_confidence": envelope.metadata.get("intent_confidence"),
+                "intent_signals": list(envelope.metadata.get("intent_signals") or []),
+                "state_transition": "directive->approval",
+                "directive_detection": envelope.metadata.get("directive_detection"),
+                "action_contract": envelope.metadata.get("action_contract"),
+                "approval_id": approval.approval_id,
+                "approval_reason": approval.reason,
+                "approval_metadata": to_jsonable(approval.metadata),
+            },
+        )
+
+    @staticmethod
+    def _normalize_keyword_text(value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", str(value or ""))
+        return normalized.encode("ascii", "ignore").decode("ascii").lower()
+
+    @staticmethod
+    def _resolve_discussion_mode(raw_value: str | None, *, fallback: str = "avance") -> str:
+        normalized = GatewayService._normalize_keyword_text(str(raw_value or "")).strip()
+        return _DISCUSSION_MODE_ALIASES.get(normalized, fallback)
+
+    def _estimate_discussion_input_tokens(
+        self,
+        *,
+        message: str,
+        model: str,
+        route_reason: str,
+    ) -> int | None:
+        api_key = self.secret_resolver.get_optional("ANTHROPIC_API_KEY")
+        if not api_key:
+            return None
+        normalized_key = str(api_key).strip().lower()
+        if normalized_key.startswith("sk-ant-test") or "test-secret" in normalized_key or normalized_key.endswith("-test"):
+            return None
+        try:
+            import anthropic
+
+            client = anthropic.Anthropic(api_key=api_key)
+            response = client.messages.count_tokens(
+                model=model,
+                system=self._simple_chat_system_blocks(),
+                messages=[
+                    {
+                        "role": "user",
+                        "content": self._simple_chat_user_message(
+                            message,
+                            provider="anthropic",
+                            model=model,
+                            route_reason=route_reason,
+                        ),
+                    }
+                ],
+            )
+            counted = int(getattr(response, "input_tokens", 0) or 0)
+            return counted if counted > 0 else None
+        except Exception as exc:
+            logging.getLogger("project_os.gateway").debug("anthropic count_tokens estimate unavailable: %s", exc)
+            return None
+
+    def _discussion_mode_spec(
+        self,
+        mode: str,
+        *,
+        score: int,
+        message: str | None = None,
+        explicit_longform: bool = False,
+        recent_turn_count: int = 0,
+        input_tokens_override: int | None = None,
+    ) -> dict[str, Any]:
+        normalized_mode = self._resolve_discussion_mode(mode)
+        if normalized_mode == "simple":
+            spec = {
+                "mode": "simple",
+                "label": "Mode simple",
+                "description": "rapide, direct, peu verbeux",
+                "requested_provider": "anthropic",
+                "requested_model_family": "claude",
+                "requested_model": self.router.execution_policy.discord_simple_model,
+                "requested_model_mode": "sonnet",
+                "estimated_time_band": "rapide",
+            }
+        elif normalized_mode == "extreme":
+            spec = {
+                "mode": "extreme",
+                "label": "Mode extreme",
+                "description": "le plus detaille, pense pour du long",
+                "requested_provider": "anthropic",
+                "requested_model_family": "claude",
+                "requested_model": self.router.execution_policy.discord_opus_model,
+                "requested_model_mode": "opus",
+                "estimated_time_band": "long",
+            }
+        else:
+            spec = {
+                "mode": "avance",
+                "label": "Mode avance",
+                "description": "detaille, structure, toujours fluide sur Discord",
+                "requested_provider": "anthropic",
+                "requested_model_family": "claude",
+                "requested_model": self.router.execution_policy.discord_simple_model,
+                "requested_model_mode": "sonnet",
+                "estimated_time_band": "court",
+            }
+
+        message_text = str(message or "").strip()
+        base_input_tokens = int(input_tokens_override or 0)
+        if base_input_tokens <= 0 and message_text:
+            base_input_tokens = self._estimate_discussion_input_tokens(
+                message=message_text,
+                model=str(spec["requested_model"]),
+                route_reason=(
+                    "operator_forced_opus_route"
+                    if normalized_mode == "extreme"
+                    else "operator_forced_sonnet_route"
+                ),
+            ) or 0
+        if base_input_tokens <= 0 and message_text:
+            base_input_tokens = estimate_text_tokens(message_text) + 260
+
+        usage = estimate_discussion_usage(
+            message=message_text,
+            mode=normalized_mode,
+            score=score,
+            explicit_longform=explicit_longform,
+            recent_turn_count=recent_turn_count,
+            base_input_tokens=base_input_tokens if base_input_tokens > 0 else None,
+        )
+        spec["estimated_input_tokens"] = usage.input_tokens
+        spec["estimated_output_tokens"] = usage.output_tokens
+        spec["estimated_cost_eur"] = estimate_usage_cost_eur(
+            model=str(spec["requested_model"]),
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+        )
+        return spec
+
+    @staticmethod
+    def _recommended_discussion_mode(assessment: dict[str, Any]) -> str:
+        if assessment.get("explicit_longform"):
+            return "extreme"
+        if int(assessment.get("score") or 0) >= 4:
+            return "extreme"
+        return "avance"
+
+    def _maybe_create_reasoning_escalation_approval(
+        self,
+        *,
+        event: ChannelEvent,
+        envelope: OperatorEnvelope,
+        candidate,
+        intent: MissionIntent,
+        decision: RoutingDecision,
+        context_bundle: GatewayContextBundle,
+    ) -> dict[str, Any] | None:
+        if event.surface != "discord":
+            return None
+        if str(envelope.metadata.get("requested_provider") or "").strip():
+            return None
+        if decision.route_reason not in {"discord_simple_route", "deterministic_fast_route"}:
+            return None
+        if decision.communication_mode not in {CommunicationMode.DISCUSSION, CommunicationMode.ARCHITECT}:
+            return None
+        if str(candidate.classification.value) not in {"chat", "decision", "idea", "note"}:
+            return None
+        if str(candidate.metadata.get("intent_kind") or "") not in {
+            IntentKind.DISCUSSION.value,
+            IntentKind.DECISION_SIGNAL.value,
+        }:
+            return None
+        if context_bundle.query_scope != "contextual":
+            return None
+        assessment = self._assess_reasoning_escalation_need(message=event.message.text, context_bundle=context_bundle)
+        if int(assessment["score"]) < 3:
+            return None
+        recommended_mode = self._recommended_discussion_mode(assessment)
+        recent_turn_count = len(context_bundle.recent_thread_messages) + len(context_bundle.recent_operator_replies)
+        selected_spec = self._discussion_mode_spec(
+            recommended_mode,
+            score=int(assessment["score"]),
+            message=event.message.text,
+            explicit_longform=bool(assessment.get("explicit_longform")),
+            recent_turn_count=recent_turn_count,
+        )
+        escalation_metadata = {
+            **intent.metadata,
+            "requested_provider": selected_spec["requested_provider"],
+            "requested_model_family": selected_spec["requested_model_family"],
+            "requested_model": selected_spec["requested_model"],
+            "requested_model_mode": selected_spec["requested_model_mode"],
+            "approval_resolution_source": "discord",
+        }
+        escalation_intent = replace(intent, metadata=escalation_metadata)
+        escalation_decision, _, _ = self.router.route_intent(escalation_intent, persist=False)
+        if not escalation_decision.allowed:
+            return None
+        approval_metadata = {
+            "approval_type": "reasoning_escalation",
+            "action_name": "reasoning_escalation_mode",
+            "proposal_kind": "discussion_mode_selection",
+            "selected_mode": selected_spec["mode"],
+            "recommended_mode": recommended_mode,
+            "estimated_cost_eur": selected_spec["estimated_cost_eur"],
+            "estimated_time_band": selected_spec["estimated_time_band"],
+            "estimated_api_provider": escalation_decision.model_route.provider,
+            "estimated_api_model": escalation_decision.model_route.model,
+            "objective": event.message.text,
+            "rationale": [str(item) for item in assessment["reasons"]],
+            "assessment_score": int(assessment["score"]),
+            "explicit_longform": bool(assessment.get("explicit_longform")),
+            "recent_turn_count": recent_turn_count,
+            "estimated_input_tokens": int(selected_spec.get("estimated_input_tokens") or 0),
+            "event_payload": self._serialize_deep_research_event(event),
+            "target_profile": envelope.target_profile,
+            "requested_provider": escalation_metadata["requested_provider"],
+            "requested_model_family": escalation_metadata["requested_model_family"],
+            "requested_model": escalation_metadata["requested_model"],
+            "requested_model_mode": escalation_metadata["requested_model_mode"],
+            "channel_event_id": event.event_id,
+            "thread_ref": to_jsonable(event.message.thread_ref),
+            "input_profile": envelope.metadata.get("input_profile"),
+        }
+        approval = self.router.runtime.create_approval(
+            requested_by="gateway_discord",
+            risk_tier="medium",
+            reason="reasoning_escalation_recommended",
+            metadata=approval_metadata,
+        )
+        reply = self._build_reasoning_escalation_reply(
+            event=event,
+            envelope_id=envelope.envelope_id,
+            approval_id=approval.approval_id,
+            estimated_cost_eur=float(selected_spec["estimated_cost_eur"]),
+            estimated_time_band=str(selected_spec["estimated_time_band"]),
+            target_provider=escalation_decision.model_route.provider,
+            target_model=escalation_decision.model_route.model,
+            reasons=[str(item) for item in assessment["reasons"]],
+            selected_mode=str(selected_spec["mode"]),
+            recommended_mode=recommended_mode,
+            score=int(assessment["score"]),
+            objective=event.message.text,
+            explicit_longform=bool(assessment.get("explicit_longform")),
+            recent_turn_count=recent_turn_count,
+            input_tokens_override=int(selected_spec.get("estimated_input_tokens") or 0),
+        )
+        return {"approval": approval, "reply": reply, "metadata": approval_metadata}
+
+    def _build_reasoning_escalation_reply(
+        self,
+        *,
+        event: ChannelEvent,
+        envelope_id: str,
+        approval_id: str,
+        estimated_cost_eur: float,
+        estimated_time_band: str,
+        target_provider: str,
+        target_model: str | None,
+        reasons: list[str],
+        selected_mode: str,
+        recommended_mode: str,
+        score: int,
+        objective: str,
+        explicit_longform: bool,
+        recent_turn_count: int,
+        input_tokens_override: int,
+    ) -> OperatorReply:
+        api_label = self._describe_runtime_api(provider=target_provider, model=target_model)
+        selected_spec = self._discussion_mode_spec(
+            selected_mode,
+            score=score,
+            message=objective,
+            explicit_longform=explicit_longform,
+            recent_turn_count=recent_turn_count,
+            input_tokens_override=input_tokens_override,
+        )
+        recommended_spec = self._discussion_mode_spec(
+            recommended_mode,
+            score=score,
+            message=objective,
+            explicit_longform=explicit_longform,
+            recent_turn_count=recent_turn_count,
+            input_tokens_override=input_tokens_override,
+        )
+        lines = [f"Je te recommande le {recommended_spec['label'].lower()} pour cette discussion."]
+        if reasons:
+            lines.append(f"Pourquoi: {'; '.join(reasons[:3])}.")
+        lines.extend(
+            [
+                "",
+                "Modes disponibles:",
+            ]
+        )
+        for mode_name in ("simple", "avance", "extreme"):
+            mode_spec = self._discussion_mode_spec(
+                mode_name,
+                score=score,
+                message=objective,
+                explicit_longform=explicit_longform,
+                recent_turn_count=recent_turn_count,
+                input_tokens_override=input_tokens_override,
+            )
+            mode_api = self._describe_runtime_api(
+                provider=str(mode_spec["requested_provider"]),
+                model=str(mode_spec["requested_model"]),
+            )
+            suffix = " (recommande)" if mode_name == recommended_spec["mode"] else ""
+            lines.append(
+                f"- {mode_spec['label']}{suffix}: {mode_spec['description']}, {mode_api}, ~{float(mode_spec['estimated_cost_eur']):.2f} EUR"
+            )
+        lines.extend(
+            [
+                "",
+                f"Mode selectionne: {selected_spec['label']}.",
+                f"Cout estime: ~{estimated_cost_eur:.2f} EUR.",
+                f"Temps estime: {estimated_time_band}.",
+                f"API utilisee: {api_label}.",
+                (
+                    "Reponds go pour lancer le mode recommande, ou simple/avance/extreme pour changer, puis go."
+                    if selected_spec["mode"] == recommended_spec["mode"]
+                    else "Reponds go pour lancer ce mode, ou simple/avance/extreme pour changer encore."
+                ),
+            ]
+        )
+        return OperatorReply(
+            reply_id=new_id("reply"),
+            channel=event.message.channel,
+            envelope_id=envelope_id,
+            thread_ref=event.message.thread_ref,
+            summary="\n".join(lines),
+            mission_run_id=None,
+            decision_id=None,
+            reply_kind="approval_required",
+            communication_mode=CommunicationMode.GUARDIAN,
+            operator_language="fr",
+            audience=OperatorAudience.NON_DEVELOPER,
+            metadata={
+                "surface": event.surface,
+                "approval_id": approval_id,
+                "proposal_kind": "discussion_mode_selection",
+                "selected_mode": selected_spec["mode"],
+                "recommended_mode": recommended_spec["mode"],
+                "estimated_cost_eur": estimated_cost_eur,
+                "estimated_time_band": estimated_time_band,
+                "estimated_api_label": api_label,
+                "escalation_target_model": target_model,
+                "escalation_target_provider": target_provider,
+                "reasoning_rationale": list(reasons),
+            },
+        )
+
+    @staticmethod
+    def _assess_reasoning_escalation_need(*, message: str, context_bundle: GatewayContextBundle) -> dict[str, Any]:
+        lowered = GatewayService._normalize_keyword_text(message)
+        reasons: list[str] = []
+        score = 0
+        explicit_longform = False
+        if len(message) >= _REASONING_ESCALATION_LENGTH_THRESHOLD or len(message.split()) >= _REASONING_ESCALATION_WORD_THRESHOLD:
+            score += 1
+            reasons.append("discussion plus dense que la moyenne")
+        keyword_hits = [token for token in _REASONING_ESCALATION_KEYWORDS if token in lowered]
+        if keyword_hits:
+            score += 2
+            reasons.append(f"sujet strategique ou de conception ({', '.join(keyword_hits[:3])})")
+        longform_hits = [token for token in _REASONING_ESCALATION_LONGFORM_HINTS if token in lowered]
+        if longform_hits:
+            score += 2
+            explicit_longform = True
+            reasons.append("tu demandes explicitement une reponse longue ou approfondie")
+        if context_bundle.mood_hint.mood in {"serious", "brainstorming"}:
+            score += 1
+            reasons.append(f"ton detecte: {context_bundle.mood_hint.mood}")
+        thread_turns = len(context_bundle.recent_thread_messages) + len(context_bundle.recent_operator_replies)
+        if thread_turns >= 3:
+            score += 1
+            reasons.append("discussion deja bien engagee dans le thread")
+        if context_bundle.long_context_digest:
+            score += 1
+            reasons.append("contexte long deja compacte")
+        return {"score": score, "reasons": reasons, "explicit_longform": explicit_longform}
+
+    def _build_deep_research_approval_reply(
+        self,
+        *,
+        event: ChannelEvent,
+        envelope_id: str,
+        approval_id: str,
+        scaffold: dict[str, Any],
+        estimated_cost_eur: float,
+        estimated_time_band: str,
+        target_provider: str,
+        target_model: str | None,
+    ) -> OperatorReply:
+        title = str(scaffold.get("title") or "Deep Research").strip()
+        doc_name = str(scaffold.get("doc_name") or "").strip()
+        relative_path = str(scaffold.get("relative_path") or "").strip()
+        profile = str(scaffold.get("research_profile") or scaffold.get("recommended_profile") or "domain_audit").strip()
+        intensity = str(scaffold.get("research_intensity") or scaffold.get("recommended_intensity") or "simple").strip()
+        api_label = self._describe_runtime_api(provider=target_provider, model=target_model)
+        lines = [
+            "Je pense que lancer cette recherche approfondie est le bon move.",
+            f"Sujet: {title}",
+        ]
+        if doc_name or relative_path:
+            lines.append(f"Dossier prepare: {doc_name or relative_path}")
+        lines.append(f"Profil confirme: {self._display_research_profile(profile)}")
+        lines.append(f"Intensite confirmee: {self._display_research_intensity(intensity)}")
+        lines.extend(
+            [
+                f"Cout estime: ~{estimated_cost_eur:.2f} EUR.",
+                f"Temps estime: {estimated_time_band}.",
+                f"API utilisee: {api_label}.",
+                (
+                    "Mode debug temporaire: Sonnet pilote les passes de recherche extreme, et OpenAI garde seulement la traduction PDF FR."
+                    if intensity == "extreme" and str(target_provider).strip().lower() == "anthropic"
+                    else ""
+                ),
+                "Reponds go pour lancer ou stop pour annuler.",
+            ]
+        )
+        lines = [line for line in lines if line]
+        return OperatorReply(
+            reply_id=new_id("reply"),
+            channel=event.message.channel,
+            envelope_id=envelope_id,
+            thread_ref=event.message.thread_ref,
+            summary="\n".join(lines),
+            mission_run_id=None,
+            decision_id=None,
+            reply_kind="approval_required",
+            communication_mode=CommunicationMode.GUARDIAN,
+            operator_language="fr",
+            audience=OperatorAudience.NON_DEVELOPER,
+            metadata={
+                "surface": event.surface,
+                "approval_id": approval_id,
+                "estimated_cost_eur": estimated_cost_eur,
+                "estimated_time_band": estimated_time_band,
+                "estimated_api_label": api_label,
+                "estimated_api_provider": target_provider,
+                "estimated_api_model": target_model,
+                "research_scaffold_path": scaffold.get("path"),
+                "research_scaffold_kind": scaffold.get("kind"),
+                "research_scaffold_title": title,
+                "research_scaffold_relative_path": relative_path,
+                "research_scaffold_doc_name": doc_name,
+                "research_profile": profile,
+                "research_intensity": intensity,
+            },
+        )
+
+    @staticmethod
+    def _display_research_profile(profile: str) -> str:
+        mapping = {
+            "project_audit": "Project Audit",
+            "component_discovery": "Component Discovery",
+            "domain_audit": "Domain Audit",
+        }
+        return mapping.get(str(profile or "").strip().lower(), str(profile or "Domain Audit").strip() or "Domain Audit")
+
+    @staticmethod
+    def _display_research_intensity(intensity: str) -> str:
+        mapping = {"simple": "Simple", "complex": "Complexe", "extreme": "Extreme"}
+        return mapping.get(str(intensity or "").strip().lower(), str(intensity or "Simple").strip() or "Simple")
+
+    @staticmethod
+    def _deep_research_mode_ready(scaffold: dict[str, Any]) -> bool:
+        profile = str(scaffold.get("explicit_profile") or "").strip().lower()
+        intensity = str(scaffold.get("explicit_intensity") or "").strip().lower()
+        return bool(profile and intensity and profile in {"project_audit", "component_discovery", "domain_audit"} and intensity in {"simple", "complex", "extreme"})
+
+    def _build_deep_research_mode_selection_reply(
+        self,
+        *,
+        event: ChannelEvent,
+        envelope_id: str,
+        approval_id: str,
+        scaffold: dict[str, Any],
+    ) -> OperatorReply:
+        title = str(scaffold.get("title") or "Deep Research").strip()
+        doc_name = str(scaffold.get("doc_name") or "").strip()
+        relative_path = str(scaffold.get("relative_path") or "").strip()
+        selected_profile = str(scaffold.get("explicit_profile") or "").strip().lower()
+        selected_intensity = str(scaffold.get("explicit_intensity") or "").strip().lower()
+        recommended_profile = str(scaffold.get("recommended_profile") or scaffold.get("research_profile") or "domain_audit").strip()
+        recommended_intensity = str(scaffold.get("recommended_intensity") or scaffold.get("research_intensity") or "simple").strip()
+        lines = [
+            "Deep research detectee. Avant le calcul final du cout, je verrouille le mode.",
+            f"Sujet: {title}",
+        ]
+        if doc_name or relative_path:
+            lines.append(f"Dossier prepare: {doc_name or relative_path}")
+        lines.append(f"Profil recommande: {self._display_research_profile(recommended_profile)}")
+        lines.append(f"Intensite recommandee: {self._display_research_intensity(recommended_intensity)}")
+        if selected_profile:
+            lines.append(f"Profil deja detecte: {self._display_research_profile(selected_profile)}")
+        if selected_intensity:
+            lines.append(f"Intensite deja detectee: {self._display_research_intensity(selected_intensity)}")
+        missing: list[str] = []
+        if not selected_profile:
+            missing.append("profil (`project audit`, `component discovery`, `domain audit`)")
+        if not selected_intensity:
+            missing.append("intensite (`Simple`, `Complexe`, `Extreme`)")
+        if missing:
+            lines.append(f"Il me manque: {', '.join(missing)}.")
+        lines.append("Reponds avec le mode voulu. Exemple: `component discovery + complexe`.")
+        lines.append("Une fois profil et intensite confirmes, je t'affiche cout, temps, API et j'attends `go`.")
+        return OperatorReply(
+            reply_id=new_id("reply"),
+            channel=event.message.channel,
+            envelope_id=envelope_id,
+            thread_ref=event.message.thread_ref,
+            summary="\n".join(lines),
+            mission_run_id=None,
+            decision_id=None,
+            reply_kind="clarification_required",
+            communication_mode=CommunicationMode.GUARDIAN,
+            operator_language="fr",
+            audience=OperatorAudience.NON_DEVELOPER,
+            metadata={
+                "surface": event.surface,
+                "approval_id": approval_id,
+                "clarification_gate": True,
+                "deep_research_mode_selection": True,
+                "research_scaffold_path": scaffold.get("path"),
+                "research_scaffold_kind": scaffold.get("kind"),
+                "research_scaffold_title": title,
+                "research_scaffold_relative_path": relative_path,
+                "research_scaffold_doc_name": doc_name,
+                "recommended_profile": recommended_profile,
+                "recommended_intensity": recommended_intensity,
+                "selected_profile": selected_profile or None,
+                "selected_intensity": selected_intensity or None,
+            },
+        )
+
+    def _build_deep_research_mode_selection_dispatch(
+        self,
+        *,
+        event: ChannelEvent,
+        envelope: OperatorEnvelope,
+        scaffold: dict[str, Any],
+        channel_class: DiscordChannelClass,
+        candidate_id: str,
+        promotion_decision_id: str,
+        promoted_memory_ids: list[str],
+        human_artifacts: list,
+    ) -> GatewayDispatchResult:
+        approval_metadata = {
+            "approval_type": "deep_research_mode_selection",
+            "action_name": "deep_research_mode_selection",
+            "research_scaffold": to_jsonable(scaffold),
+            "research_scaffold_path": scaffold.get("path"),
+            "research_scaffold_kind": scaffold.get("kind"),
+            "research_scaffold_title": scaffold.get("title"),
+            "research_scaffold_relative_path": scaffold.get("relative_path"),
+            "research_scaffold_doc_name": scaffold.get("doc_name"),
+            "recommended_profile": scaffold.get("recommended_profile"),
+            "recommended_intensity": scaffold.get("recommended_intensity"),
+            "selected_profile": scaffold.get("explicit_profile"),
+            "selected_intensity": scaffold.get("explicit_intensity"),
+            "event_payload": self._serialize_deep_research_event(event),
+            "channel_event_id": event.event_id,
+            "thread_ref": to_jsonable(event.message.thread_ref),
+            "message_text": event.message.text,
+            "input_profile": envelope.metadata.get("input_profile"),
+        }
+        approval = self.router.runtime.create_approval(
+            requested_by="gateway_discord",
+            risk_tier="high",
+            reason="confirmation_deep_research_mode",
+            metadata=approval_metadata,
+        )
+        reply = self._build_deep_research_mode_selection_reply(
+            event=event,
+            envelope_id=envelope.envelope_id,
+            approval_id=approval.approval_id,
+            scaffold=scaffold,
+        )
+        return GatewayDispatchResult(
+            dispatch_id=new_id("dispatch"),
+            channel_event_id=event.event_id,
+            envelope_id=envelope.envelope_id,
+            intent_id=new_id("deep_research_mode_intent"),
+            decision_id=None,
+            mission_run_id=None,
+            operator_reply=reply,
+            promoted_memory_ids=promoted_memory_ids,
+            memory_candidate_id=candidate_id,
+            promotion_decision_id=promotion_decision_id,
+            discord_run_card=None,
+            metadata={
+                "classification": envelope.metadata.get("message_kind"),
+                "reply_kind": reply.reply_kind,
+                "channel_class": channel_class.value,
+                "communication_mode": reply.communication_mode.value,
+                "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
+                "input_profile": envelope.metadata.get("input_profile"),
+                "intent_kind": envelope.metadata.get("intent_kind"),
+                "delegation_level": envelope.metadata.get("delegation_level"),
+                "interaction_state": envelope.metadata.get("interaction_state"),
+                "suggested_next_state": InteractionState.APPROVAL.value,
+                "intent_confidence": envelope.metadata.get("intent_confidence"),
+                "intent_signals": list(envelope.metadata.get("intent_signals") or []),
+                "state_transition": "directive->approval",
+                "directive_detection": envelope.metadata.get("directive_detection"),
+                "action_contract": envelope.metadata.get("action_contract"),
+                "approval_id": approval.approval_id,
+                "approval_reason": approval.reason,
+                "approval_metadata": to_jsonable(approval.metadata),
+                "research_scaffold_path": scaffold.get("path"),
+                "research_scaffold_kind": scaffold.get("kind"),
+                "research_scaffold_title": scaffold.get("title"),
+                "research_scaffold_relative_path": scaffold.get("relative_path"),
+                "research_scaffold_doc_name": scaffold.get("doc_name"),
+                "research_profile": scaffold.get("explicit_profile") or scaffold.get("recommended_profile"),
+                "research_intensity": scaffold.get("explicit_intensity") or scaffold.get("recommended_intensity"),
+            },
+        )
+
+    def _build_deep_research_approval_dispatch(
+        self,
+        *,
+        event: ChannelEvent,
+        envelope: OperatorEnvelope,
+        scaffold: dict[str, Any],
+        channel_class: DiscordChannelClass,
+        candidate_id: str,
+        promotion_decision_id: str,
+        promoted_memory_ids: list[str],
+        human_artifacts: list,
+    ) -> GatewayDispatchResult:
+        budget = self._estimated_deep_research_budget(scaffold)
+        estimated_cost = float(budget.get("estimated_cost_eur") or 0.0)
+        estimated_time_band = str(budget.get("estimated_time_band") or "moyen")
+        estimated_api_provider = str(budget.get("estimated_api_provider") or "openai")
+        estimated_api_model = str(budget.get("estimated_api_model") or "") or None
+        approval_metadata = {
+            "approval_type": "deep_research_launch",
+            "action_name": "deep_research_launch",
+            "estimated_cost_eur": estimated_cost,
+            "estimated_time_band": estimated_time_band,
+            "estimated_api_provider": estimated_api_provider,
+            "estimated_api_model": estimated_api_model,
+            "research_scaffold": to_jsonable(scaffold),
+            "research_scaffold_path": scaffold.get("path"),
+            "research_scaffold_kind": scaffold.get("kind"),
+            "research_scaffold_title": scaffold.get("title"),
+            "research_scaffold_relative_path": scaffold.get("relative_path"),
+            "research_scaffold_doc_name": scaffold.get("doc_name"),
+            "research_profile": scaffold.get("research_profile"),
+            "research_intensity": scaffold.get("research_intensity"),
+            "recommended_profile": scaffold.get("recommended_profile"),
+            "recommended_intensity": scaffold.get("recommended_intensity"),
+            "event_payload": self._serialize_deep_research_event(event),
+            "channel_event_id": event.event_id,
+            "thread_ref": to_jsonable(event.message.thread_ref),
+            "message_text": event.message.text,
+            "input_profile": envelope.metadata.get("input_profile"),
+        }
+        approval = self.router.runtime.create_approval(
+            requested_by="gateway_discord",
+            risk_tier="high",
+            reason="confirmation_deep_research",
+            metadata=approval_metadata,
+        )
+        reply = self._build_deep_research_approval_reply(
+            event=event,
+            envelope_id=envelope.envelope_id,
+            approval_id=approval.approval_id,
+            scaffold=scaffold,
+            estimated_cost_eur=estimated_cost,
+            estimated_time_band=estimated_time_band,
+            target_provider=estimated_api_provider,
+            target_model=estimated_api_model,
+        )
+        return GatewayDispatchResult(
+            dispatch_id=new_id("dispatch"),
+            channel_event_id=event.event_id,
+            envelope_id=envelope.envelope_id,
+            intent_id=new_id("deep_research_approval_intent"),
+            decision_id=None,
+            mission_run_id=None,
+            operator_reply=reply,
+            promoted_memory_ids=promoted_memory_ids,
+            memory_candidate_id=candidate_id,
+            promotion_decision_id=promotion_decision_id,
+            discord_run_card=None,
+            metadata={
+                "classification": envelope.metadata.get("message_kind"),
+                "reply_kind": reply.reply_kind,
+                "channel_class": channel_class.value,
+                "communication_mode": reply.communication_mode.value,
+                "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
+                "input_profile": envelope.metadata.get("input_profile"),
+                "intent_kind": envelope.metadata.get("intent_kind"),
+                "delegation_level": envelope.metadata.get("delegation_level"),
+                "interaction_state": envelope.metadata.get("interaction_state"),
+                "suggested_next_state": InteractionState.APPROVAL.value,
+                "intent_confidence": envelope.metadata.get("intent_confidence"),
+                "intent_signals": list(envelope.metadata.get("intent_signals") or []),
+                "state_transition": "directive->approval",
+                "directive_detection": envelope.metadata.get("directive_detection"),
+                "action_contract": envelope.metadata.get("action_contract"),
+                "approval_id": approval.approval_id,
+                "approval_reason": approval.reason,
+                "approval_metadata": to_jsonable(approval.metadata),
+                "research_scaffold_path": scaffold.get("path"),
+                "research_scaffold_kind": scaffold.get("kind"),
+                "research_scaffold_title": scaffold.get("title"),
+                "research_scaffold_relative_path": scaffold.get("relative_path"),
+                "research_scaffold_doc_name": scaffold.get("doc_name"),
+                "research_profile": scaffold.get("research_profile"),
+                "research_intensity": scaffold.get("research_intensity"),
+            },
+        )
+
+    @staticmethod
+    def _estimated_time_band(cost_class: CostClass) -> str:
+        if cost_class is CostClass.EXCEPTIONAL:
+            return "long"
+        if cost_class is CostClass.HARD:
+            return "moyen"
+        return "court"
+
+    @staticmethod
+    def _describe_runtime_api(*, provider: str | None, model: str | None) -> str:
+        normalized_provider = str(provider or "").strip().lower()
+        provider_label = {
+            "openai": "OpenAI",
+            "anthropic": "Anthropic",
+            "local": "Local",
+            "project_os": "Project OS",
+        }.get(normalized_provider, str(provider or "inconnue").strip() or "inconnue")
+        model_label = str(model or "").strip()
+        if model_label:
+            return f"{provider_label} / {model_label}"
+        return provider_label
+
     @staticmethod
     def _session_reply_summary(resolved: ResolvedIntent, action_result: dict) -> str:
+        custom_summary = str(action_result.get("summary") or "").strip()
         if resolved.action == "approve_contract":
             branch = str(action_result.get("branch_name") or "ce lot")
             if action_result.get("run_launched"):
@@ -1058,6 +2891,45 @@ class GatewayService:
         if resolved.action == "reject_contract":
             branch = str(action_result.get("branch_name") or "ce lot")
             return f"{branch}: contrat refuse. Rien n'est lance."
+        if resolved.action == "approve_runtime_approval":
+            if action_result.get("approval_type") == "reasoning_escalation" and custom_summary:
+                return custom_summary
+            if action_result.get("approval_type") == "deep_research_launch":
+                estimated_cost = float(action_result.get("estimated_cost_eur") or 0.0)
+                doc_name = str(action_result.get("doc_name") or action_result.get("dossier_relative_path") or "").strip()
+                api_label = str(action_result.get("api_label") or "").strip()
+                if action_result.get("run_launched"):
+                    summary = f"Recherche approfondie lancee (~{estimated_cost:.2f} EUR)."
+                    if api_label:
+                        summary = f"{summary} API: {api_label}."
+                    if doc_name:
+                        summary = f"{summary} Dossier: {doc_name}."
+                    return f"{summary} Le rapport final reviendra sur Discord avec le PDF et le fichier Markdown."
+                error = str(action_result.get("error") or "lancement reste bloque").strip()
+                return f"Recherche approfondie approuvee, mais le lancement reste bloque: {error}"
+            objective = str(action_result.get("objective") or "cette operation")
+            estimated_cost = float(action_result.get("estimated_cost_eur") or 0.0)
+            api_label = str(action_result.get("api_label") or "").strip()
+            if action_result.get("run_launched"):
+                summary = f"{objective}: validation enregistree. Operation lancee (~{estimated_cost:.2f} EUR)."
+                if api_label:
+                    summary = f"{summary} API: {api_label}."
+                return summary
+            error = str(action_result.get("error") or "").strip()
+            if error:
+                return f"{objective}: validation enregistree, mais le lancement reste bloque: {error}"
+            return f"{objective}: validation enregistree, mais le lancement reste bloque."
+        if resolved.action == "reject_runtime_approval":
+            if action_result.get("approval_type") == "reasoning_escalation" and custom_summary:
+                return custom_summary
+            if action_result.get("approval_type") == "deep_research_mode_selection":
+                return "Choix du mode deep research annule. Rien n'est lance."
+            if action_result.get("approval_type") == "deep_research_launch":
+                return "Recherche approfondie annulee. Rien n'est lance."
+            objective = str(action_result.get("objective") or "cette operation")
+            return f"{objective}: validation refusee. Rien n'est lance."
+        if resolved.action == "update_runtime_approval_selection" and custom_summary:
+            return custom_summary
         if resolved.action == "answer_clarification":
             branch = str(action_result.get("branch_name") or "ce lot")
             return f"{branch}: clarification enregistree. J'applique la decision."
@@ -1306,27 +3178,56 @@ class GatewayService:
             import anthropic
             api_key = self.secret_resolver.get_required("ANTHROPIC_API_KEY")
             client = anthropic.Anthropic(api_key=api_key)
+            system_blocks = self._simple_chat_system_blocks()
+            user_message = self._simple_chat_user_message(
+                message,
+                provider="anthropic",
+                model=model,
+                route_reason=route_reason,
+                context_bundle=context_bundle,
+            )
             response = client.messages.create(
                 model=model,
-                max_tokens=500,
-                system=self._simple_chat_system_blocks(),
+                max_tokens=1200,
+                system=system_blocks,
                 messages=[
                     {
                         "role": "user",
-                        "content": self._simple_chat_user_message(
-                            message,
-                            provider="anthropic",
-                            model=model,
-                            route_reason=route_reason,
-                            context_bundle=context_bundle,
-                        ),
+                        "content": user_message,
                     },
                 ],
             )
-            return response.content[0].text
+            rendered = self._anthropic_text_blocks(response)
+            if getattr(response, "stop_reason", None) == "max_tokens" and rendered:
+                continuation = client.messages.create(
+                    model=model,
+                    max_tokens=600,
+                    system=system_blocks,
+                    messages=[
+                        {"role": "user", "content": user_message},
+                        {"role": "assistant", "content": rendered},
+                        {
+                            "role": "user",
+                            "content": "Continue exactement la meme reponse sans repetition. Reprends a partir du dernier mot et termine proprement.",
+                        },
+                    ],
+                )
+                continuation_text = self._anthropic_text_blocks(continuation)
+                if continuation_text:
+                    rendered = f"{rendered.rstrip()}\n{continuation_text.lstrip()}"
+            return rendered or None
         except Exception as exc:
             logging.getLogger("project_os.gateway").warning("simple_chat Claude call failed: %s", exc)
             return None
+
+    @staticmethod
+    def _anthropic_text_blocks(response: Any) -> str:
+        parts: list[str] = []
+        for block in getattr(response, "content", []) or []:
+            text = getattr(block, "text", None)
+            if isinstance(text, str) and text.strip():
+                parts.append(text)
+        return "".join(parts).strip()
 
     def _call_openai_chat(
         self,
@@ -1398,6 +3299,7 @@ class GatewayService:
             f"- current_route_reason: {route_reason or 'unknown'}",
             "- principle: do not invent completed file inspection or executed actions",
             "- truth_contract: when suggesting next steps, phrase them as proposals or requests; never imply that an inspection, write, send, or background action is already happening unless it already happened in this turn",
+            "- artifact_truth_contract: if recent thread history shows that Project OS already sent a PDF or another artifact in this thread, treat that artifact as real and already delivered; do not deny it",
         ]
         if context_bundle is not None:
             lines.extend(
@@ -1547,13 +3449,39 @@ class GatewayService:
         return decision.route_reason == "discord_simple_route"
 
     @staticmethod
-    def _message_for_route(candidate, decision: RoutingDecision) -> str:
+    def _apply_discussion_mode_instruction(message: str, discussion_mode: str | None) -> str:
+        normalized_mode = GatewayService._resolve_discussion_mode(discussion_mode, fallback="")
+        if normalized_mode == "simple":
+            prefix = (
+                "Mode simple Discord: reponds vite, net, humain, et reste bref. "
+                "Vise une reponse compacte, sans livrable joint sauf si c'est indispensable.\n\n"
+            )
+            return f"{prefix}{message}".strip()
+        if normalized_mode == "avance":
+            prefix = (
+                "Mode avance Discord: reponds de facon detaillee, structuree et naturelle. "
+                "Tu peux prendre de la place si cela aide vraiment la decision.\n\n"
+            )
+            return f"{prefix}{message}".strip()
+        if normalized_mode == "extreme":
+            prefix = (
+                "Mode extreme Discord: reponds de facon approfondie, structuree et exploitable. "
+                "Si la reponse devient trop longue pour le chat, la plateforme la basculera vers un PDF.\n\n"
+            )
+            return f"{prefix}{message}".strip()
+        return message
+
+    @staticmethod
+    def _message_for_route(candidate, decision: RoutingDecision, discussion_mode: str | None = None) -> str:
         compact_message = str(candidate.metadata.get("long_context_compact_message") or "").strip()
         if compact_message:
-            return compact_message
+            return GatewayService._apply_discussion_mode_instruction(compact_message, discussion_mode)
         if decision.model_route.provider == "local":
-            return candidate.content
-        return GatewayService._message_for_cloud(candidate)
+            return GatewayService._apply_discussion_mode_instruction(candidate.content, discussion_mode)
+        return GatewayService._apply_discussion_mode_instruction(
+            GatewayService._message_for_cloud(candidate),
+            discussion_mode,
+        )
 
     def _local_system_prompt(self, sensitivity: SensitivityClass) -> str:
         return self.persona.render_local_system(sensitivity)
@@ -1668,6 +3596,8 @@ class GatewayService:
                 ResearchScaffoldRequest(
                     title=detected.title,
                     kind=detected.kind,
+                    research_profile=detected.research_profile,
+                    research_intensity=detected.research_intensity,
                     question=detected.question,
                     keywords=detected.keywords,
                 ),
@@ -1693,6 +3623,10 @@ class GatewayService:
             **payload,
             "relative_path": relative_path,
             "doc_name": Path(payload["path"]).name,
+            "recommended_profile": detected.recommended_profile,
+            "recommended_intensity": detected.recommended_intensity,
+            "explicit_profile": detected.explicit_profile,
+            "explicit_intensity": detected.explicit_intensity,
         }
         self.journal.append(
             "gateway_research_scaffold_prepared",
@@ -1751,7 +3685,7 @@ class GatewayService:
             summary = "Recherche approfondie lancee."
             if doc_name or relative_path:
                 summary = f"{summary} Dossier: {doc_name or relative_path}."
-            summary = f"{summary} Le rapport final reviendra sur Discord avec le fichier Markdown."
+            summary = f"{summary} Le rapport final reviendra sur Discord avec le PDF et le fichier Markdown."
             reply_kind = "ack"
         else:
             error = str(job_payload.get("error") or "Lancement automatique impossible.").strip()
@@ -1806,6 +3740,94 @@ class GatewayService:
                 "deep_research_job_path": job_payload.get("job_path"),
                 "deep_research_job_launched": launched,
             },
+        )
+
+    def _estimated_deep_research_budget(self, scaffold: dict[str, Any]) -> dict[str, Any]:
+        if self.deep_research is not None:
+            return self.deep_research.estimate_run(request=scaffold)
+        kind = str(scaffold.get("kind") or "audit").strip().lower()
+        intensity = str(scaffold.get("research_intensity") or scaffold.get("recommended_intensity") or "simple").strip().lower()
+        keyword_count = len([item for item in scaffold.get("keywords", []) if str(item).strip()])
+        recent_days = int(scaffold.get("recent_days") or 30)
+        base = 1.10 if kind == "system" else 0.85
+        base += min(keyword_count, 6) * 0.03
+        if recent_days > 45:
+            base += 0.10
+        intensity_multiplier = {"simple": 1.0, "complex": 1.65, "extreme": 2.45}.get(intensity, 1.0)
+        return {
+            "estimated_cost_eur": round(base * intensity_multiplier, 2),
+            "estimated_time_band": "long" if intensity == "extreme" else "moyen",
+        }
+
+    def _estimated_deep_research_cost_eur(self, scaffold: dict[str, Any]) -> float:
+        return float(self._estimated_deep_research_budget(scaffold).get("estimated_cost_eur") or 0.0)
+
+    def _estimated_deep_research_time_band(self, scaffold: dict[str, Any]) -> str:
+        return str(self._estimated_deep_research_budget(scaffold).get("estimated_time_band") or "moyen")
+
+    @staticmethod
+    def _serialize_deep_research_event(event: ChannelEvent) -> dict[str, Any]:
+        return {
+            "event_id": event.event_id,
+            "surface": event.surface,
+            "event_type": event.event_type,
+            "created_at": event.created_at,
+            "message": {
+                "message_id": event.message.message_id,
+                "actor_id": event.message.actor_id,
+                "channel": event.message.channel,
+                "text": event.message.text,
+                "thread_ref": to_jsonable(event.message.thread_ref),
+                "attachments": [to_jsonable(item) for item in event.message.attachments],
+                "metadata": dict(event.message.metadata),
+                "created_at": event.message.created_at,
+            },
+        }
+
+    @staticmethod
+    def _rebuild_deep_research_event(payload: object) -> ChannelEvent:
+        raw = payload if isinstance(payload, dict) else {}
+        message_raw = raw.get("message") if isinstance(raw.get("message"), dict) else {}
+        thread_raw = message_raw.get("thread_ref") if isinstance(message_raw.get("thread_ref"), dict) else {}
+        attachments_raw = message_raw.get("attachments") if isinstance(message_raw.get("attachments"), list) else []
+        thread_ref = ConversationThreadRef(
+            thread_id=str(thread_raw.get("thread_id") or "discord"),
+            channel=str(thread_raw.get("channel") or message_raw.get("channel") or raw.get("surface") or "discord"),
+            external_thread_id=str(thread_raw.get("external_thread_id")) if thread_raw.get("external_thread_id") else None,
+            parent_thread_id=str(thread_raw.get("parent_thread_id")) if thread_raw.get("parent_thread_id") else None,
+            title=str(thread_raw.get("title")) if thread_raw.get("title") else None,
+            metadata=dict(thread_raw.get("metadata")) if isinstance(thread_raw.get("metadata"), dict) else {},
+        )
+        attachments = [
+            OperatorAttachment(
+                attachment_id=str(item.get("attachment_id") or new_id("attachment")),
+                name=str(item.get("name") or "attachment"),
+                kind=str(item.get("kind") or "file"),
+                mime_type=str(item.get("mime_type")) if item.get("mime_type") else None,
+                path=str(item.get("path")) if item.get("path") else None,
+                url=str(item.get("url")) if item.get("url") else None,
+                size_bytes=int(item["size_bytes"]) if item.get("size_bytes") is not None else None,
+                metadata=dict(item.get("metadata")) if isinstance(item.get("metadata"), dict) else {},
+            )
+            for item in attachments_raw
+            if isinstance(item, dict)
+        ]
+        message = OperatorMessage(
+            message_id=str(message_raw.get("message_id") or new_id("message")),
+            actor_id=str(message_raw.get("actor_id") or "founder"),
+            channel=str(message_raw.get("channel") or raw.get("surface") or "discord"),
+            text=str(message_raw.get("text") or ""),
+            thread_ref=thread_ref,
+            attachments=attachments,
+            metadata=dict(message_raw.get("metadata")) if isinstance(message_raw.get("metadata"), dict) else {},
+            created_at=str(message_raw.get("created_at") or datetime.now(timezone.utc).isoformat()),
+        )
+        return ChannelEvent(
+            event_id=str(raw.get("event_id") or new_id("channel_event")),
+            surface=str(raw.get("surface") or "discord"),
+            event_type=str(raw.get("event_type") or "message.created"),
+            message=message,
+            created_at=str(raw.get("created_at") or datetime.now(timezone.utc).isoformat()),
         )
 
     @staticmethod
@@ -2412,19 +4434,32 @@ class GatewayService:
             return manifest
 
         extracted = self._extract_response_review_items(response_text)
+        overview = self._response_review_overview(response_text)
+        highlights = self._response_review_highlights(response_text, extracted)
+        review_markdown = self._render_response_review_markdown(
+            event=event,
+            candidate=candidate,
+            decision=decision,
+            full_response=response_text,
+            extracted=extracted,
+            context_bundle=context_bundle,
+        )
         review_pointer = self._write_gateway_text_artifact(
             owner_type="gateway_reply",
             owner_id=reply.reply_id,
             artifact_kind="response_review_markdown",
-            text=self._render_response_review_markdown(
-                event=event,
-                candidate=candidate,
-                decision=decision,
-                full_response=response_text,
-                extracted=extracted,
-                context_bundle=context_bundle,
-            ),
+            text=review_markdown,
             suffix=".md",
+        )
+        review_pdf_pointer = self._write_gateway_response_pdf_artifact(
+            owner_id=reply.reply_id,
+            event=event,
+            candidate=candidate,
+            decision=decision,
+            full_response=response_text,
+            overview=overview,
+            highlights=highlights,
+            extracted=extracted,
         )
         decision_pointer = self._write_gateway_artifact(
             owner_type="gateway_reply",
@@ -2449,15 +4484,17 @@ class GatewayService:
             },
         )
         manifest.discord_summary = self._build_artifact_summary_message(
-            candidate=candidate,
             full_response=response_text,
-            extracted=extracted,
+            overview=overview,
+            highlights=highlights,
         )
-        manifest.full_artifact_id = review_pointer.artifact_id
-        manifest.review_artifact_id = review_pointer.artifact_id
+        manifest.full_artifact_id = review_pdf_pointer.artifact_id
+        manifest.review_artifact_id = review_pdf_pointer.artifact_id
         manifest.decision_extract_artifact_id = decision_pointer.artifact_id
         manifest.action_extract_artifact_id = action_pointer.artifact_id
         manifest.source_artifact_id = self._primary_source_artifact_id(candidate)
+        manifest.metadata["review_markdown_artifact_id"] = review_pointer.artifact_id
+        manifest.metadata["review_markdown_artifact_path"] = review_pointer.path
         long_context_map = candidate.metadata.get("long_context_artifact_map") or {}
         if isinstance(long_context_map, dict):
             segments_ref = long_context_map.get("long_context_segments") or {}
@@ -2466,12 +4503,12 @@ class GatewayService:
             )
         manifest.attachments = [
             OperatorReplyArtifact(
-                artifact_id=review_pointer.artifact_id,
-                artifact_kind=review_pointer.artifact_kind,
-                path=review_pointer.path,
-                name=f"project-os-review-{reply.reply_id}.md",
-                mime_type="text/markdown",
-                label="Document complet",
+                artifact_id=review_pdf_pointer.artifact_id,
+                artifact_kind=review_pdf_pointer.artifact_kind,
+                path=review_pdf_pointer.path,
+                name=f"project-os-review-{reply.reply_id}.pdf",
+                mime_type="application/pdf",
+                label="Reponse complete (PDF)",
                 metadata={"owner_type": "gateway_reply", "owner_id": reply.reply_id},
             )
         ]
@@ -2497,7 +4534,7 @@ class GatewayService:
                 "reply_id": reply.reply_id,
                 "delivery_mode": delivery_mode,
                 "manifest_artifact_id": manifest_pointer.artifact_id,
-                "review_artifact_id": review_pointer.artifact_id,
+                "review_artifact_id": review_pdf_pointer.artifact_id,
             },
         )
         return manifest
@@ -2507,6 +4544,8 @@ class GatewayService:
         line_count = len([line for line in normalized.splitlines() if line.strip()])
         input_profile = str(candidate.metadata.get("input_profile") or "").strip().lower()
         requires_long_context = bool(candidate.metadata.get("requires_long_context_pipeline"))
+        if bool(candidate.metadata.get("force_artifact_summary")):
+            return "artifact_summary"
         if (
             requires_long_context
             or input_profile in {"document", "transcript", "attachment_heavy", "very_long_text"}
@@ -2514,29 +4553,50 @@ class GatewayService:
             or line_count >= _ARTIFACT_SUMMARY_LINE_THRESHOLD
         ):
             return "artifact_summary"
-        if len(normalized) >= _THREAD_CHUNK_RESPONSE_LENGTH or line_count >= _THREAD_CHUNK_LINE_THRESHOLD:
-            return "thread_chunked_text"
         return "inline_text"
 
-    def _build_artifact_summary_message(self, *, candidate, full_response: str, extracted: dict[str, list[str]]) -> str:
-        input_profile = str(candidate.metadata.get("input_profile") or "").strip().lower()
-        title = {
-            "transcript": "Synthese complete prete.",
-            "document": "Document de revue pret.",
-            "attachment_heavy": "Livrable complet pret.",
-        }.get(input_profile, "Reponse complete prete.")
-        overview = self._trim_long_context_text(full_response, limit=_RESPONSE_REVIEW_OVERVIEW_LIMIT)
-        priority_items = extracted["actions"] or extracted["decisions"] or extracted["questions"]
-        lines = [
-            title,
-            f"Resume court: {overview}",
-        ]
-        if priority_items:
-            lines.append("A verifier en priorite:")
-            for item in priority_items[:_RESPONSE_REVIEW_ITEM_LIMIT]:
+    def _build_artifact_summary_message(self, *, full_response: str, overview: str, highlights: list[str]) -> str:
+        summary = overview.strip() or self._response_review_overview(full_response)
+        lines: list[str] = []
+        if summary:
+            lines.append(summary)
+        if highlights:
+            if lines:
+                lines.append("")
+            lines.append("Dans le PDF :")
+            for item in highlights[:_RESPONSE_REVIEW_ITEM_LIMIT]:
                 lines.append(f"- {item}")
-        lines.append("Document complet joint. Le contenu long reste stocke.")
+        if lines:
+            lines.append("")
+        lines.append("PDF joint.")
         return "\n".join(lines)
+
+    def _response_review_overview(self, text: str) -> str:
+        cleaned = re.sub(r"[*_`#>-]+", " ", str(text or ""))
+        paragraphs = [part.strip() for part in re.split(r"\n\s*\n", cleaned) if part.strip()]
+        source = paragraphs[0] if paragraphs else cleaned.strip()
+        sentences = [part.strip() for part in re.split(r"(?<=[.!?])\s+", source) if part.strip()]
+        if sentences:
+            return self._trim_long_context_text(" ".join(sentences[:2]), limit=220)
+        return self._trim_long_context_text(source, limit=220)
+
+    def _response_review_highlights(self, text: str, extracted: dict[str, list[str]]) -> list[str]:
+        lowered = " ".join(str(text or "").lower().split())
+        items: list[str] = []
+        duration_match = re.search(r"\b(\d+\s*(?:-|a|à)\s*\d+\s*minutes?|\d+\s*minutes?)\b", lowered)
+        if any(token in lowered for token in ("inspect", "inspection", "workspace", "repo", "code", "doc", "documentation")):
+            items.append("la methode d'inspection du repo et de la doc")
+        if duration_match is not None:
+            items.append(f"le delai estime: {duration_match.group(1)}")
+        if any(token in lowered for token in ("inspiration", "pattern", "reference", "architecture", "memoire", "gestion memoire")):
+            items.append("les inspirations probables et les patterns a verifier")
+        if any(token in lowered for token in ("je ne ferais pas", "je n'inventerais pas", "si on n'a pas", "pas documente", "pas formalise")):
+            items.append("les limites actuelles et ce qui reste a confirmer")
+        if extracted.get("questions"):
+            items.append("la question ouverte a trancher")
+        if not items:
+            items.append("la version longue de la reponse")
+        return self._merge_long_context_items([], items)[:_RESPONSE_REVIEW_ITEM_LIMIT]
 
     def _render_response_review_markdown(
         self,
@@ -2661,6 +4721,85 @@ class GatewayService:
             immutable_columns=["created_at"],
         )
         return pointer
+
+    def _write_gateway_binary_artifact(
+        self,
+        *,
+        owner_type: str,
+        owner_id: str,
+        artifact_kind: str,
+        payload: bytes,
+        suffix: str,
+    ) -> ArtifactPointer:
+        assert self.paths is not None
+        assert self.path_policy is not None
+        pointer = write_binary_artifact(
+            paths=self.paths,
+            path_policy=self.path_policy,
+            owner_id=owner_id,
+            artifact_kind=artifact_kind,
+            storage_tier=MemoryTier.HOT,
+            payload=payload,
+            suffix=suffix,
+        )
+        self.database.upsert(
+            "artifact_pointers",
+            {
+                "artifact_id": pointer.artifact_id,
+                "owner_type": owner_type,
+                "owner_id": owner_id,
+                "artifact_kind": pointer.artifact_kind,
+                "storage_tier": pointer.storage_tier.value,
+                "path": pointer.path,
+                "checksum_sha256": pointer.checksum_sha256,
+                "size_bytes": pointer.size_bytes,
+                "created_at": pointer.created_at,
+            },
+            conflict_columns="artifact_id",
+            immutable_columns=["created_at"],
+        )
+        return pointer
+
+    def _write_gateway_response_pdf_artifact(
+        self,
+        *,
+        owner_id: str,
+        event: ChannelEvent,
+        candidate,
+        decision: RoutingDecision,
+        full_response: str,
+        overview: str,
+        highlights: list[str],
+        extracted: dict[str, list[str]],
+    ) -> ArtifactPointer:
+        assert self.paths is not None
+        assert self.path_policy is not None
+        pdf_folder = self.paths.runtime_artifact_root / "response_review_pdf"
+        pdf_folder.mkdir(parents=True, exist_ok=True)
+        destination = self.path_policy.ensure_allowed_write(pdf_folder / f"{owner_id}.pdf")
+        render_operator_reply_pdf(
+            destination,
+            display_title="Reponse detaillee Project OS",
+            metadata={
+                "channel": event.message.channel,
+                "input_profile": candidate.metadata.get("input_profile") or "unknown",
+                "provider": decision.model_route.provider,
+                "model": decision.model_route.model or "unknown",
+                "delivery_mode": "artifact_summary",
+                "message_id": event.message.message_id,
+            },
+            overview=overview,
+            highlights=highlights,
+            questions=extracted["questions"],
+            full_response=full_response,
+        )
+        return self._write_gateway_binary_artifact(
+            owner_type="gateway_reply",
+            owner_id=owner_id,
+            artifact_kind="response_review_pdf",
+            payload=destination.read_bytes(),
+            suffix=".pdf",
+        )
 
     def _write_gateway_artifact(
         self,

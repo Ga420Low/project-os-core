@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 
-CURRENT_SCHEMA_VERSION = "14"
+CURRENT_SCHEMA_VERSION = "15"
 
 
 def _quote_identifier(name: str) -> str:
@@ -825,6 +825,45 @@ class CanonicalDatabase:
                     metadata_json TEXT NOT NULL DEFAULT '{}',
                     PRIMARY KEY (repo, issue_number)
                 );
+
+                CREATE TABLE IF NOT EXISTS deep_research_source_observations (
+                    observation_id TEXT PRIMARY KEY,
+                    run_id TEXT,
+                    normalized_source_id TEXT NOT NULL,
+                    normalized_url TEXT,
+                    domain TEXT,
+                    publisher TEXT,
+                    source_kind TEXT NOT NULL,
+                    lane TEXT,
+                    trust_class TEXT NOT NULL,
+                    reputation_class TEXT NOT NULL,
+                    score REAL NOT NULL,
+                    corroborated INTEGER NOT NULL DEFAULT 0,
+                    contradicted INTEGER NOT NULL DEFAULT 0,
+                    published_at TEXT,
+                    observed_at TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                );
+
+                CREATE TABLE IF NOT EXISTS deep_research_source_reputation (
+                    normalized_source_id TEXT PRIMARY KEY,
+                    normalized_url TEXT,
+                    domain TEXT,
+                    publisher TEXT,
+                    source_kind TEXT NOT NULL,
+                    first_seen_at TEXT NOT NULL,
+                    last_seen_at TEXT NOT NULL,
+                    observation_count INTEGER NOT NULL DEFAULT 0,
+                    trusted_count INTEGER NOT NULL DEFAULT 0,
+                    weak_count INTEGER NOT NULL DEFAULT 0,
+                    quarantined_count INTEGER NOT NULL DEFAULT 0,
+                    corroborated_count INTEGER NOT NULL DEFAULT 0,
+                    contradicted_count INTEGER NOT NULL DEFAULT 0,
+                    latest_published_at TEXT,
+                    last_score REAL NOT NULL DEFAULT 0,
+                    last_trust_class TEXT NOT NULL DEFAULT 'weak_signal',
+                    metadata_json TEXT NOT NULL DEFAULT '{}'
+                );
                 """
             )
 
@@ -992,6 +1031,16 @@ class CanonicalDatabase:
                 ON github_issue_ingestions(ingested_at DESC);
             CREATE INDEX IF NOT EXISTS idx_github_issue_ingestions_updated
                 ON github_issue_ingestions(updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_deep_research_obs_run_observed
+                ON deep_research_source_observations(run_id, observed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_deep_research_obs_source_observed
+                ON deep_research_source_observations(normalized_source_id, observed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_deep_research_obs_domain_observed
+                ON deep_research_source_observations(domain, observed_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_deep_research_rep_domain_updated
+                ON deep_research_source_reputation(domain, last_seen_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_deep_research_rep_score_updated
+                ON deep_research_source_reputation(last_score DESC, last_seen_at DESC);
             """
         )
 

@@ -334,6 +334,8 @@ Le replay doit prouver:
 
 Le socle UX Discord retenu repose d'abord sur les primitives upstream `OpenClaw`, pas sur des handlers custom fragiles:
 
+- `agents.defaults.typingMode = instant`
+- `agents.defaults.typingIntervalSeconds = 6`
 - `session.threadBindings`
 - `channels.discord.threadBindings`
 - `channels.discord.autoPresence`
@@ -344,14 +346,19 @@ Project OS ajoute seulement ce qui manque pour garder la verite canonique:
 - projection `discord_thread_bindings` dans SQLite
 - checks doctor/truth-health
 - payloads sortants Discord plus precis quand un target/reply/components explicite existe
+- signal `typing` direct Discord pendant l'attente du run, car l'egress visible passe par le bridge REST et non par l'auto-reply natif
 
 La policy retenue reste sobre:
 
+- `typingMode = instant` pour signaler tout de suite `message vu / run actif` sans bruit texte
+- `typingIntervalSeconds = 6` pour garder un refresh stable sans agressivite
 - `execApprovals` en `dm`
 - `threadBindings` actifs
 - `autoPresence` actif
 - `session.sendPolicy` deny pour `discord/group` et `discord/channel`
 - pas de components metier riches tant qu'ils ne sont pas prouvables sans ambiguite
+- `full response` garde la priorite en chat tant qu'elle tient proprement dans Discord
+- `PDF` remplace le `.md` joint quand une sortie longue doit quitter le chat
 
 ## Validation live
 

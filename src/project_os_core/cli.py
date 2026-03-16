@@ -78,6 +78,8 @@ def main(argv: list[str] | None = None) -> int:
     research_sub = research_parser.add_subparsers(dest="research_command", required=True)
     research_run_job = research_sub.add_parser("run-job")
     research_run_job.add_argument("--job-path", required=True)
+    research_run_lane = research_sub.add_parser("run-lane")
+    research_run_lane.add_argument("--lane-request", required=True)
 
     secrets_parser = subparsers.add_parser("secrets")
     secrets_sub = secrets_parser.add_subparsers(dest="secrets_command", required=True)
@@ -256,6 +258,13 @@ def main(argv: list[str] | None = None) -> int:
     openclaw_live.add_argument("--channel", required=True)
     openclaw_live.add_argument("--payload-file")
     openclaw_live.add_argument("--max-age-hours", type=int)
+    openclaw_calibration = openclaw_sub.add_parser("discord-calibration")
+    openclaw_calibration.add_argument("--limit", type=int, default=6)
+    openclaw_calibration.add_argument("--log-lines", type=int, default=20)
+    openclaw_calibration.add_argument("--watch", action="store_true")
+    openclaw_calibration.add_argument("--interval", type=float, default=3.0)
+    openclaw_calibration.add_argument("--iterations", type=int, default=0)
+    openclaw_calibration.add_argument("--json", action="store_true")
     openclaw_self_heal = openclaw_sub.add_parser("self-heal")
     openclaw_self_heal.add_argument("--ignore-cooldown", action="store_true")
 
@@ -461,6 +470,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "research" and args.research_command == "run-job":
             payload = services.deep_research.run_job_path(job_path=args.job_path)
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0 if payload.get("status") == "completed" else 1
+        if args.command == "research" and args.research_command == "run-lane":
+            payload = services.deep_research.run_lane_path(lane_request_path=args.lane_request)
             print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
             return 0 if payload.get("status") == "completed" else 1
         if args.command == "secrets" and args.secrets_command == "doctor":
@@ -758,6 +771,22 @@ def main(argv: list[str] | None = None) -> int:
                 report = services.openclaw.validate_live(channel=args.channel, payload_file=args.payload_file, max_age_hours=args.max_age_hours)
                 print(json.dumps(to_jsonable(report), indent=2, ensure_ascii=True, sort_keys=True))
                 return 0 if report.success else 1
+            if args.openclaw_command == "discord-calibration":
+                if args.watch:
+                    return _watch_openclaw_discord_calibration(
+                        services,
+                        interval=args.interval,
+                        iterations=args.iterations,
+                        limit=args.limit,
+                        log_lines=args.log_lines,
+                        as_json=bool(args.json),
+                    )
+                snapshot = services.openclaw.discord_calibration_snapshot(limit=args.limit, log_lines=args.log_lines)
+                if args.json:
+                    print(json.dumps(to_jsonable(snapshot), indent=2, ensure_ascii=True, sort_keys=True))
+                else:
+                    print(_render_openclaw_discord_calibration(snapshot))
+                return 0
             if args.openclaw_command == "self-heal":
                 report = services.openclaw.self_heal(ignore_cooldown=bool(args.ignore_cooldown))
                 print(json.dumps(to_jsonable(report), indent=2, ensure_ascii=True, sort_keys=True))
@@ -1217,6 +1246,125 @@ def _watch_api_runs_monitor(services, *, interval: float, iterations: int, limit
             time.sleep(interval)
     except KeyboardInterrupt:
         return 0
+
+
+def _watch_openclaw_discord_calibration(
+    services,
+    *,
+    interval: float,
+    iterations: int,
+    limit: int,
+    log_lines: int,
+    as_json: bool,
+) -> int:
+    count = 0
+    try:
+        while True:
+            snapshot = services.openclaw.discord_calibration_snapshot(limit=limit, log_lines=log_lines)
+            _clear_live_console()
+            if as_json:
+                print(json.dumps(to_jsonable(snapshot), indent=2, ensure_ascii=True, sort_keys=True))
+            else:
+                print(_render_openclaw_discord_calibration(snapshot))
+            count += 1
+            if iterations and count >= iterations:
+                return 0
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        return 0
+
+
+def _render_openclaw_discord_calibration(snapshot: dict[str, Any]) -> str:
+    lines: list[str] = []
+    generated_at = str(snapshot.get("generated_at") or "")
+    gateway_status = snapshot.get("gateway_status") if isinstance(snapshot.get("gateway_status"), dict) else {}
+    live_proof = snapshot.get("live_proof") if isinstance(snapshot.get("live_proof"), dict) else None
+    lines.append("Project OS Discord calibration")
+    lines.append(f"Generated: {generated_at}")
+    lines.append(
+        "Gateway: "
+        + (
+            f"healthy={gateway_status.get('healthy')} "
+            f"loaded={gateway_status.get('loaded')} "
+            f"port={gateway_status.get('port_status')} "
+            f"rpc_ok={gateway_status.get('rpc_ok')}"
+        )
+    )
+    if live_proof:
+        lines.append(
+            "Live proof: "
+            + f"event={live_proof.get('event_id')} dispatch={live_proof.get('dispatch_id')} "
+            + f"reply_kind={live_proof.get('reply_kind')} created_at={live_proof.get('created_at')}"
+        )
+    else:
+        lines.append("Live proof: none")
+
+    lines.append("")
+    lines.append("Recent Discord events")
+    recent_events = snapshot.get("recent_events") if isinstance(snapshot.get("recent_events"), list) else []
+    if not recent_events:
+        lines.append("- none")
+    for item in recent_events:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "- "
+            + f"{item.get('created_at')} "
+            + f"[{item.get('reply_kind') or 'no-reply'}] "
+            + f"{str(item.get('text') or '').strip()[:120]}"
+        )
+        meta_bits = [
+            f"route={item.get('route_reason')}" if item.get("route_reason") else None,
+            f"api={item.get('estimated_api_label') or ((str(item.get('model_provider') or '') + ' / ' + str(item.get('model') or '')).strip(' /'))}" if item.get("estimated_api_label") or item.get("model_provider") or item.get("model") else None,
+            f"approval={item.get('approval_type')}" if item.get("approval_type") else None,
+            f"cost={item.get('estimated_cost_eur')}" if item.get("estimated_cost_eur") is not None else None,
+            f"time={item.get('estimated_time_band')}" if item.get("estimated_time_band") else None,
+            f"binding={item.get('binding_kind')}/{item.get('binding_status')}" if item.get("binding_kind") or item.get("binding_status") else None,
+        ]
+        compact_meta = " | ".join(bit for bit in meta_bits if bit)
+        if compact_meta:
+            lines.append(f"  {compact_meta}")
+        summary = str(item.get("reply_summary") or "").strip()
+        if summary:
+            lines.append(f"  reply: {summary[:160]}")
+
+    lines.append("")
+    lines.append("Recent operator deliveries")
+    recent_deliveries = snapshot.get("recent_deliveries") if isinstance(snapshot.get("recent_deliveries"), list) else []
+    if not recent_deliveries:
+        lines.append("- none")
+    for item in recent_deliveries:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            "- "
+            + f"{item.get('created_at')} "
+            + f"[{item.get('status')}] "
+            + f"{item.get('kind')} "
+            + f"mode={item.get('delivery_mode') or 'n/a'} "
+            + f"attempts={item.get('attempts')}"
+        )
+        detail_bits = [
+            f"hint={item.get('channel_hint')}" if item.get("channel_hint") else None,
+            f"target={item.get('target')}" if item.get("target") else None,
+            f"guarantee={item.get('delivery_guarantee')}" if item.get("delivery_guarantee") else None,
+            f"last_error={item.get('last_error')}" if item.get("last_error") else None,
+        ]
+        compact_detail = " | ".join(bit for bit in detail_bits if bit)
+        if compact_detail:
+            lines.append(f"  {compact_detail}")
+
+    log_tail = snapshot.get("openclaw_log_tail") if isinstance(snapshot.get("openclaw_log_tail"), dict) else None
+    lines.append("")
+    lines.append("OpenClaw log tail")
+    if not log_tail or not log_tail.get("exists"):
+        lines.append("- none")
+    else:
+        lines.append(f"- path: {log_tail.get('path')}")
+        for line in log_tail.get("lines") or []:
+            lines.append(f"  {str(line)}")
+
+    return "\n".join(lines)
 
 
 def _execute_scheduler_task(services, command: str, args_dict: dict[str, Any]) -> dict[str, Any]:

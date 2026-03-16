@@ -612,6 +612,56 @@ class ApiRunServiceTests(unittest.TestCase):
             finally:
                 services.close()
 
+    def test_operator_delivery_does_not_regress_after_delivered_ack(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                contract = _prepare_approved_contract(
+                    services,
+                    mode=ApiRunMode.AUDIT,
+                    objective="Verifier le guard stale ack operateur.",
+                    branch_name="project-os/test-operator-stale-ack",
+                    skill_tags=["audit", "observability"],
+                )
+                services.api_runs.execute_run(
+                    contract_id=contract.contract_id,
+                    response_runner=lambda request, prompt, context: {
+                        "model": "gpt-5.4",
+                        "output_text": json.dumps(
+                            {
+                                "decision": "Le run est pret pour revue.",
+                                "why": "Le lot a produit un resultat exploitable.",
+                                "alternatives": [],
+                                "files_to_change": [],
+                                "interfaces": [],
+                                "patch_outline": [],
+                                "tests": [],
+                                "risks": [],
+                                "acceptance_criteria": [],
+                                "open_questions": [],
+                            }
+                        ),
+                        "usage": {"input_tokens": 25, "output_tokens": 20},
+                    },
+                )
+                delivery = services.api_runs.list_operator_deliveries(limit=10)["deliveries"][0]
+                delivered = services.api_runs.mark_operator_delivery(
+                    delivery_id=delivery["delivery_id"],
+                    status=OperatorDeliveryStatus.DELIVERED,
+                    metadata={"target": "channel:test"},
+                )
+                stale = services.api_runs.mark_operator_delivery(
+                    delivery_id=delivery["delivery_id"],
+                    status=OperatorDeliveryStatus.PENDING,
+                    error="late_retry_should_be_ignored",
+                )
+                self.assertEqual(delivered["status"], "delivered")
+                self.assertEqual(stale["status"], "delivered")
+                self.assertEqual(stale["attempts"], delivered["attempts"])
+                self.assertEqual(stale["last_error"], delivered["last_error"])
+            finally:
+                services.close()
+
     def test_operator_delivery_pending_ack_uses_exponential_backoff_and_due_filter(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = _build_services(Path(tmp))

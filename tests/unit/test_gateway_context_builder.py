@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from pypdf import PdfReader
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from project_os_core.models import (
@@ -18,7 +20,7 @@ from project_os_core.models import (
     new_id,
 )
 from project_os_core.session.state import SessionSnapshot
-from project_os_core.gateway.context_builder import ThreadTurn
+from project_os_core.gateway.context_builder import GatewayContextBuilder, ThreadTurn
 from project_os_core.services import build_app_services
 
 
@@ -141,6 +143,26 @@ class GatewayContextBuilderTests(unittest.TestCase):
                 self.assertIn("detected_mood: brainstorming", rendered)
             finally:
                 services.close()
+
+    def test_recent_operator_reply_text_mentions_pdf_artifact(self):
+        reply = {
+            "summary": "Inspirations architecturales pour la gestion memoire",
+            "response_manifest": {
+                "delivery_mode": "artifact_summary",
+                "attachments": [
+                    {
+                        "mime_type": "application/pdf",
+                        "name": "project-os-review-reply_test.pdf",
+                    }
+                ],
+            },
+        }
+
+        rendered = GatewayContextBuilder._render_recent_operator_reply_text(reply)
+
+        self.assertIn("Inspirations architecturales", rendered)
+        self.assertIn("PDF joint", rendered)
+        self.assertIn("project-os-review-reply_test.pdf", rendered)
 
     def test_identity_prompt_does_not_leak_pending_clarifications_or_thread_backlog(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -284,11 +306,12 @@ class GatewayContextBuilderTests(unittest.TestCase):
                         actor_id="founder",
                         channel="discord",
                         text=(
-                            "Decision: on garde Discord comme surface.\n"
-                            "Action: corriger le pipeline long input.\n"
-                            "Question: faut-il joindre un PDF pour revue ?\n\n"
+                            "Notes de contexte.\n"
+                            "Discord reste la surface principale.\n"
+                            "Le pipeline long input doit rester lisible.\n"
+                            "Question ouverte: faut-il joindre un PDF ?\n\n"
                         )
-                        + ("plan detaille a verifier " * 180),
+                        + ("constat detaille " * 220),
                         thread_ref=ConversationThreadRef(
                             thread_id="thread_long_context",
                             channel="discord",
@@ -338,9 +361,9 @@ class GatewayContextBuilderTests(unittest.TestCase):
                     return (
                         "Decision: passer en artifact-first output.\n"
                         "Action: envoyer un resume Discord compact.\n"
-                        "Action: joindre le document complet en markdown.\n"
-                        "Question: faut-il ajouter un PDF plus tard ?\n\n"
-                        + ("Plan detaille de validation " * 220)
+                        "Action: joindre le document complet en PDF.\n"
+                        "Question: faut-il ajouter une version markdown interne ?\n\n"
+                        + ("Plan detaille de validation " * 260)
                     )
 
                 services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
@@ -374,12 +397,18 @@ class GatewayContextBuilderTests(unittest.TestCase):
                 self.assertTrue(manifest.decision_extract_artifact_id)
                 self.assertTrue(manifest.action_extract_artifact_id)
                 self.assertEqual(len(manifest.attachments), 1)
-                self.assertIn("Document complet joint.", dispatch.operator_reply.summary)
+                self.assertNotIn("Reponse complete prete.", dispatch.operator_reply.summary)
+                self.assertNotIn("Resume court:", dispatch.operator_reply.summary)
+                self.assertIn("Dans le PDF", dispatch.operator_reply.summary)
+                self.assertIn("PDF joint", dispatch.operator_reply.summary)
                 self.assertTrue(Path(manifest.attachments[0].path).exists())
-                self.assertEqual(Path(manifest.attachments[0].path).suffix, ".md")
-                review_text = Path(manifest.attachments[0].path).read_text(encoding="utf-8")
-                self.assertIn("# Project OS Review Artifact", review_text)
-                self.assertIn("## Full Response", review_text)
+                self.assertEqual(Path(manifest.attachments[0].path).suffix, ".pdf")
+                self.assertEqual(manifest.attachments[0].mime_type, "application/pdf")
+                self.assertTrue(Path(manifest.attachments[0].path).read_bytes().startswith(b"%PDF"))
+                pdf_text = "\n".join((PdfReader(manifest.attachments[0].path).pages[0].extract_text() or "").splitlines())
+                self.assertIn("Version complete", pdf_text)
+                self.assertNotIn("Décisions", pdf_text)
+                self.assertNotIn("Actions", pdf_text)
                 artifact_rows = services.database.fetchall(
                     "SELECT artifact_kind FROM artifact_pointers WHERE owner_type = ? ORDER BY artifact_kind",
                     ("gateway_reply",),
@@ -391,7 +420,66 @@ class GatewayContextBuilderTests(unittest.TestCase):
                         "response_decision_extract",
                         "response_manifest",
                         "response_review_markdown",
+                        "response_review_pdf",
                     }.issubset(artifact_kinds)
                 )
+            finally:
+                services.close()
+
+    def test_medium_response_stays_in_chat_without_review_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    del message, model, route_reason, context_bundle
+                    return (
+                        "Je vois le probleme d'encodage dans tes messages precedents et meme dans celui-ci.\n\n"
+                        "**Le diagnostic :**\n"
+                        "- Les caracteres accentues arrivent corrompus\n"
+                        "- Le message ASCII passe bien\n"
+                        "- Le souci est probablement dans la chaine Discord -> bridge\n\n"
+                        "**Prochain pas :**\n"
+                        "1. Je check le point d'entree du payload\n"
+                        "2. Je compare le brut Discord et le texte adapte\n"
+                        "3. Je te rends le point exact ou ca casse"
+                    )
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
+
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="Quelle probleme d'encodage ?",
+                        thread_ref=ConversationThreadRef(
+                            thread_id="thread_medium_output",
+                            channel="discord",
+                            external_thread_id="channel:thread_medium_output",
+                        ),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                manifest = dispatch.operator_reply.response_manifest
+                self.assertIsNotNone(manifest)
+                assert manifest is not None
+                self.assertEqual(manifest.delivery_mode, "inline_text")
+                self.assertEqual(dispatch.operator_reply.summary, manifest.discord_summary)
+                self.assertEqual(manifest.attachments, [])
+                self.assertFalse(dispatch.metadata.get("response_review_artifact_id"))
             finally:
                 services.close()

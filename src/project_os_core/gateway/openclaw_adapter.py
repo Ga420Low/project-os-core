@@ -197,7 +197,29 @@ def _as_text(value: Any) -> str | None:
     if value is None:
         return None
     text = str(value).strip()
-    return text or None
+    if not text:
+        return None
+    return _repair_mojibake_text(text)
+
+
+def _repair_mojibake_text(text: str) -> str:
+    suspicious_markers = ("Ã", "Â", "â€", "â€™", "â€œ", "â€\x9d", "â€“", "â€”", "â‚¬")
+    if not any(marker in text for marker in suspicious_markers):
+        return text
+    original_score = _mojibake_score(text)
+    for encoding in ("cp1252", "latin-1"):
+        try:
+            repaired = text.encode(encoding, errors="strict").decode("utf-8", errors="strict").strip()
+        except (UnicodeDecodeError, UnicodeEncodeError):
+            continue
+        if repaired and _mojibake_score(repaired) < original_score:
+            return repaired
+    return text
+
+
+def _mojibake_score(text: str) -> int:
+    markers = ("Ã", "Â", "â€", "â€™", "â€œ", "â€\x9d", "â€“", "â€”", "â‚¬")
+    return sum(text.count(marker) for marker in markers)
 
 
 def _as_risk_class(value: Any) -> ActionRiskClass | None:

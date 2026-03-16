@@ -298,7 +298,7 @@ class ApiRunDashboardTests(unittest.TestCase):
                         "Decision: basculer en artifact-first.\n"
                         "Action: livrer un resume Discord.\n"
                         "Action: joindre le document complet.\n\n"
-                        + ("Plan detaille a relire " * 180)
+                        + ("Plan detaille a relire " * 260)
                     )
 
                 services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
@@ -313,7 +313,7 @@ class ApiRunDashboardTests(unittest.TestCase):
                             message_id=new_id("message"),
                             actor_id="founder",
                             channel="discord",
-                            text=("fais moi un plan complet a verifier " * 80),
+                            text=("j'ai besoin d'une reponse complete a verifier " * 80),
                             thread_ref=ConversationThreadRef(
                                 thread_id="thread_dashboard_gateway_audit",
                                 channel="discord",

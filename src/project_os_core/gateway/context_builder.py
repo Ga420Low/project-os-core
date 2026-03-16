@@ -203,11 +203,35 @@ class GatewayContextBuilder:
                 reply = json.loads(row["reply_json"]) if row["reply_json"] else {}
             except Exception:
                 reply = {}
-            text = self._trim(str(reply.get("summary") or "").strip())
+            text = self._render_recent_operator_reply_text(reply)
             if not text:
                 continue
             turns.append(ThreadTurn(role="project_os", text=text, created_at=str(row["created_at"])))
         return tuple(turns)
+
+    @classmethod
+    def _render_recent_operator_reply_text(cls, reply: dict[str, Any]) -> str:
+        summary = str(reply.get("summary") or "").strip()
+        manifest = reply.get("response_manifest") if isinstance(reply.get("response_manifest"), dict) else {}
+        delivery_mode = str(manifest.get("delivery_mode") or "").strip().lower() if isinstance(manifest, dict) else ""
+        attachments_raw = manifest.get("attachments") if isinstance(manifest.get("attachments"), list) else []
+        attachment_labels: list[str] = []
+        for item in attachments_raw:
+            if not isinstance(item, dict):
+                continue
+            mime_type = str(item.get("mime_type") or "").strip().lower()
+            name = str(item.get("name") or "").strip()
+            if mime_type == "application/pdf" or name.lower().endswith(".pdf"):
+                attachment_labels.append(f"PDF joint ({name})" if name else "PDF joint")
+                break
+        if delivery_mode == "artifact_summary" and not attachment_labels:
+            attachment_labels.append("artefact joint")
+        if attachment_labels:
+            suffix = "; ".join(attachment_labels[:2])
+            if summary:
+                return cls._trim(f"{summary} [{suffix}]")
+            return cls._trim(suffix)
+        return cls._trim(summary)
 
     def _load_thread_binding(self, *, surface: str, channel: str, conversation_key: str | None) -> dict[str, Any] | None:
         if not conversation_key:

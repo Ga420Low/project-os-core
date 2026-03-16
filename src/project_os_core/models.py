@@ -840,6 +840,10 @@ class ExecutionPolicy:
     discord_simple_model: str = "claude-sonnet-4-20250514"
     discord_opus_model: str = "claude-opus-4-1"
     discord_simple_reasoning_effort: str = "medium"
+    deep_research_extreme_debug_enabled: bool = True
+    deep_research_extreme_debug_provider: str = "anthropic"
+    deep_research_extreme_debug_model: str = "claude-sonnet-4-20250514"
+    deep_research_extreme_debug_log_enabled: bool = True
     operator_language: str = "fr"
     operator_audience: OperatorAudience = OperatorAudience.NON_DEVELOPER
     run_contract_required: bool = True

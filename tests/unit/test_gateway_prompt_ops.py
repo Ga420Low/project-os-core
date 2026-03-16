@@ -5,10 +5,12 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
-from project_os_core.gateway.context_builder import GatewayContextBuilder
+from project_os_core.gateway.context_builder import GatewayContextBuilder, GatewayContextBundle, MoodHint, ThreadTurn
 from project_os_core.gateway.promotion import SelectiveSyncPromoter
 from project_os_core.gateway.persona import load_persona_spec
 from project_os_core.models import (
@@ -244,6 +246,79 @@ class GatewayPromptOpsTests(unittest.TestCase):
             "capability_query_without_deliverable",
         )
 
+    def test_memory_question_does_not_fall_into_note_signal_false_positive(self):
+        promoter = SelectiveSyncPromoter()
+
+        event = ChannelEvent(
+            event_id=new_id("channel_event"),
+            surface="discord",
+            event_type="message.created",
+            message=OperatorMessage(
+                message_id=new_id("message"),
+                actor_id="founder",
+                channel="discord",
+                text=(
+                    "Et donc si je te dis de regarder sur qui on s'inspire pour le gestion de memoire "
+                    "tu repond quoi et en combien de temps ? Reponse longue demander + de 2000 caractere"
+                ),
+                thread_ref=ConversationThreadRef(thread_id="thread_scope", channel="discord"),
+            ),
+        )
+
+        candidate = promoter.build_candidate(event)
+
+        self.assertEqual(candidate.classification.value, "chat")
+        self.assertEqual(candidate.metadata["intent_kind"], "discussion")
+        self.assertNotIn("note_signal", candidate.metadata["intent_signals"])
+
+    def test_rating_question_does_not_fall_into_note_signal_false_positive(self):
+        promoter = SelectiveSyncPromoter()
+
+        event = ChannelEvent(
+            event_id=new_id("channel_event"),
+            surface="discord",
+            event_type="message.created",
+            message=OperatorMessage(
+                message_id=new_id("message"),
+                actor_id="founder",
+                channel="discord",
+                text="et tu lui donnerais une note de combien ?",
+                thread_ref=ConversationThreadRef(thread_id="thread_scope", channel="discord"),
+            ),
+        )
+
+        candidate = promoter.build_candidate(event)
+
+        self.assertEqual(candidate.classification.value, "chat")
+        self.assertEqual(candidate.metadata["intent_kind"], "discussion")
+        self.assertNotIn("note_signal", candidate.metadata["intent_signals"])
+        self.assertFalse(candidate.metadata["directive_detection"]["likely_directive"])
+
+    def test_document_followup_question_does_not_become_directive(self):
+        promoter = SelectiveSyncPromoter()
+
+        event = ChannelEvent(
+            event_id=new_id("channel_event"),
+            surface="discord",
+            event_type="message.created",
+            message=OperatorMessage(
+                message_id=new_id("message"),
+                actor_id="founder",
+                channel="discord",
+                text=(
+                    "ok desoler ahaha le systeme de memoire tu lui donne combien sachant que "
+                    "tu n'a pas encore analyser le document en profondeur ?"
+                ),
+                thread_ref=ConversationThreadRef(thread_id="thread_scope", channel="discord"),
+            ),
+        )
+
+        candidate = promoter.build_candidate(event)
+
+        self.assertEqual(candidate.classification.value, "chat")
+        self.assertEqual(candidate.metadata["intent_kind"], "discussion")
+        self.assertFalse(candidate.metadata["directive_detection"]["likely_directive"])
+
     def test_input_profile_classifier_marks_long_text_documents_and_transcripts(self):
         promoter = SelectiveSyncPromoter()
 
@@ -322,6 +397,172 @@ class GatewayPromptOpsTests(unittest.TestCase):
                 self.assertIn("<truth_rules>", system_prompt)
                 self.assertIn("assistant numerique generique", system_prompt.lower())
                 self.assertIn("je n'utilise aucune api externe.", system_prompt.lower())
+            finally:
+                services.close()
+
+    def test_reasoning_escalation_assessment_detects_serious_dense_discussion(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                positive = services.gateway._assess_reasoning_escalation_need(
+                    message=(
+                        "J'ai besoin d'une analyse architecture avec compromis pour la roadmap persona "
+                        "et le niveau de challenge avant qu'on decide."
+                    ),
+                    context_bundle=GatewayContextBundle(
+                        mood_hint=MoodHint(mood="brainstorming", guidance="ouvre mais cadre"),
+                        session_brief="",
+                        handoff_contract=None,  # type: ignore[arg-type]
+                    ),
+                )
+                negative = services.gateway._assess_reasoning_escalation_need(
+                    message="merci pour le rappel, on continue",
+                    context_bundle=GatewayContextBundle(
+                        mood_hint=MoodHint(mood="focused", guidance="reste net"),
+                        session_brief="",
+                        handoff_contract=None,  # type: ignore[arg-type]
+                    ),
+                )
+
+                self.assertGreaterEqual(positive["score"], 3)
+                self.assertTrue(any("sujet strategique" in item for item in positive["reasons"]))
+                self.assertLess(negative["score"], 3)
+            finally:
+                services.close()
+
+    def test_reasoning_escalation_assessment_detects_explicit_longform_request(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                assessment = services.gateway._assess_reasoning_escalation_need(
+                    message=(
+                        "Et donc si je te dis de regarder sur qui on s'inspire pour la gestion memoire, "
+                        "tu reponds quoi et en combien de temps ? Reponse longue demandee + de 2000 caracteres."
+                    ),
+                    context_bundle=GatewayContextBundle(
+                        mood_hint=MoodHint(mood="focused", guidance="reste net"),
+                        session_brief="",
+                        handoff_contract=None,  # type: ignore[arg-type]
+                    ),
+                )
+
+                self.assertGreaterEqual(assessment["score"], 3)
+                self.assertTrue(assessment["explicit_longform"])
+                self.assertTrue(any("reponse longue" in item or "approfondie" in item for item in assessment["reasons"]))
+            finally:
+                services.close()
+
+    def test_reasoning_escalation_assessment_does_not_treat_existing_pdf_mention_as_longform(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                assessment = services.gateway._assess_reasoning_escalation_need(
+                    message="bah sur le pdf que tu ma generer tes pas tres malins",
+                    context_bundle=GatewayContextBundle(
+                        mood_hint=MoodHint(mood="focused", guidance="reste net"),
+                        session_brief="",
+                        handoff_contract=None,  # type: ignore[arg-type]
+                        recent_thread_messages=(
+                            ThreadTurn(role="founder", text="et tu lui donnerais une note de combien ?", created_at="2026-03-16T03:41:00+00:00"),
+                        ),
+                        recent_operator_replies=(
+                            ThreadTurn(
+                                role="project_os",
+                                text="Inspirations architecturales pour la gestion memoire. PDF joint.",
+                                created_at="2026-03-16T03:38:00+00:00",
+                            ),
+                            ThreadTurn(
+                                role="project_os",
+                                text="Je ne saisis pas ta question.",
+                                created_at="2026-03-16T03:43:00+00:00",
+                            ),
+                        ),
+                    ),
+                )
+
+                self.assertFalse(assessment["explicit_longform"])
+                self.assertLess(assessment["score"], 3)
+            finally:
+                services.close()
+
+    def test_discussion_mode_cost_estimate_scales_with_message_and_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                long_message = (
+                    "Et donc si je te dis de regarder sur qui on s'inspire pour la gestion memoire, "
+                    "tu reponds quoi et en combien de temps ? Reponse longue demandee + de 2000 caracteres."
+                )
+                short_message = "Tu peux me repondre vite sur la memoire ?"
+
+                short_extreme = services.gateway._discussion_mode_spec(
+                    "extreme",
+                    score=3,
+                    message=short_message,
+                    explicit_longform=False,
+                    recent_turn_count=0,
+                )
+                long_simple = services.gateway._discussion_mode_spec(
+                    "simple",
+                    score=6,
+                    message=long_message,
+                    explicit_longform=True,
+                    recent_turn_count=4,
+                )
+                long_avance = services.gateway._discussion_mode_spec(
+                    "avance",
+                    score=6,
+                    message=long_message,
+                    explicit_longform=True,
+                    recent_turn_count=4,
+                )
+                long_extreme = services.gateway._discussion_mode_spec(
+                    "extreme",
+                    score=6,
+                    message=long_message,
+                    explicit_longform=True,
+                    recent_turn_count=4,
+                )
+
+                self.assertGreater(long_extreme["estimated_cost_eur"], short_extreme["estimated_cost_eur"])
+                self.assertGreater(long_avance["estimated_cost_eur"], long_simple["estimated_cost_eur"])
+                self.assertGreater(long_extreme["estimated_cost_eur"], long_avance["estimated_cost_eur"])
+            finally:
+                services.close()
+
+    def test_simple_chat_continues_when_anthropic_hits_max_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "sk-ant-test")
+                calls: list[dict[str, object]] = []
+
+                class _FakeMessages:
+                    def create(self, **kwargs):
+                        calls.append(dict(kwargs))
+                        if len(calls) == 1:
+                            return SimpleNamespace(
+                                stop_reason="max_tokens",
+                                content=[SimpleNamespace(text="Premiere partie coupee")],
+                            )
+                        return SimpleNamespace(
+                            stop_reason="end_turn",
+                            content=[SimpleNamespace(text=" suite terminee proprement.")],
+                        )
+
+                class _FakeAnthropicClient:
+                    def __init__(self, api_key: str):
+                        self.api_key = api_key
+                        self.messages = _FakeMessages()
+
+                fake_module = SimpleNamespace(Anthropic=_FakeAnthropicClient)
+                with patch.dict(sys.modules, {"anthropic": fake_module}):
+                    rendered = services.gateway._call_simple_chat("fais une reponse longue", model="claude-sonnet-4-20250514")
+
+                self.assertEqual(rendered, "Premiere partie coupee\nsuite terminee proprement.")
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(calls[0]["max_tokens"], 1200)
+                self.assertEqual(calls[1]["max_tokens"], 600)
             finally:
                 services.close()
 

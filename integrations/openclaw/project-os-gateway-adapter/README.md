@@ -116,6 +116,12 @@ Artifact-first payloads are also supported:
 - `response_manifest.attachments`: local artifact files to attach on the last Discord chunk
 - `response_manifest.delivery_mode`: observability hint for `inline_text`, `thread_chunked_text`, or `artifact_summary`
 
+Current UX rule:
+
+- keep the full response in Discord chat whenever it still fits cleanly
+- only attach a `PDF` for truly long/reviewable outputs
+- do not attach review `.md` files in the live Discord conversation
+
 These overrides stay optional. The normal path remains compact `channel_hint` delivery.
 
 ## Discord ownership model
@@ -125,6 +131,7 @@ For the live Discord server, the intended behavior is:
 - inbound guild messages go to `Project OS` through `message_received`
 - native OpenClaw Discord auto-replies are stopped structurally by `session.sendPolicy`
 - visible Project OS chat replies are sent by the adapter through direct Discord REST send
+- the adapter also drives the visible Discord `typing` signal during the run, because direct REST egress bypasses native auto-reply typing
 - `message_sending` remains only as a secondary guardrail if a native egress still leaks through
 - outbound operator lifecycle messages still go to Discord through adapter-controlled delivery
 
@@ -134,6 +141,7 @@ This keeps Discord single-voiced: `Project OS` speaks, `OpenClaw` transports.
 
 The upstream Discord features retained for the operator loop are:
 
+- `typingMode = instant`
 - `threadBindings`
 - `execApprovals`
 - `autoPresence`

@@ -112,6 +112,66 @@ Avant chaque appel API, estimer le nombre de tokens:
 
 L'estimation est conservative (+20%) pour eviter les depassements.
 
+## Calculateur canonique
+
+Regle dure:
+
+- toute surface qui affiche un `cout estime` doit passer par le calculateur canonique partage
+- le calculateur canonique est `src/project_os_core/costing.py`
+- les features ne doivent pas reintroduire des montants plats du type `0.05 / 0.13 / 0.27 EUR` dans leur propre code
+
+Le calculateur canonique doit centraliser:
+
+- la table de prix par modele
+- la conversion `USD -> EUR`
+- les heuristiques de tokens quand aucun provider count API n'est disponible
+- les helpers communs `usage -> cout`
+
+Regle d'implementation:
+
+- si le provider expose un vrai comptage avant appel, il faut le preferer
+- sinon, utiliser le fallback partage du calculateur canonique
+- une feature ne doit pas inventer son propre estimateur local sans justification forte et sans mise a jour du calculateur partage
+
+Application actuelle:
+
+- `gateway` Discord / approvals / modes `simple / avance / extreme`
+- `router` pour les estimations de mission
+- `api_runs` pour les couts estimes issus de l'usage runtime
+
+But produit:
+
+- une seule logique de cout, plusieurs surfaces
+- estimation coherente entre Discord, dashboard, router, runs API et futures lanes voice
+
+## Estime vs reel
+
+La verite produit doit distinguer:
+
+- `cout estime avant run`
+- `cout reel apres run`
+
+Une UI ou un bot peut afficher une estimation, mais il ne doit pas laisser croire qu'elle est exacte au centime.
+
+Formulation recommandee:
+
+- `Cout estime: ~X EUR`
+- puis, si la runtime truth existe, `Cout reel: Y EUR`
+
+## Providers et precision
+
+Precision attendue:
+
+- `Anthropic`: utiliser le comptage officiel pre-run quand il est disponible
+- `OpenAI` ou autres voies sans comptage pre-run branche: utiliser le fallback heuristique canonique
+- `local`: afficher `0 EUR` seulement si aucune API externe n'est engagee
+
+La priorite est:
+
+1. comptage officiel provider
+2. calculateur partage
+3. jamais de hardcode local specifique a une feature
+
 ## Alertes
 
 | Seuil | Action |

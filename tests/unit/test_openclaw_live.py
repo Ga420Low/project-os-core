@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from project_os_core.gateway.openclaw_adapter import build_dispatch_from_openclaw_payload
+from project_os_core.models import ApiRunStatus, OperatorChannelHint, RunLifecycleEventKind
 from project_os_core.services import build_app_services
 
 
@@ -51,6 +52,12 @@ class OpenClawLiveTests(unittest.TestCase):
 
     def _runtime_config_payload(self, tmp_path: Path, plugin_source: Path) -> dict[str, object]:
         return {
+            "agents": {
+                "defaults": {
+                    "typingMode": "instant",
+                    "typingIntervalSeconds": 6,
+                }
+            },
             "session": {
                 "threadBindings": {
                     "enabled": True,
@@ -346,6 +353,33 @@ class OpenClawLiveTests(unittest.TestCase):
         self.assertEqual(second.path, "D:/captures/brief.pdf")
         self.assertEqual(second.size_bytes, 4096)
 
+    def test_openclaw_adapter_repairs_common_mojibake_on_message_content(self):
+        payload = {
+            "source": "openclaw",
+            "surface": "discord",
+            "event_type": "message.received",
+            "event": {
+                "from": "discord-user-42",
+                "content": "Quelle problÃ¨me dâ€™encodage ? cafÃ© Ã©tÃ©",
+                "timestamp": 1770000101,
+                "metadata": {
+                    "senderId": "42",
+                    "messageId": "discord-mojibake-1",
+                    "originatingChannel": "discord",
+                },
+            },
+            "context": {
+                "channelId": "discord",
+                "accountId": "default",
+                "conversationId": "123456",
+            },
+            "config": {},
+        }
+
+        adapted = build_dispatch_from_openclaw_payload(payload)
+
+        self.assertEqual(adapted.event.message.text, "Quelle problème d’encodage ? café été")
+
     def test_openclaw_bootstrap_blocks_cleanly_when_binary_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = self._build_services(Path(tmp))
@@ -580,6 +614,32 @@ class OpenClawLiveTests(unittest.TestCase):
             finally:
                 services.close()
 
+    def test_openclaw_doctor_blocks_when_discord_typing_policy_is_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            services = self._build_services(tmp_path)
+            try:
+                self._stub_openclaw_binary_and_status(services)
+                runtime_payload = self._runtime_config_payload(
+                    tmp_path,
+                    Path(__file__).resolve().parents[2] / "integrations" / "openclaw" / "project-os-gateway-adapter",
+                )
+                runtime_payload["agents"]["defaults"].pop("typingMode", None)  # type: ignore[index]
+                runtime_payload["agents"]["defaults"].pop("typingIntervalSeconds", None)  # type: ignore[index]
+                (services.paths.openclaw_state_root / "openclaw.json").write_text(
+                    json.dumps(runtime_payload),
+                    encoding="utf-8",
+                )
+
+                report = services.openclaw.doctor()
+
+                checks_by_name = {item["name"]: item for item in report.checks}
+                self.assertEqual(checks_by_name["discord_operations_ux"]["status"], "bloque")
+                details = checks_by_name["discord_operations_ux"]["details"]
+                self.assertTrue(any(item["path"] == "agents.defaults.typingMode" for item in details))
+            finally:
+                services.close()
+
     def test_openclaw_truth_health_accepts_windows_unknown_runtime_when_listener_and_rpc_are_healthy(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = self._build_services(Path(tmp))
@@ -597,6 +657,45 @@ class OpenClawLiveTests(unittest.TestCase):
                 self.assertEqual(checks_by_name["gateway_status"]["status"], "ok")
                 self.assertEqual(checks_by_name["discord_single_voice_ready"]["status"], "ok")
                 self.assertEqual(checks_by_name["live_bridge_proof"]["status"], "ok")
+            finally:
+                services.close()
+
+    def test_openclaw_discord_calibration_snapshot_collects_events_deliveries_and_log_tail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._stub_openclaw_binary_and_status(services)
+                self._record_real_openclaw_dispatch(services, text="Analyse en direct du bot Discord.")
+                log_root = services.paths.openclaw_state_root / "logs"
+                log_root.mkdir(parents=True, exist_ok=True)
+                log_path = log_root / "openclaw-2026-03-16.log"
+                log_path.write_text("line-1\nline-2\nline-3\n", encoding="utf-8")
+
+                services.api_runs.publish_operator_update(
+                    title="Calibration Discord",
+                    summary="Reply visible pour le watcher.",
+                    text="Reply visible pour le watcher.",
+                    kind=RunLifecycleEventKind.RUN_COMPLETED,
+                    status=ApiRunStatus.COMPLETED,
+                    channel_hint=OperatorChannelHint.RUNS_LIVE,
+                    target="channel:123456",
+                    reply_to="discord-live-proof-1",
+                    metadata={"source": "unit-test"},
+                )
+
+                snapshot = services.openclaw.discord_calibration_snapshot(limit=3, log_lines=2)
+
+                self.assertEqual(snapshot["channel"], "discord")
+                self.assertTrue(snapshot["gateway_status"]["healthy"])
+                self.assertIsNotNone(snapshot["live_proof"])
+                self.assertGreaterEqual(len(snapshot["recent_events"]), 1)
+                self.assertEqual(snapshot["recent_events"][0]["source"], "openclaw")
+                self.assertIn("Analyse en direct", snapshot["recent_events"][0]["text"])
+                self.assertGreaterEqual(len(snapshot["recent_deliveries"]), 1)
+                self.assertEqual(snapshot["recent_deliveries"][0]["target"], "channel:123456")
+                self.assertIsNotNone(snapshot["openclaw_log_tail"])
+                self.assertEqual(snapshot["openclaw_log_tail"]["path"], str(log_path))
+                self.assertEqual(snapshot["openclaw_log_tail"]["lines"], ["line-2", "line-3"])
             finally:
                 services.close()
 

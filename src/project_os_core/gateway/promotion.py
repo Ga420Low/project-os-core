@@ -179,6 +179,13 @@ class SelectiveSyncPromoter:
         "est ce que tu peux",
         "peux tu",
     )
+    _NOTE_RATING_PATTERNS = (
+        r"\bdonn(?:e|er|erais)\s+(?:une\s+)?note\b",
+        r"\bmett(?:re|rais|ez|ons?)\s+(?:une\s+)?note\b",
+        r"\bquelle?\s+(?:est\s+la\s+)?note\b",
+        r"\bcombien\s+(?:tu\s+lui\s+)?donn(?:e|erais)\b",
+        r"\bnote\s+de\b",
+    )
 
     def classify_message(self, event: ChannelEvent) -> OperatorMessageKind:
         taxonomy = self.analyze_intent(event)
@@ -198,7 +205,7 @@ class SelectiveSyncPromoter:
             return OperatorMessageKind.TASKING
         if self._contains_any(normalized, self._IDEA_HINTS):
             return OperatorMessageKind.IDEA
-        if self._contains_any(normalized, self._NOTE_HINTS):
+        if self._contains_note_hint(normalized):
             return OperatorMessageKind.NOTE
         if event.message.attachments:
             return OperatorMessageKind.ARTIFACT_REF
@@ -286,7 +293,7 @@ class SelectiveSyncPromoter:
                 confidence=0.72,
                 signals=["idea_signal"],
             )
-        if self._contains_any(normalized, self._NOTE_HINTS):
+        if self._contains_note_hint(normalized):
             return IntentTaxonomyResult(
                 intent_kind=IntentKind.DISCUSSION,
                 delegation_level=DelegationLevel.NONE,
@@ -332,10 +339,39 @@ class SelectiveSyncPromoter:
         return any(pattern in text for pattern in patterns)
 
     @staticmethod
+    def _contains_note_hint(text: str) -> bool:
+        if not text:
+            return False
+        note_is_rating = any(re.search(pattern, text) is not None for pattern in SelectiveSyncPromoter._NOTE_RATING_PATTERNS)
+        return any(
+            (
+                re.search(r"\bnote\b", text) is not None and not note_is_rating,
+                re.search(r"\bremember\b", text) is not None,
+                re.search(r"\bmemo\b", text) is not None,
+                re.search(r"\bpreference\b", text) is not None,
+                re.search(r"\bprefer\b", text) is not None,
+                re.search(r"\balways\b", text) is not None,
+                re.search(r"\bnever\b", text) is not None,
+                "by default" in text,
+            )
+        )
+
+    @staticmethod
     def _matched_patterns(text: str, patterns: Sequence[str], *, startswith_only: bool = False) -> list[str]:
         if startswith_only:
             return [pattern.strip() for pattern in patterns if text.startswith(pattern)]
-        return [pattern.strip() for pattern in patterns if pattern in text]
+        matches: list[str] = []
+        for pattern in patterns:
+            normalized = pattern.strip()
+            if not normalized:
+                continue
+            if re.fullmatch(r"[a-z0-9]+", normalized):
+                if re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", text):
+                    matches.append(normalized)
+                continue
+            if normalized in text:
+                matches.append(normalized)
+        return matches
 
     def _directive_detection(self, text: str) -> dict[str, object]:
         if not text:

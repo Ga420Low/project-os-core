@@ -4,6 +4,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from ..costing import estimate_router_usage, estimate_usage_cost_eur
 from ..database import CanonicalDatabase, dump_json
 from ..local_model import LocalModelClient
 from ..models import (
@@ -333,17 +334,27 @@ class MissionRouter:
     def _budget_state(self, intent: MissionIntent, mission_cost_class: CostClass) -> BudgetState:
         daily_spend = float(intent.metadata.get("daily_spend_estimate_eur", 0.0))
         monthly_spend = float(intent.metadata.get("monthly_spend_estimate_eur", 0.0))
-        mission_estimate = float(
-            intent.metadata.get(
-                "mission_estimate_eur",
-                {
-                    CostClass.CHEAP.value: 0.0,
-                    CostClass.STANDARD.value: 0.2,
-                    CostClass.HARD.value: 0.75,
-                    CostClass.EXCEPTIONAL.value: 2.5,
-                }[mission_cost_class.value],
+        if intent.metadata.get("mission_estimate_eur") is not None:
+            mission_estimate = float(intent.metadata.get("mission_estimate_eur") or 0.0)
+        else:
+            usage = estimate_router_usage(
+                objective=intent.objective,
+                mission_cost_class=mission_cost_class.value,
+                channel=intent.channel,
             )
-        )
+            if mission_cost_class is CostClass.EXCEPTIONAL:
+                model = self.execution_policy.exceptional_model
+            elif mission_cost_class is CostClass.CHEAP and intent.channel == "discord":
+                model = self.execution_policy.discord_simple_model
+            elif mission_cost_class is CostClass.CHEAP:
+                model = None
+            else:
+                model = self.execution_policy.default_model
+            mission_estimate = estimate_usage_cost_eur(
+                model=model,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+            )
         within_daily = daily_spend + mission_estimate <= self.execution_policy.daily_soft_limit_eur
         within_monthly = monthly_spend + mission_estimate <= self.execution_policy.monthly_limit_eur
         return BudgetState(

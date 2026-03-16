@@ -203,6 +203,10 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         policy_path=config.runtime_policy_path,
         default_model=config.execution_policy.default_model,
         default_reasoning_effort=config.execution_policy.default_reasoning_effort,
+        extreme_debug_enabled=config.execution_policy.deep_research_extreme_debug_enabled,
+        extreme_debug_provider=config.execution_policy.deep_research_extreme_debug_provider,
+        extreme_debug_model=config.execution_policy.deep_research_extreme_debug_model,
+        extreme_debug_log_enabled=config.execution_policy.deep_research_extreme_debug_log_enabled,
     )
     gateway = GatewayService(
         database=database,

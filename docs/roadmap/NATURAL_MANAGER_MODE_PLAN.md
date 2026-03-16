@@ -373,6 +373,36 @@ Objectif:
 - sans jargon runtime
 - sans perdre le fil de la conversation
 
+### Fermetures majeures apres Pack 4
+
+#### 1. `Deep research` est maintenant aligne sur `cout + temps + go`
+
+Etat final:
+
+- le trigger `deep research` prepare toujours le scaffold depuis le gateway
+- avant lancement, le runtime emet maintenant une carte de confirmation `cout estime + temps estime + go/stop`
+- le job asynchrone ne part qu'apres validation explicite
+
+Impact:
+
+- la recherche approfondie suit maintenant la meme UX mobile que les autres voies couteuses
+- le fondateur garde la main sur le budget avant lancement
+
+#### 2. `Discussion Sonnet -> proposition automatique Opus` est maintenant harmonisee
+
+Etat final:
+
+- une discussion dense et serieuse peut produire une `reasoning escalation card`
+- `Project OS` explique pourquoi `Opus` est recommande
+- le message affiche `cout estime`
+- un simple `go` bascule sur `Opus`
+- un `stop` garde la voie courante sans auto-bascule silencieuse
+
+Impact:
+
+- le mode conversationnel reste naturel
+- l'escalade de cout devient visible et gouvernable depuis le telephone
+
 ## Modele d'etats canonique
 
 ### 1. Discussion
@@ -634,6 +664,7 @@ Livrables:
 - carte `escalade recommandee`
 - cout estime visible avant `Opus` ou run lourd
 - `go` fondateur qui convertit la proposition en route plus chere ou en vrai run
+- `deep research` aligne sur la meme UX: `cout + temps + go` avant le job asynchrone
 
 ### Pack 5 - Evals And Smoke Tests
 
@@ -661,6 +692,13 @@ Jeu minimal de tests:
 - reponse `go` accepte l'escalade couteuse
 - reponse negative garde la voie cheap
 - gros workflow affiche `cout estime + temps estime` avant lancement
+
+Validation de fermeture:
+
+- `py scripts/project_os_tests.py --suite gateway`
+- resultat attendu: suite `gateway` verte sur les surfaces `prompt ops`, `gateway orchestration`, `OpenClaw`, `session state` et `api run service`
+- `py scripts/project_os_entry.py docs audit`
+- resultat attendu: verdict `OK`
 
 ## Parametres de decision recommandes
 

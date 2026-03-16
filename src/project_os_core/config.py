@@ -154,10 +154,12 @@ class OpenClawConfig:
     discord_require_mention: bool = True
     discord_thread_bindings_required: bool = True
     discord_auto_presence_required: bool = True
+    discord_typing_mode_required: str = "instant"
+    discord_typing_interval_seconds: int = 6
     discord_exec_approvals_required: bool = True
     discord_exec_target: str = "dm"
     discord_exec_approver_ids: list[str] = field(default_factory=list)
-    timeout_ms: int = 45000
+    timeout_ms: int = 600000
     require_replay_before_live: bool = True
     live_validation_max_age_hours: int = 168
     pairing_rotation_max_age_days: int = 30
@@ -289,6 +291,10 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "allow_pro_default": False,
             "secret_mode": "infisical_first",
             "discord_simple_reasoning_effort": "medium",
+            "deep_research_extreme_debug_enabled": True,
+            "deep_research_extreme_debug_provider": "anthropic",
+            "deep_research_extreme_debug_model": "claude-sonnet-4-20250514",
+            "deep_research_extreme_debug_log_enabled": True,
             "operator_language": "fr",
             "operator_audience": OperatorAudience.NON_DEVELOPER.value,
             "run_contract_required": True,
@@ -327,10 +333,12 @@ def _runtime_policy_defaults() -> dict[str, object]:
             "discord_require_mention": True,
             "discord_thread_bindings_required": True,
             "discord_auto_presence_required": True,
+            "discord_typing_mode_required": "instant",
+            "discord_typing_interval_seconds": 6,
             "discord_exec_approvals_required": True,
             "discord_exec_target": "dm",
             "discord_exec_approver_ids": [],
-            "timeout_ms": 45000,
+            "timeout_ms": 600000,
             "require_replay_before_live": True,
             "live_validation_max_age_hours": 168,
             "pairing_rotation_max_age_days": 30,

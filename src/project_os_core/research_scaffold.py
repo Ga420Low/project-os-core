@@ -44,20 +44,129 @@ SYSTEM_HINTS: tuple[str, ...] = (
     "frameworks",
 )
 
+PROJECT_SCOPE_HINTS: tuple[str, ...] = (
+    "project os",
+    "mon projet",
+    "my project",
+    "notre projet",
+)
+
+PROJECT_GLOBAL_HINTS: tuple[str, ...] = (
+    "roadmap",
+    "global",
+    "overall",
+    "full system",
+    "whole project",
+    "grand projet",
+    "audit de mon projet",
+    "audit of my project",
+    "ce qu on pourrait ameliorer",
+    "what to improve overall",
+    "how to reach the full system",
+)
+
+COMPONENT_HINTS: tuple[str, ...] = SYSTEM_HINTS + (
+    "memoire",
+    "memory",
+    "router",
+    "routing",
+    "orchestration",
+    "eval",
+    "evals",
+    "grader",
+    "graders",
+    "verification",
+    "verifier",
+    "desktop",
+    "discord",
+    "gateway",
+    "worker",
+    "workers",
+    "learning",
+    "feature",
+    "features",
+    "piece",
+    "pieces",
+    "subsystem",
+    "subsystems",
+    "component",
+    "components",
+)
+
+_VALID_RESEARCH_PROFILES = {"project_audit", "component_discovery", "domain_audit"}
+_VALID_RESEARCH_INTENSITIES = {"simple", "complex", "extreme"}
+
+_EXPLICIT_PROJECT_AUDIT_HINTS: tuple[str, ...] = (
+    "project audit",
+    "audit projet",
+    "audit project os",
+    "audit global",
+    "global audit",
+    "overall audit",
+    "whole project audit",
+    "mode project audit",
+)
+_EXPLICIT_COMPONENT_DISCOVERY_HINTS: tuple[str, ...] = (
+    "component discovery",
+    "audit systeme",
+    "system audit",
+    "audit subsystem",
+    "subsystem audit",
+    "feature audit",
+    "audit feature",
+    "stack audit",
+    "mode component discovery",
+)
+_EXPLICIT_DOMAIN_AUDIT_HINTS: tuple[str, ...] = (
+    "domain audit",
+    "audit domaine",
+    "audit externe",
+    "external audit",
+    "mode domain audit",
+)
+
+_SIMPLE_INTENSITY_HINTS: tuple[str, ...] = (
+    "simple",
+    "lite",
+    "light",
+    "leger",
+    "legere",
+    "normal",
+)
+_COMPLEX_INTENSITY_HINTS: tuple[str, ...] = (
+    "complexe",
+    "complex",
+    "committee",
+    "comite",
+)
+_EXTREME_INTENSITY_HINTS: tuple[str, ...] = (
+    "extreme",
+    "war room",
+    "warroom",
+)
+
 
 @dataclass(slots=True)
 class DetectedResearchIntent:
     title: str
     kind: str
+    research_profile: str
+    research_intensity: str
     question: str
     keywords: list[str]
     normalized_text: str
+    recommended_profile: str
+    recommended_intensity: str
+    explicit_profile: str | None = None
+    explicit_intensity: str | None = None
 
 
 @dataclass(slots=True)
 class ResearchScaffoldRequest:
     title: str
     kind: str = "audit"
+    research_profile: str | None = None
+    research_intensity: str | None = None
     slug: str | None = None
     question: str | None = None
     keywords: list[str] = field(default_factory=list)
@@ -79,6 +188,102 @@ def _normalize_text(value: str) -> str:
     ascii_value = normalized.encode("ascii", "ignore").decode("ascii")
     lowered = ascii_value.lower()
     return re.sub(r"\s+", " ", lowered).strip()
+
+
+def _contains_any(normalized: str, phrases: tuple[str, ...]) -> bool:
+    return any(phrase in normalized for phrase in phrases)
+
+
+def infer_research_profile(*, raw: str, normalized: str | None = None, kind: str = "audit") -> str:
+    normalized_text = normalized or _normalize_text(raw)
+    normalized_kind = str(kind or "audit").strip().lower()
+    if normalized_kind == "system":
+        return "component_discovery"
+    has_project_scope = _contains_any(normalized_text, PROJECT_SCOPE_HINTS)
+    has_project_global_scope = _contains_any(normalized_text, PROJECT_GLOBAL_HINTS)
+    has_component_scope = _contains_any(normalized_text, COMPONENT_HINTS)
+    if has_project_scope and has_project_global_scope:
+        return "project_audit"
+    if has_component_scope:
+        return "component_discovery"
+    if has_project_scope:
+        return "project_audit"
+    return "domain_audit"
+
+
+def detect_explicit_research_profile(raw: str, *, normalized: str | None = None) -> str | None:
+    normalized_text = normalized or _normalize_text(raw)
+    if _contains_any(normalized_text, _EXPLICIT_PROJECT_AUDIT_HINTS):
+        return "project_audit"
+    if _contains_any(normalized_text, _EXPLICIT_COMPONENT_DISCOVERY_HINTS):
+        return "component_discovery"
+    if _contains_any(normalized_text, _EXPLICIT_DOMAIN_AUDIT_HINTS):
+        return "domain_audit"
+    return None
+
+
+def detect_explicit_research_intensity(raw: str, *, normalized: str | None = None) -> str | None:
+    normalized_text = normalized or _normalize_text(raw)
+    if _contains_any(normalized_text, _EXTREME_INTENSITY_HINTS):
+        return "extreme"
+    if _contains_any(normalized_text, _COMPLEX_INTENSITY_HINTS):
+        return "complex"
+    if _contains_any(normalized_text, _SIMPLE_INTENSITY_HINTS):
+        return "simple"
+    return None
+
+
+def infer_research_intensity(
+    *,
+    raw: str,
+    kind: str = "audit",
+    research_profile: str | None = None,
+    normalized: str | None = None,
+) -> str:
+    normalized_text = normalized or _normalize_text(raw)
+    explicit = detect_explicit_research_intensity(raw, normalized=normalized_text)
+    if explicit:
+        return explicit
+    profile = str(research_profile or "").strip().lower() or infer_research_profile(
+        raw=raw,
+        normalized=normalized_text,
+        kind=kind,
+    )
+    if profile in {"project_audit", "component_discovery"}:
+        return "complex"
+    return "simple"
+
+
+def parse_research_mode_selection(
+    text: str,
+    *,
+    kind: str = "audit",
+    fallback_profile: str | None = None,
+    fallback_intensity: str | None = None,
+) -> dict[str, str | None]:
+    raw = str(text or "").strip()
+    normalized = _normalize_text(raw)
+    explicit_profile = detect_explicit_research_profile(raw, normalized=normalized)
+    explicit_intensity = detect_explicit_research_intensity(raw, normalized=normalized)
+    selected_profile = explicit_profile or (
+        fallback_profile if str(fallback_profile or "").strip().lower() in _VALID_RESEARCH_PROFILES else None
+    )
+    selected_intensity = explicit_intensity or (
+        fallback_intensity if str(fallback_intensity or "").strip().lower() in _VALID_RESEARCH_INTENSITIES else None
+    )
+    recommended_profile = infer_research_profile(raw=raw, normalized=normalized, kind=kind)
+    recommended_intensity = infer_research_intensity(
+        raw=raw,
+        kind=kind,
+        research_profile=selected_profile or recommended_profile,
+        normalized=normalized,
+    )
+    return {
+        "selected_profile": selected_profile,
+        "selected_intensity": selected_intensity,
+        "recommended_profile": recommended_profile,
+        "recommended_intensity": recommended_intensity,
+    }
 
 
 def _relative_markdown_link(base_dir: Path, target: Path) -> str:
@@ -144,33 +349,58 @@ def detect_deep_research_request(text: str) -> DetectedResearchIntent | None:
             matched_keywords.append(keyword)
     if not matched_keywords:
         return None
-    kind = "system" if any(hint in normalized for hint in SYSTEM_HINTS) else "audit"
-    title = _infer_research_title(raw=raw, normalized=normalized, kind=kind)
+    hinted_kind = "system" if any(hint in normalized for hint in SYSTEM_HINTS) else "audit"
+    explicit_profile = detect_explicit_research_profile(raw, normalized=normalized)
+    explicit_intensity = detect_explicit_research_intensity(raw, normalized=normalized)
+    provisional_profile = explicit_profile or infer_research_profile(raw=raw, normalized=normalized, kind="audit")
+    kind = "system" if hinted_kind == "system" and provisional_profile == "component_discovery" else "audit"
+    recommended_profile = infer_research_profile(raw=raw, normalized=normalized, kind=kind)
+    recommended_intensity = infer_research_intensity(
+        raw=raw,
+        normalized=normalized,
+        kind=kind,
+        research_profile=recommended_profile,
+    )
+    research_profile = explicit_profile or recommended_profile
+    research_intensity = explicit_intensity or recommended_intensity
+    title = _infer_research_title(raw=raw, normalized=normalized, kind=kind, research_profile=research_profile)
     return DetectedResearchIntent(
         title=title,
         kind=kind,
+        research_profile=research_profile,
+        research_intensity=research_intensity,
         question=raw,
         keywords=matched_keywords,
         normalized_text=normalized,
+        recommended_profile=recommended_profile,
+        recommended_intensity=recommended_intensity,
+        explicit_profile=explicit_profile,
+        explicit_intensity=explicit_intensity,
     )
 
 
-def _infer_research_title(*, raw: str, normalized: str, kind: str) -> str:
-    overrides: list[tuple[tuple[str, ...], str, str | None]] = [
-        (("memoire",), "Memory Systems", "system"),
-        (("memory",), "Memory Systems", "system"),
-        (("uefn", "computer use"), "UEFN Computer Use Stack", "system"),
-        (("uefn", "gui"), "UEFN Computer Use Stack", "system"),
-        (("openclaw",), "OpenClaw Upstream", None),
-        (("discord",), "Discord Operations", None),
-        (("router", "orchestration"), "Routing And Orchestration Systems", "system"),
-        (("routing", "orchestration"), "Routing And Orchestration Systems", "system"),
-        (("eval", "grader"), "Eval And Grader Systems", "system"),
-        (("apprentissage",), "Learning Runtime Systems", "system"),
-        (("learning",), "Learning Runtime Systems", "system"),
+def _infer_research_title(*, raw: str, normalized: str, kind: str, research_profile: str) -> str:
+    if research_profile == "project_audit" and (
+        "project os" in normalized or "mon projet" in normalized or "my project" in normalized
+    ):
+        return "Project OS Strategic Audit"
+    overrides: list[tuple[tuple[str, ...], str, str | None, str | None]] = [
+        (("memoire",), "Memory Systems", None, "component_discovery"),
+        (("memory",), "Memory Systems", None, "component_discovery"),
+        (("uefn", "computer use"), "UEFN Computer Use Stack", None, "component_discovery"),
+        (("uefn", "gui"), "UEFN Computer Use Stack", None, "component_discovery"),
+        (("openclaw",), "OpenClaw Upstream", None, None),
+        (("discord",), "Discord Operations", None, None),
+        (("router", "orchestration"), "Routing And Orchestration Systems", None, "component_discovery"),
+        (("routing", "orchestration"), "Routing And Orchestration Systems", None, "component_discovery"),
+        (("eval", "grader"), "Eval And Grader Systems", None, "component_discovery"),
+        (("apprentissage",), "Learning Runtime Systems", None, "component_discovery"),
+        (("learning",), "Learning Runtime Systems", None, "component_discovery"),
     ]
-    for tokens, title, required_kind in overrides:
-        if all(token in normalized for token in tokens) and (required_kind is None or required_kind == kind):
+    for tokens, title, required_kind, required_profile in overrides:
+        if all(token in normalized for token in tokens) and (required_kind is None or required_kind == kind) and (
+            required_profile is None or required_profile == research_profile
+        ):
             return title
     cleaned = _strip_research_prefixes(raw)
     words = re.findall(r"[A-Za-z0-9]+", cleaned)
@@ -218,6 +448,8 @@ def _build_audit_template(repo_root: Path, destination: Path, request: ResearchS
             "## Statut",
             "",
             "- `draft`",
+            f"- `research_profile={request.research_profile or 'domain_audit'}`",
+            f"- `research_intensity={request.research_intensity or 'simple'}`",
             "",
             "## But",
             "",
@@ -305,6 +537,8 @@ def _build_system_template(repo_root: Path, destination: Path, request: Research
             "## Statut",
             "",
             "- `draft`",
+            f"- `research_profile={request.research_profile or 'component_discovery'}`",
+            f"- `research_intensity={request.research_intensity or 'complex'}`",
             "",
             "## But",
             "",
@@ -386,9 +620,26 @@ def scaffold_research(repo_root: Path, request: ResearchScaffoldRequest) -> dict
     kind = str(request.kind or "audit").strip().lower()
     if kind not in {"audit", "system"}:
         raise ValueError("Research scaffold kind must be 'audit' or 'system'.")
+    research_profile = str(request.research_profile or "").strip().lower() or infer_research_profile(
+        raw=str(request.question or request.title or "").strip(),
+        kind=kind,
+    )
+    if research_profile not in _VALID_RESEARCH_PROFILES:
+        raise ValueError("Research scaffold profile must be project_audit, component_discovery, or domain_audit.")
+    if research_profile != "component_discovery":
+        kind = "audit"
+    research_intensity = str(request.research_intensity or "").strip().lower() or infer_research_intensity(
+        raw=str(request.question or request.title or "").strip(),
+        kind=kind,
+        research_profile=research_profile,
+    )
+    if research_intensity not in _VALID_RESEARCH_INTENSITIES:
+        raise ValueError("Research scaffold intensity must be simple, complex, or extreme.")
     normalized = ResearchScaffoldRequest(
         title=request.title.strip(),
         kind=kind,
+        research_profile=research_profile,
+        research_intensity=research_intensity,
         slug=request.slug.strip() if request.slug else None,
         question=request.question.strip() if request.question else None,
         keywords=[item.strip() for item in request.keywords if item.strip()],
@@ -403,6 +654,8 @@ def scaffold_research(repo_root: Path, request: ResearchScaffoldRequest) -> dict
         return {
             "path": str(destination),
             "kind": normalized.kind,
+            "research_profile": normalized.research_profile,
+            "research_intensity": normalized.research_intensity,
             "title": normalized.title,
             "keywords": normalized.keywords or list(DEFAULT_RESEARCH_KEYWORDS),
             "recent_days": normalized.recent_days,
@@ -418,6 +671,8 @@ def scaffold_research(repo_root: Path, request: ResearchScaffoldRequest) -> dict
     return {
         "path": str(destination),
         "kind": normalized.kind,
+        "research_profile": normalized.research_profile,
+        "research_intensity": normalized.research_intensity,
         "title": normalized.title,
         "keywords": normalized.keywords or list(DEFAULT_RESEARCH_KEYWORDS),
         "recent_days": normalized.recent_days,

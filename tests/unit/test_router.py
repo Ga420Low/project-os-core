@@ -167,6 +167,58 @@ class MissionRouterTests(unittest.TestCase):
             self.assertEqual(decision.audience, OperatorAudience.NON_DEVELOPER)
             database.close()
 
+    def test_budget_estimate_scales_with_objective_size(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            config, paths, database, runtime, resolver = self._runtime_components(tmp_path)
+            resolver.write_local_fallback("OPENAI_API_KEY", "sk-test-secret")
+            session = runtime.open_session(profile_name="browser", owner="founder")
+            runtime.record_runtime_state(
+                RuntimeState(
+                    runtime_state_id=new_id("runtime_state"),
+                    session_id=session.session_id,
+                    verdict=RuntimeVerdict.READY,
+                    active_profile="browser",
+                )
+            )
+            router = MissionRouter(
+                database=database,
+                runtime=runtime,
+                path_policy=PathPolicy(paths),
+                secret_resolver=resolver,
+                execution_policy=config.execution_policy,
+            )
+            short_intent = MissionIntent(
+                intent_id=new_id("intent"),
+                source="test",
+                actor_id="founder",
+                channel="cli",
+                objective="Prepare a patch.",
+                target_profile="browser",
+                requested_worker="browser",
+                requested_risk_class=ActionRiskClass.SAFE_WRITE,
+            )
+            long_intent = MissionIntent(
+                intent_id=new_id("intent"),
+                source="test",
+                actor_id="founder",
+                channel="cli",
+                objective=(
+                    "Prepare a full patch plan for the browser worker, include interfaces, migration notes, "
+                    "tests, rollback plan, observability hooks, and the exact acceptance criteria for the repo."
+                ),
+                target_profile="browser",
+                requested_worker="browser",
+                requested_risk_class=ActionRiskClass.SAFE_WRITE,
+            )
+
+            short_decision, _, _ = router.route_intent(short_intent, persist=False)
+            long_decision, _, _ = router.route_intent(long_intent, persist=False)
+
+            self.assertGreater(short_decision.budget_state.mission_estimate_eur, 0.0)
+            self.assertGreater(long_decision.budget_state.mission_estimate_eur, short_decision.budget_state.mission_estimate_eur)
+            database.close()
+
     def test_exceptional_route_requires_founder_approval(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)

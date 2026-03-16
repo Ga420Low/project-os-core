@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover - dependency is declared in pyproject bu
     Anthropic = None
 from openai import OpenAI
 
+from ..costing import estimate_usage_cost_eur
 from ..database import CanonicalDatabase, dump_json
 from ..learning.service import LearningService
 from ..models import (
@@ -56,13 +57,6 @@ from ..secrets import SecretResolver
 from ..router.service import MissionRouter
 
 
-PRICING_PER_MILLION_USD: dict[str, dict[str, float]] = {
-    "gpt-5.4": {"input": 2.5, "output": 15.0},
-    "gpt-5.4-pro": {"input": 30.0, "output": 180.0},
-    "claude-haiku-4-5-20251001": {"input": 0.8, "output": 4.0},
-    "claude-sonnet-4-20250514": {"input": 3.0, "output": 15.0},
-}
-USD_TO_EUR = 0.92
 DEFAULT_CONTEXT_SOURCE_LIMIT = 12_000
 DEFAULT_CONTEXT_FILE_COUNT = 10
 REVIEWER_MODEL = "claude-sonnet-4-20250514"
@@ -1683,6 +1677,30 @@ class ApiRunService:
             raise KeyError(f"Unknown operator delivery: {delivery_id}")
         payload = json.loads(row["payload_json"]) if row["payload_json"] else {}
         delivery_metadata = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+        current_status = OperatorDeliveryStatus(str(row["status"]))
+        if current_status is OperatorDeliveryStatus.DELIVERED and status is not OperatorDeliveryStatus.DELIVERED:
+            self.journal.append(
+                "api_run_operator_delivery_ack_ignored",
+                "api_runs",
+                {
+                    "delivery_id": delivery_id,
+                    "current_status": current_status.value,
+                    "requested_status": status.value,
+                },
+            )
+            return {
+                "delivery_id": delivery_id,
+                "status": current_status.value,
+                "attempts": int(row["attempts"] or 0),
+                "last_error": str(row["last_error"]) if row["last_error"] else None,
+                "next_attempt_at": str(row["next_attempt_at"]) if row["next_attempt_at"] else None,
+                "delivery_guarantee": str(
+                    delivery_metadata.get("delivery_guarantee")
+                    or payload.get("delivery_guarantee")
+                    or OperatorDeliveryGuarantee.IMPORTANT.value
+                ),
+                "metadata": delivery_metadata,
+            }
         if metadata:
             delivery_metadata.update(metadata)
         guarantee = self._coerce_operator_delivery_guarantee(
@@ -4458,13 +4476,9 @@ class ApiRunService:
         }
 
     def _estimate_cost_eur(self, *, model: str, usage: dict[str, Any]) -> float:
-        pricing = PRICING_PER_MILLION_USD.get(model, PRICING_PER_MILLION_USD.get(self.execution_policy.default_model))
-        if not pricing:
-            return 0.0
         input_tokens = int(usage.get("input_tokens") or 0)
         output_tokens = int(usage.get("output_tokens") or 0)
-        usd = ((input_tokens / 1_000_000) * pricing["input"]) + ((output_tokens / 1_000_000) * pricing["output"])
-        return round(usd * USD_TO_EUR, 6)
+        return estimate_usage_cost_eur(model=model or self.execution_policy.default_model, input_tokens=input_tokens, output_tokens=output_tokens)
 
     def _default_constraints(self) -> list[str]:
         return [

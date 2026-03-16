@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
@@ -89,6 +90,7 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
 
         services = build_app_services(config_path=str(config_path), policy_path=str(policy_path))
         services.secret_resolver.write_local_fallback("OPENAI_API_KEY", "sk-test-secret")
+        services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "sk-ant-test")
         return services
 
     @staticmethod
@@ -244,6 +246,51 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
             finally:
                 services.close()
 
+    def test_gateway_memory_question_now_triggers_mode_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                captured_messages: list[str] = []
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    captured_messages.append(message)
+                    return "Reponse inline sur la memoire."
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text=(
+                            "Et donc si je te dis de regarder sur qui on s'inspire pour le gestion de memoire "
+                            "tu repond quoi et en combien de temps ? Reponse longue demander + de 2000 caractere"
+                        ),
+                        thread_ref=ConversationThreadRef(thread_id="thread_inline_memory", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "approval_required")
+                self.assertEqual(dispatch.metadata["classification"], "chat")
+                self.assertEqual(dispatch.metadata["approval_metadata"]["approval_type"], "reasoning_escalation")
+                self.assertIn("mode extreme", dispatch.operator_reply.summary.lower())
+                self.assertEqual(captured_messages, [])
+            finally:
+                services.close()
+
     def test_gateway_surfaces_intent_taxonomy_for_implicit_directive(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = self._build_services(Path(tmp))
@@ -361,12 +408,603 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
 
                 dispatch = services.gateway.dispatch_event(event, target_profile="core")
                 contract = dispatch.metadata["action_contract"]
+                approval_rows = services.database.fetchall(
+                    "SELECT approval_id, reason, status, payload_json FROM approval_records ORDER BY created_at DESC"
+                )
 
                 self.assertEqual(contract["risk_class"], "destructive")
                 self.assertTrue(contract["needs_approval"])
                 self.assertFalse(contract["execution_ready"])
-                self.assertEqual(dispatch.operator_reply.reply_kind, "blocked")
-                self.assertIn("validation fondateur", dispatch.operator_reply.summary.lower())
+                self.assertEqual(dispatch.operator_reply.reply_kind, "approval_required")
+                self.assertIn("reponds go", dispatch.operator_reply.summary.lower())
+                self.assertEqual(len(approval_rows), 1)
+                self.assertIn("approval", str(approval_rows[0]["reason"]).lower())
+            finally:
+                services.close()
+
+    def test_gateway_proposes_cost_confirmation_then_go_relaunches_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                launch_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="fais un fichier audit_plan.md dans le repo",
+                        thread_ref=ConversationThreadRef(thread_id="thread_cost_gate", channel="discord"),
+                    ),
+                )
+
+                proposal_dispatch = services.gateway.dispatch_event(
+                    launch_event,
+                    target_profile="core",
+                    metadata={"multi_worker": True},
+                )
+                approval_row = services.database.fetchone(
+                    "SELECT approval_id, status, payload_json FROM approval_records ORDER BY created_at DESC LIMIT 1"
+                )
+
+                self.assertEqual(proposal_dispatch.operator_reply.reply_kind, "approval_required")
+                self.assertIn("cout estime", proposal_dispatch.operator_reply.summary.lower())
+                self.assertIn("temps estime", proposal_dispatch.operator_reply.summary.lower())
+                self.assertIn("api utilisee", proposal_dispatch.operator_reply.summary.lower())
+                self.assertIn("reponds go", proposal_dispatch.operator_reply.summary.lower())
+                self.assertIsNotNone(approval_row)
+                self.assertEqual(str(approval_row["status"]), "pending")
+
+                go_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="go",
+                        thread_ref=ConversationThreadRef(thread_id="thread_cost_gate", channel="discord"),
+                    ),
+                )
+
+                go_dispatch = services.gateway.dispatch_event(go_event, target_profile="core")
+                updated_approval = services.database.fetchone(
+                    "SELECT status, payload_json FROM approval_records WHERE approval_id = ?",
+                    (str(approval_row["approval_id"]),),
+                )
+
+                self.assertEqual(go_dispatch.metadata["resolved_action"], "approve_runtime_approval")
+                self.assertEqual(go_dispatch.operator_reply.reply_kind, "ack")
+                self.assertIn("operation lancee", go_dispatch.operator_reply.summary.lower())
+                self.assertIn("api:", go_dispatch.operator_reply.summary.lower())
+                self.assertIsNotNone(go_dispatch.mission_run_id)
+                self.assertEqual(str(updated_approval["status"]), "approved")
+            finally:
+                services.close()
+
+    def test_gateway_deep_research_requires_go_before_launch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services, profile_name="browser")
+                launch_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="Deep research sur les meilleurs systemes de memoire pour le projet",
+                        thread_ref=ConversationThreadRef(thread_id="thread_deep_research_gate", channel="discord"),
+                    ),
+                )
+                scaffold_payload = {
+                    "path": "D:\\ProjectOS\\project-os-core\\docs\\systems\\MEMORY_SYSTEMS_DOSSIER.md",
+                    "relative_path": "docs/systems/MEMORY_SYSTEMS_DOSSIER.md",
+                    "doc_name": "MEMORY_SYSTEMS_DOSSIER.md",
+                    "kind": "system",
+                    "title": "Memory Systems",
+                    "keywords": ["deep research", "memoire", "forks"],
+                    "recent_days": 30,
+                    "created": True,
+                }
+                launch_payload = {
+                    "job_id": "deep_research_123",
+                    "job_path": "D:\\ProjectOS\\runtime\\deep_research\\deep_research_123\\request.json",
+                    "launched": True,
+                }
+                launch_calls: list[dict[str, object]] = []
+
+                def _fake_launch(*, event, scaffold):
+                    launch_calls.append({"text": event.message.text, "scaffold": scaffold})
+                    return launch_payload
+
+                with patch("project_os_core.gateway.service.scaffold_research", return_value=scaffold_payload):
+                    proposal_dispatch = services.gateway.dispatch_event(launch_event, target_profile="browser")
+                approval_row = services.database.fetchone(
+                    "SELECT approval_id, status, payload_json FROM approval_records ORDER BY created_at DESC LIMIT 1"
+                )
+
+                self.assertEqual(proposal_dispatch.operator_reply.reply_kind, "clarification_required")
+                self.assertIn("profil recommande", proposal_dispatch.operator_reply.summary.lower())
+                self.assertIn("intensite recommandee", proposal_dispatch.operator_reply.summary.lower())
+                self.assertIn("component discovery", proposal_dispatch.operator_reply.summary.lower())
+                self.assertIn("complexe", proposal_dispatch.operator_reply.summary.lower())
+                self.assertEqual(proposal_dispatch.metadata["approval_metadata"]["approval_type"], "deep_research_mode_selection")
+                self.assertEqual(str(approval_row["status"]), "pending")
+
+                selection_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="component discovery + complexe",
+                        thread_ref=ConversationThreadRef(thread_id="thread_deep_research_gate", channel="discord"),
+                    ),
+                )
+                selection_dispatch = services.gateway.dispatch_event(selection_event, target_profile="browser")
+                approval_after_selection = services.database.fetchone(
+                    "SELECT approval_id, status, payload_json FROM approval_records WHERE approval_id = ?",
+                    (str(approval_row["approval_id"]),),
+                )
+                approval_payload = json.loads(str(approval_after_selection["payload_json"]))
+
+                self.assertEqual(selection_dispatch.metadata["resolved_action"], "update_runtime_approval_selection")
+                self.assertEqual(selection_dispatch.operator_reply.reply_kind, "approval_required")
+                self.assertIn("cout estime", selection_dispatch.operator_reply.summary.lower())
+                self.assertIn("temps estime", selection_dispatch.operator_reply.summary.lower())
+                self.assertIn("api utilisee", selection_dispatch.operator_reply.summary.lower())
+                self.assertIn("reponds go", selection_dispatch.operator_reply.summary.lower())
+                self.assertEqual(approval_payload["approval_type"], "deep_research_launch")
+                self.assertEqual(approval_payload["research_profile"], "component_discovery")
+                self.assertEqual(approval_payload["research_intensity"], "complex")
+
+                go_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="go",
+                        thread_ref=ConversationThreadRef(thread_id="thread_deep_research_gate", channel="discord"),
+                    ),
+                )
+                with patch.object(services.deep_research, "launch_job_from_gateway", side_effect=_fake_launch):
+                    go_dispatch = services.gateway.dispatch_event(go_event, target_profile="browser")
+                updated_approval = services.database.fetchone(
+                    "SELECT status FROM approval_records WHERE approval_id = ?",
+                    (str(approval_row["approval_id"]),),
+                )
+
+                self.assertEqual(go_dispatch.metadata["resolved_action"], "approve_runtime_approval")
+                self.assertEqual(go_dispatch.operator_reply.reply_kind, "ack")
+                self.assertIn("recherche approfondie lancee", go_dispatch.operator_reply.summary.lower())
+                self.assertIn("api:", go_dispatch.operator_reply.summary.lower())
+                self.assertIn("pdf", go_dispatch.operator_reply.summary.lower())
+                self.assertEqual(str(updated_approval["status"]), "approved")
+                self.assertEqual(len(launch_calls), 1)
+                self.assertEqual(launch_calls[0]["text"], launch_event.message.text)
+                self.assertEqual(launch_calls[0]["scaffold"]["title"], "Memory Systems")
+                self.assertEqual(launch_calls[0]["scaffold"]["research_profile"], "component_discovery")
+                self.assertEqual(launch_calls[0]["scaffold"]["research_intensity"], "complex")
+            finally:
+                services.close()
+
+    def test_gateway_deep_research_explicit_mode_skips_selection_and_goes_to_cost_gate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services, profile_name="browser")
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="deep research component discovery extreme sur les systemes de memoire pour le projet",
+                        thread_ref=ConversationThreadRef(thread_id="thread_deep_research_explicit", channel="discord"),
+                    ),
+                )
+                scaffold_payload = {
+                    "path": "D:\\ProjectOS\\project-os-core\\docs\\systems\\MEMORY_SYSTEMS_DOSSIER.md",
+                    "relative_path": "docs/systems/MEMORY_SYSTEMS_DOSSIER.md",
+                    "doc_name": "MEMORY_SYSTEMS_DOSSIER.md",
+                    "kind": "system",
+                    "title": "Memory Systems",
+                    "keywords": ["deep research", "memoire", "forks"],
+                    "recent_days": 30,
+                    "created": True,
+                    "research_profile": "component_discovery",
+                    "research_intensity": "extreme",
+                    "recommended_profile": "component_discovery",
+                    "recommended_intensity": "extreme",
+                    "explicit_profile": "component_discovery",
+                    "explicit_intensity": "extreme",
+                }
+
+                with patch("project_os_core.gateway.service.scaffold_research", return_value=scaffold_payload):
+                    dispatch = services.gateway.dispatch_event(event, target_profile="browser")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "approval_required")
+                self.assertIn("profil confirme", dispatch.operator_reply.summary.lower())
+                self.assertIn("intensite confirmee", dispatch.operator_reply.summary.lower())
+                self.assertIn("extreme", dispatch.operator_reply.summary.lower())
+                self.assertIn("anthropic", dispatch.operator_reply.summary.lower())
+                self.assertEqual(dispatch.metadata["approval_metadata"]["estimated_api_provider"], "anthropic")
+                self.assertEqual(dispatch.metadata["approval_metadata"]["estimated_api_model"], "claude-sonnet-4-20250514")
+                self.assertEqual(dispatch.metadata["approval_metadata"]["approval_type"], "deep_research_launch")
+            finally:
+                services.close()
+
+    def test_gateway_proposes_opus_for_serious_discussion_without_auto_switch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "sk-ant-test")
+                self._mark_runtime_ready(services, "core")
+                calls: list[dict[str, str]] = []
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    calls.append({"message": message, "model": model, "route_reason": route_reason or ""})
+                    return "Reponse inline."
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text=(
+                            "J'ai besoin d'une analyse architecture avec compromis pour la roadmap persona, "
+                            "le cout et le niveau de challenge avant qu'on decide proprement."
+                        ),
+                        thread_ref=ConversationThreadRef(thread_id="thread_opus_escalation", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "approval_required")
+                self.assertIn("mode simple", dispatch.operator_reply.summary.lower())
+                self.assertIn("mode avance", dispatch.operator_reply.summary.lower())
+                self.assertIn("mode extreme", dispatch.operator_reply.summary.lower())
+                self.assertIn("mode recommande", dispatch.operator_reply.summary.lower())
+                self.assertIn("cout estime", dispatch.operator_reply.summary.lower())
+                self.assertIn("temps estime", dispatch.operator_reply.summary.lower())
+                self.assertIn("api utilisee", dispatch.operator_reply.summary.lower())
+                self.assertIn("simple/avance/extreme", dispatch.operator_reply.summary.lower())
+                self.assertEqual(dispatch.metadata["approval_metadata"]["approval_type"], "reasoning_escalation")
+                self.assertEqual(calls, [])
+            finally:
+                services.close()
+
+    def test_gateway_reasoning_escalation_go_runs_opus_and_stop_keeps_sonnet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "sk-ant-test")
+                self._mark_runtime_ready(services, "core")
+                calls: list[dict[str, str]] = []
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    calls.append({"message": message, "model": model, "route_reason": route_reason or ""})
+                    return "Opus a pris le relais."
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                serious_text = (
+                    "Je veux une analyse architecture et compromis de la roadmap persona, "
+                    "avec priorites et arbitrages de cout avant de trancher."
+                )
+                launch_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text=serious_text,
+                        thread_ref=ConversationThreadRef(thread_id="thread_reasoning_go", channel="discord"),
+                    ),
+                )
+
+                proposal_dispatch = services.gateway.dispatch_event(launch_event, target_profile="core")
+                approval_row = services.database.fetchone(
+                    "SELECT approval_id, status FROM approval_records ORDER BY created_at DESC LIMIT 1"
+                )
+
+                stop_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="stop",
+                        thread_ref=ConversationThreadRef(thread_id="thread_reasoning_go", channel="discord"),
+                    ),
+                )
+                stop_dispatch = services.gateway.dispatch_event(stop_event, target_profile="core")
+
+                self.assertEqual(proposal_dispatch.operator_reply.reply_kind, "approval_required")
+                self.assertEqual(stop_dispatch.metadata["resolved_action"], "reject_runtime_approval")
+                self.assertEqual(stop_dispatch.operator_reply.reply_kind, "ack")
+                self.assertIn("je ne lance pas", stop_dispatch.operator_reply.summary.lower())
+                self.assertEqual(calls, [])
+
+                relaunch_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text=serious_text,
+                        thread_ref=ConversationThreadRef(thread_id="thread_reasoning_go_2", channel="discord"),
+                    ),
+                )
+                proposal_dispatch = services.gateway.dispatch_event(relaunch_event, target_profile="core")
+                second_approval_row = services.database.fetchone(
+                    "SELECT approval_id, status FROM approval_records ORDER BY created_at DESC LIMIT 1"
+                )
+                self.assertEqual(proposal_dispatch.operator_reply.reply_kind, "approval_required")
+
+                go_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="go",
+                        thread_ref=ConversationThreadRef(thread_id="thread_reasoning_go_2", channel="discord"),
+                    ),
+                )
+                go_dispatch = services.gateway.dispatch_event(go_event, target_profile="core")
+                updated_approval = services.database.fetchone(
+                    "SELECT status FROM approval_records WHERE approval_id = ?",
+                    (str(second_approval_row["approval_id"]),),
+                )
+
+                self.assertEqual(go_dispatch.metadata["resolved_action"], "approve_runtime_approval")
+                self.assertEqual(go_dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertIn("opus a pris le relais", go_dispatch.operator_reply.summary.lower())
+                self.assertGreaterEqual(len(calls), 1)
+                self.assertEqual(calls[-1]["model"], services.config.execution_policy.discord_opus_model)
+                self.assertEqual(calls[-1]["route_reason"], "operator_forced_opus_route")
+                self.assertEqual(str(updated_approval["status"]), "approved")
+            finally:
+                services.close()
+
+    def test_gateway_reasoning_escalation_can_switch_to_avance_before_go(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "sk-ant-test")
+                self._mark_runtime_ready(services, "core")
+                calls: list[dict[str, str]] = []
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    calls.append({"message": message, "model": model, "route_reason": route_reason or ""})
+                    return "Sonnet avance ok."
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                serious_text = (
+                    "Et donc si je te dis de regarder sur qui on s'inspire pour la gestion memoire, "
+                    "tu reponds quoi et en combien de temps ? Reponse longue demandee + de 2000 caracteres."
+                )
+                launch_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text=serious_text,
+                        thread_ref=ConversationThreadRef(thread_id="thread_reasoning_avance", channel="discord"),
+                    ),
+                )
+
+                proposal_dispatch = services.gateway.dispatch_event(launch_event, target_profile="core")
+                select_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="avance",
+                        thread_ref=ConversationThreadRef(thread_id="thread_reasoning_avance", channel="discord"),
+                    ),
+                )
+                select_dispatch = services.gateway.dispatch_event(select_event, target_profile="core")
+                go_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="go",
+                        thread_ref=ConversationThreadRef(thread_id="thread_reasoning_avance", channel="discord"),
+                    ),
+                )
+                go_dispatch = services.gateway.dispatch_event(go_event, target_profile="core")
+
+                self.assertEqual(proposal_dispatch.operator_reply.reply_kind, "approval_required")
+                self.assertEqual(select_dispatch.metadata["resolved_action"], "update_runtime_approval_selection")
+                self.assertIn("mode selectionne: mode avance", select_dispatch.operator_reply.summary.lower())
+                self.assertEqual(go_dispatch.metadata["resolved_action"], "approve_runtime_approval")
+                self.assertEqual(go_dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertGreaterEqual(len(calls), 1)
+                self.assertEqual(calls[-1]["model"], services.config.execution_policy.discord_simple_model)
+                self.assertEqual(calls[-1]["route_reason"], "operator_forced_sonnet_route")
+                self.assertIn("mode avance discord", calls[-1]["message"].lower())
+            finally:
+                services.close()
+
+    def test_gateway_reasoning_escalation_accepts_go_plus_mode_in_one_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "sk-ant-test")
+                self._mark_runtime_ready(services, "core")
+                calls: list[dict[str, str]] = []
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    calls.append({"message": message, "model": model, "route_reason": route_reason or ""})
+                    return "Mode applique."
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                serious_text = (
+                    "Et donc si je te dis de regarder sur qui on s'inspire pour la gestion memoire, "
+                    "tu reponds quoi et en combien de temps ? Reponse longue demandee + de 2000 caracteres."
+                )
+                launch_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text=serious_text,
+                        thread_ref=ConversationThreadRef(thread_id="thread_reasoning_go_mode", channel="discord"),
+                    ),
+                )
+
+                proposal_dispatch = services.gateway.dispatch_event(launch_event, target_profile="core")
+                go_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="go avance",
+                        thread_ref=ConversationThreadRef(thread_id="thread_reasoning_go_mode", channel="discord"),
+                    ),
+                )
+                go_dispatch = services.gateway.dispatch_event(go_event, target_profile="core")
+
+                self.assertEqual(proposal_dispatch.operator_reply.reply_kind, "approval_required")
+                self.assertEqual(go_dispatch.metadata["resolved_action"], "approve_runtime_approval")
+                self.assertEqual(go_dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertGreaterEqual(len(calls), 1)
+                self.assertEqual(calls[-1]["model"], services.config.execution_policy.discord_simple_model)
+                self.assertEqual(calls[-1]["route_reason"], "operator_forced_sonnet_route")
+                self.assertIn("mode avance discord", calls[-1]["message"].lower())
+            finally:
+                services.close()
+
+    def test_gateway_reasoning_escalation_longform_go_returns_pdf_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "sk-ant-test")
+                self._mark_runtime_ready(services, "core")
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    return (
+                        "Si tu me demandes de regarder sur qui on s'inspire pour la gestion memoire, "
+                        "je commence par inspecter la doc, le code et les choix de persistance deja poses. "
+                    ) * 8
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                serious_text = (
+                    "Et donc si je te dis de regarder sur qui on s'inspire pour la gestion memoire, "
+                    "tu reponds quoi et en combien de temps ? Reponse longue demandee + de 2000 caracteres."
+                )
+                launch_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text=serious_text,
+                        thread_ref=ConversationThreadRef(thread_id="thread_reasoning_pdf", channel="discord"),
+                    ),
+                )
+                go_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="go",
+                        thread_ref=ConversationThreadRef(thread_id="thread_reasoning_pdf", channel="discord"),
+                    ),
+                )
+
+                proposal_dispatch = services.gateway.dispatch_event(launch_event, target_profile="core")
+                go_dispatch = services.gateway.dispatch_event(go_event, target_profile="core")
+
+                self.assertEqual(proposal_dispatch.operator_reply.reply_kind, "approval_required")
+                self.assertEqual(go_dispatch.metadata["resolved_action"], "approve_runtime_approval")
+                self.assertEqual(go_dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertIsNotNone(go_dispatch.operator_reply.response_manifest)
+                manifest = go_dispatch.operator_reply.response_manifest
+                assert manifest is not None
+                self.assertEqual(manifest.delivery_mode, "artifact_summary")
+                self.assertEqual(go_dispatch.metadata["response_delivery_mode"], "artifact_summary")
+                self.assertEqual(len(manifest.attachments), 1)
+                self.assertEqual(manifest.attachments[0].mime_type, "application/pdf")
+                self.assertIn("PDF joint", go_dispatch.operator_reply.summary)
             finally:
                 services.close()
 

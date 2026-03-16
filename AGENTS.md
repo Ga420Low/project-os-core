@@ -153,6 +153,7 @@ Contrat supplementaire pour toute roadmap:
 - quand une inspiration externe est importante, la roadmap doit donner une decision explicite `KEEP`, `ADAPT` ou `DEFER`
 - une roadmap doit partir du repo reel avant de proposer de nouvelles couches
 - si aucune source externe n'est utile ou necessaire, la roadmap doit le dire explicitement au lieu de laisser croire qu'une recherche a ete faite
+- a la fin de chaque pack, lot ou phase effectivement termine, l'agent doit cocher immediatement la case correspondante dans la roadmap canonique et dans `docs/roadmap/BUILD_STATUS_CHECKLIST.md`
 - reference de forme: `docs/workflow/ROADMAP_AUTHORING_STANDARD.md`
 
 Contrat supplementaire pour tout dossier systeme ou veille de stack:
@@ -163,6 +164,17 @@ Contrat supplementaire pour tout dossier systeme ou veille de stack:
 - l'agent ne doit pas mettre un systeme en `A faire` sans dire quelle preuve pratique doit etre obtenue sur la machine ou dans le repo
 - les dossiers systeme doivent partir des besoins reels de `Project OS`, pas d'un inventaire de hype
 - reference de forme: `docs/workflow/SYSTEM_DOSSIER_AUTHORING_STANDARD.md`
+
+Contrat supplementaire pour tout calcul de cout:
+
+- si une feature, un bot, un worker, un mode Discord, un lane vocal ou une UI affiche un `cout estime`, il doit utiliser le calculateur canonique partage
+- le calculateur canonique est `src/project_os_core/costing.py`
+- il est interdit d'introduire de nouveaux montants EUR/USD hardcodes dans une feature locale juste pour "faire une estimation vite"
+- si un provider offre un comptage officiel avant appel, l'agent doit le preferer au fallback heuristique
+- si aucun comptage officiel n'est disponible, l'agent doit reutiliser le fallback partage du calculateur canonique, pas en reinventer un troisieme
+- la regle produit est: `une seule logique d'estimation, plusieurs surfaces d'affichage`
+- quand c'est possible, une feature doit distinguer `cout estime avant run` et `cout reel apres run`
+- reference canonique: `docs/architecture/COST_OPTIMIZATION_STRATEGY.md`
 
 Declencheurs de `deep research`:
 
@@ -177,6 +189,7 @@ Declencheurs de `deep research`:
 Quand un de ces declencheurs apparait, l'agent doit:
 
 - appliquer `docs/workflow/DEEP_RESEARCH_PROTOCOL.md`
+- demander explicitement un `research_profile` et une `research_intensity` avant le calcul final du cout
 - inspecter le repo reel avant la veille externe
 - privilegier les sources primaires recentes
 - inspecter les repos GitHub centraux, leurs `README`, licences, activite et dependances si pertinent
@@ -184,7 +197,14 @@ Quand un de ces declencheurs apparait, l'agent doit:
 - traduire la recherche en `KEEP / ADAPT / DEFER / REJECT`
 - produire un artefact canonique dans `docs/audits/` ou `docs/systems/` quand la recherche merite une trace durable
 - si la demande arrive via `Discord` ou `OpenClaw`, preparer le dossier puis lancer le job de recherche asynchrone
-- ecrire la synthese finale dans le `.md` du projet, puis renvoyer le resume final sur Discord avec le fichier Markdown joint
+- ecrire la synthese finale dans le `.md` du projet, avec `Markdown` canonique en anglais et `PDF` lecteur en francais
+- renvoyer le resume final sur Discord avec le `PDF` et le fichier Markdown joints
+
+Frontiere produit a respecter:
+
+- `deep research` est un systeme a part de la conversation normale
+- pour l'instant, il ne s'active que si le fondateur ecrit explicitement un message contenant `deep research` ou `recherche approfondie`
+- une discussion normale, meme serieuse, longue ou couteuse, ne doit pas etre transformee silencieusement en `deep research`
 
 Commande de scaffold recommandee:
 
@@ -452,6 +472,7 @@ Regles obligatoires:
   - reference: `docs/architecture/DOCUMENTATION_LANGUAGE_POLICY.md`
 - gate documentaire de cloture:
   - a la fin de toute issue, tout lot, toute roadmap step ou toute decision marquee comme `faite`, lancer `py scripts/project_os_entry.py docs audit`
+  - avant d'annoncer une cloture, verifier que la case du pack ou du lot est bien cochee dans la roadmap canonique et dans `docs/roadmap/BUILD_STATUS_CHECKLIST.md`
   - si la cloture touche aussi le runtime ou OpenClaw, preferer `py scripts/project_os_tests.py --suite full --with-strict-doctor --with-openclaw-doctor --with-doc-audit`
   - ne jamais annoncer une cloture sans mentionner le verdict de l'audit doc
   - si l'audit doc echoue, corriger la doc ou enregistrer explicitement un defer canonique avant de fermer

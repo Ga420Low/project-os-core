@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..database import CanonicalDatabase
 from ..models import ApprovalStatus, ApiRunStatus, MissionStatus, RunContractStatus, utc_now_iso
+from ..research_scaffold import parse_research_mode_selection
 
 if TYPE_CHECKING:
     from ..api_runs.service import ApiRunService
@@ -251,6 +252,7 @@ class PersistentSessionState:
                     "action_name": str((json.loads(row["payload_json"]) if row["payload_json"] else {}).get("action_name") or row["reason"]),
                     "risk_class": str(row["risk_tier"]),
                     "created_at": str(row["created_at"]),
+                    "metadata": json.loads(row["payload_json"]) if row["payload_json"] else {},
                 }
                 for row in approval_rows
             ],
@@ -292,7 +294,7 @@ class PersistentSessionState:
         matches_approve = self._matches_approve(normalized_text)
         matches_reject = self._matches_reject(normalized_text)
 
-        total_pending = len(snapshot.pending_contracts) + len(snapshot.pending_clarifications)
+        total_pending = len(snapshot.pending_contracts) + len(snapshot.pending_clarifications) + len(snapshot.pending_approvals)
         is_simple_message = (matches_approve or matches_reject) and not matches_force and not matches_status
         if is_simple_message and total_pending > 1:
             self.api_runs.logger.log(
@@ -320,6 +322,80 @@ class PersistentSessionState:
             resolved = ResolvedIntent(
                 action="approve_contract",
                 target_id=str(contract["contract_id"]),
+                confidence=0.95,
+                raw_message=message_text,
+                metadata={},
+            )
+        elif len(snapshot.pending_approvals) == 1 and self._approval_expects_mode_selection(snapshot.pending_approvals[0]):
+            approval = snapshot.pending_approvals[0]
+            selection = parse_research_mode_selection(
+                message_text,
+                kind=str((approval.get("metadata") or {}).get("research_scaffold_kind") or "audit"),
+                fallback_profile=str((approval.get("metadata") or {}).get("selected_profile") or "").strip().lower() or None,
+                fallback_intensity=str((approval.get("metadata") or {}).get("selected_intensity") or "").strip().lower() or None,
+            )
+            if matches_reject:
+                resolved = ResolvedIntent(
+                    action="reject_runtime_approval",
+                    target_id=str(approval["approval_id"]),
+                    confidence=0.95,
+                    raw_message=message_text,
+                    metadata={},
+                )
+            else:
+                resolved = ResolvedIntent(
+                    action="update_runtime_approval_selection",
+                    target_id=str(approval["approval_id"]),
+                    confidence=0.95,
+                    raw_message=message_text,
+                    metadata=selection,
+                )
+        elif len(snapshot.pending_approvals) == 1 and self._approval_allows_selection_update(snapshot.pending_approvals[0]) and not matches_status:
+            approval = snapshot.pending_approvals[0]
+            approval_type = str((approval.get("metadata") or {}).get("approval_type") or "").strip().lower()
+            selection: dict[str, Any] = {}
+            if approval_type == "reasoning_escalation":
+                selection = self._parse_discussion_mode_selection(
+                    message_text,
+                    fallback_mode=str((approval.get("metadata") or {}).get("selected_mode") or "").strip().lower() or None,
+                )
+            else:
+                selection = parse_research_mode_selection(
+                    message_text,
+                    kind=str((approval.get("metadata") or {}).get("research_scaffold_kind") or "audit"),
+                    fallback_profile=str((approval.get("metadata") or {}).get("research_profile") or "").strip().lower() or None,
+                    fallback_intensity=str((approval.get("metadata") or {}).get("research_intensity") or "").strip().lower() or None,
+                )
+            if matches_approve:
+                resolved = ResolvedIntent(
+                    action="approve_runtime_approval",
+                    target_id=str(approval["approval_id"]),
+                    confidence=0.95,
+                    raw_message=message_text,
+                    metadata=selection,
+                )
+            elif matches_reject:
+                resolved = ResolvedIntent(
+                    action="reject_runtime_approval",
+                    target_id=str(approval["approval_id"]),
+                    confidence=0.90,
+                    raw_message=message_text,
+                    metadata={},
+                )
+            else:
+                if selection.get("selected_profile") or selection.get("selected_intensity") or selection.get("selected_mode"):
+                    resolved = ResolvedIntent(
+                        action="update_runtime_approval_selection",
+                        target_id=str(approval["approval_id"]),
+                        confidence=0.90,
+                        raw_message=message_text,
+                        metadata=selection,
+                    )
+        elif len(snapshot.pending_approvals) == 1 and matches_approve:
+            approval = snapshot.pending_approvals[0]
+            resolved = ResolvedIntent(
+                action="approve_runtime_approval",
+                target_id=str(approval["approval_id"]),
                 confidence=0.95,
                 raw_message=message_text,
                 metadata={},
@@ -368,6 +444,19 @@ class PersistentSessionState:
                         raw_message=message_text,
                         metadata={"answer": "rejected"},
                     )
+                elif (
+                    len(snapshot.pending_approvals) == 1
+                    and len(snapshot.pending_contracts) == 0
+                    and len(snapshot.pending_clarifications) == 0
+                ):
+                    approval = snapshot.pending_approvals[0]
+                    resolved = ResolvedIntent(
+                        action="reject_runtime_approval",
+                        target_id=str(approval["approval_id"]),
+                        confidence=0.90,
+                        raw_message=message_text,
+                        metadata={},
+                    )
 
         if resolved is None or resolved.confidence < 0.70:
             self.api_runs.logger.log(
@@ -390,6 +479,36 @@ class PersistentSessionState:
             message_text=message_text,
         )
         return resolved
+
+    @staticmethod
+    def _approval_expects_mode_selection(approval: dict[str, Any]) -> bool:
+        approval_type = str((approval.get("metadata") or {}).get("approval_type") or "").strip().lower()
+        return approval_type == "deep_research_mode_selection"
+
+    @staticmethod
+    def _approval_allows_selection_update(approval: dict[str, Any]) -> bool:
+        approval_type = str((approval.get("metadata") or {}).get("approval_type") or "").strip().lower()
+        return approval_type in {"deep_research_launch", "reasoning_escalation"}
+
+    @staticmethod
+    def _parse_discussion_mode_selection(message_text: str, *, fallback_mode: str | None = None) -> dict[str, Any]:
+        normalized = PersistentSessionState._normalize_text(message_text)
+        aliases = {
+            "simple": "simple",
+            "rapide": "simple",
+            "avance": "avance",
+            "avancee": "avance",
+            "advanced": "avance",
+            "sonnet": "avance",
+            "extreme": "extreme",
+            "opus": "extreme",
+        }
+        for token, mode in aliases.items():
+            if re.search(rf"\b{re.escape(token)}\b", normalized):
+                return {"selected_mode": mode}
+        if fallback_mode:
+            return {"selected_mode": str(fallback_mode).strip().lower()}
+        return {}
 
     def build_context_brief(self, *, snapshot: SessionSnapshot | None = None) -> str:
         """Construit un brief compact du contexte de session pour une eventuelle escalade."""

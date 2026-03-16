@@ -88,6 +88,35 @@ def write_text_artifact(
     return pointer
 
 
+def write_binary_artifact(
+    *,
+    paths: ProjectPaths,
+    path_policy: PathPolicy,
+    owner_id: str,
+    artifact_kind: str,
+    storage_tier: MemoryTier,
+    payload: bytes,
+    suffix: str,
+) -> ArtifactPointer:
+    folder = _folder_for(paths, artifact_kind, storage_tier)
+    folder.mkdir(parents=True, exist_ok=True)
+    destination = path_policy.ensure_allowed_write(folder / f"{owner_id}{suffix}")
+    encoded = bytes(payload)
+    temp_path = destination.with_suffix(f"{destination.suffix}.tmp")
+    temp_path.write_bytes(encoded)
+    temp_path.replace(destination)
+    pointer = ArtifactPointer(
+        artifact_id=new_id("artifact"),
+        artifact_kind=artifact_kind,
+        storage_tier=storage_tier,
+        path=str(destination),
+        checksum_sha256=_sha256(encoded),
+        size_bytes=len(encoded),
+    )
+    validate_artifact_pointer(pointer, path_policy)
+    return pointer
+
+
 def validate_artifact_pointer(pointer: ArtifactPointer, path_policy: PathPolicy) -> None:
     artifact_path = path_policy.ensure_allowed_write(pointer.path)
     payload = artifact_path.read_bytes()

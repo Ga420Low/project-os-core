@@ -320,23 +320,17 @@ class OpenClawGatewayAdapterTests(unittest.TestCase):
                 "core_packages": ["memory", "learning"],
                 "created": True,
             }
-            job_payload = {
-                "job_id": "deep_research_123",
-                "job_path": "D:\\ProjectOS\\runtime\\deep_research\\deep_research_123\\request.json",
-                "launched": True,
-            }
-            with patch("project_os_core.gateway.service.scaffold_research", return_value=scaffold_payload), patch(
-                "project_os_core.gateway.service.GatewayService._maybe_launch_deep_research_job",
-                return_value=job_payload,
-            ):
+            with patch("project_os_core.gateway.service.scaffold_research", return_value=scaffold_payload):
                 exit_code, parsed = self._run_ingest_cli(config_path, policy_path, payload)
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(parsed["metadata"]["research_scaffold_title"], "Memory Systems")
             self.assertEqual(parsed["metadata"]["research_scaffold_kind"], "system")
             self.assertEqual(parsed["metadata"]["research_scaffold_doc_name"], "MEMORY_SYSTEMS_DOSSIER.md")
-            self.assertEqual(parsed["metadata"]["deep_research_job_id"], "deep_research_123")
-            self.assertIn("Recherche approfondie lancee", parsed["operator_reply"]["summary"])
+            self.assertEqual(parsed["operator_reply"]["reply_kind"], "clarification_required")
+            self.assertEqual(parsed["metadata"]["approval_metadata"]["approval_type"], "deep_research_mode_selection")
+            self.assertIn("profil recommande", parsed["operator_reply"]["summary"].lower())
+            self.assertIn("intensite recommandee", parsed["operator_reply"]["summary"].lower())
             self.assertIn("MEMORY_SYSTEMS_DOSSIER.md", parsed["operator_reply"]["summary"])
 
     def test_openclaw_ingest_cli_detects_deep_research_with_common_typo(self):
@@ -395,22 +389,16 @@ class OpenClawGatewayAdapterTests(unittest.TestCase):
                 "core_packages": ["memory", "learning"],
                 "created": True,
             }
-            job_payload = {
-                "job_id": "deep_research_typo_123",
-                "job_path": "D:\\ProjectOS\\runtime\\deep_research\\deep_research_typo_123\\request.json",
-                "launched": True,
-            }
-            with patch("project_os_core.gateway.service.scaffold_research", return_value=scaffold_payload), patch(
-                "project_os_core.gateway.service.GatewayService._maybe_launch_deep_research_job",
-                return_value=job_payload,
-            ):
+            with patch("project_os_core.gateway.service.scaffold_research", return_value=scaffold_payload):
                 exit_code, parsed = self._run_ingest_cli(config_path, policy_path, payload)
 
             self.assertEqual(exit_code, 0)
             self.assertEqual(parsed["metadata"]["research_scaffold_title"], "Legeres Sur Les Tomates")
             self.assertEqual(parsed["metadata"]["research_scaffold_kind"], "audit")
-            self.assertEqual(parsed["metadata"]["deep_research_job_id"], "deep_research_typo_123")
-            self.assertIn("Recherche approfondie lancee", parsed["operator_reply"]["summary"])
+            self.assertEqual(parsed["operator_reply"]["reply_kind"], "clarification_required")
+            self.assertEqual(parsed["metadata"]["approval_metadata"]["approval_type"], "deep_research_mode_selection")
+            self.assertIn("profil recommande", parsed["operator_reply"]["summary"].lower())
+            self.assertIn("intensite recommandee", parsed["operator_reply"]["summary"].lower())
 
 
 if __name__ == "__main__":

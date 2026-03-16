@@ -82,8 +82,20 @@ Chaque pack, lot ou phase doit dire:
 - pourquoi il ne vient pas avant
 - quelle dette ou quel risque il ferme
 - quel composant existant il reutilise
+- quelle case devra etre cochee a sa fermeture dans la roadmap canonique et dans `docs/roadmap/BUILD_STATUS_CHECKLIST.md`
 
 Le `pourquoi` ne doit pas etre seulement implicite dans les bullets.
+
+## Contrat de fermeture
+
+Quand un pack, lot ou phase est termine:
+
+- cocher immediatement sa case dans la roadmap canonique
+- cocher immediatement sa case miroir dans `docs/roadmap/BUILD_STATUS_CHECKLIST.md`
+- si tous les sous-items d'un lot sont termines, cocher aussi le parent
+- lancer ensuite `py scripts/project_os_entry.py docs audit`
+
+Une cloture n'est pas complete tant que ces cases ne sont pas synchronisees.
 
 ## Contrat repo-first
 

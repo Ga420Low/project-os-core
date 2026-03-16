@@ -306,6 +306,19 @@ class PersistentSessionStateTests(unittest.TestCase):
             finally:
                 services.close()
 
+    def test_resolve_intent_approves_single_pending_runtime_approval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                snapshot = SessionSnapshot(pending_approvals=[{"approval_id": "approval_1"}])
+                resolved = services.session_state.resolve_intent("go", snapshot=snapshot)
+                self.assertIsNotNone(resolved)
+                self.assertEqual(resolved.action, "approve_runtime_approval")
+                self.assertEqual(resolved.target_id, "approval_1")
+                self.assertEqual(resolved.confidence, 0.95)
+            finally:
+                services.close()
+
     def test_resolve_intent_answers_single_clarification(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = self._build_services(Path(tmp))
@@ -340,6 +353,64 @@ class PersistentSessionStateTests(unittest.TestCase):
                 )
                 resolved = services.session_state.resolve_intent("go", snapshot=snapshot)
                 self.assertIsNone(resolved)
+            finally:
+                services.close()
+
+    def test_resolve_intent_rejects_single_pending_runtime_approval(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                snapshot = SessionSnapshot(pending_approvals=[{"approval_id": "approval_1"}])
+                resolved = services.session_state.resolve_intent("non", snapshot=snapshot)
+                self.assertIsNotNone(resolved)
+                self.assertEqual(resolved.action, "reject_runtime_approval")
+                self.assertEqual(resolved.target_id, "approval_1")
+            finally:
+                services.close()
+
+    def test_resolve_intent_updates_reasoning_mode_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                snapshot = SessionSnapshot(
+                    pending_approvals=[
+                        {
+                            "approval_id": "approval_1",
+                            "metadata": {
+                                "approval_type": "reasoning_escalation",
+                                "selected_mode": "extreme",
+                            },
+                        }
+                    ]
+                )
+                resolved = services.session_state.resolve_intent("avance", snapshot=snapshot)
+                self.assertIsNotNone(resolved)
+                self.assertEqual(resolved.action, "update_runtime_approval_selection")
+                self.assertEqual(resolved.target_id, "approval_1")
+                self.assertEqual(resolved.metadata["selected_mode"], "avance")
+            finally:
+                services.close()
+
+    def test_resolve_intent_accepts_go_plus_reasoning_mode_in_one_message(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                snapshot = SessionSnapshot(
+                    pending_approvals=[
+                        {
+                            "approval_id": "approval_1",
+                            "metadata": {
+                                "approval_type": "reasoning_escalation",
+                                "selected_mode": "extreme",
+                            },
+                        }
+                    ]
+                )
+                resolved = services.session_state.resolve_intent("go avance", snapshot=snapshot)
+                self.assertIsNotNone(resolved)
+                self.assertEqual(resolved.action, "approve_runtime_approval")
+                self.assertEqual(resolved.target_id, "approval_1")
+                self.assertEqual(resolved.metadata["selected_mode"], "avance")
             finally:
                 services.close()
 
