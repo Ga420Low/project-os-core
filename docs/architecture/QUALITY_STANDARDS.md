@@ -104,6 +104,7 @@ Verdicts possibles:
 
 ### Verification actuelle
 
+- cartographie lisible des surfaces de test et d'audit: `docs/architecture/TEST_AND_REVIEW_SURFACES.md`
 - boucle rapide fiable: `py scripts/project_os_tests.py --suite smoke`
   - couvre seulement les surfaces critiques (`router`, `mission chain`, `api runs`, `dashboard`)
 - gateway/OpenClaw: `py scripts/project_os_tests.py --suite gateway`
@@ -113,6 +114,16 @@ Verdicts possibles:
 - `py -m pytest -q` doit rester borne au coeur du repo via `pytest.ini` et ne plus collecter `third_party`
 - completer au besoin avec des suites ciblees par sous-systeme
 - garder les chiffres de tests hors de cette doc pour eviter le drift
+
+### Discipline d'execution des verifications
+
+- choisir un budget de temps explicite avant de lancer une suite; ne pas supposer qu'un run combine "passera vite"
+- ne pas grouper plusieurs fichiers `pytest` moyens ou lourds dans une seule commande avec un timeout court
+- pour les surfaces `gateway`, `prompt`, `orchestration` et `Discord`, preferer:
+  - des runs par fichier
+  - ou les suites canoniques `scripts/project_os_tests.py`
+- si une commande timeoute, la verification reste `non concluante` tant qu'un rerun adapte n'a pas rendu un verdict vert explicite
+- preferer des resultats incrementaux fiables a une grosse commande combinee mal budgetee
 
 ### Outil
 
@@ -150,4 +161,5 @@ Verdicts possibles:
 - `docs/audits/CLAUDE_OPUS_46_AUDIT_TRIAGE_2026-03-13.md`
 - `docs/decisions/0013-dual-model-operating-model.md`
 - `docs/integrations/API_RUN_CONTRACT.md`
+- `docs/architecture/TEST_AND_REVIEW_SURFACES.md`
 - `config/api_run_templates.json`

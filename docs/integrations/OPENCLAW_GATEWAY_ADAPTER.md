@@ -278,6 +278,41 @@ La verite live Windows retenue est:
 - absence de fallback `Startup`
 - projection `discord_thread_bindings` visible dans le runtime des qu'un event Discord recent existe
 
+## Script operateur rapide
+
+Pour eviter de rechercher les commandes a chaque fois, utilise maintenant:
+
+```powershell
+py D:/ProjectOS/project-os-core/scripts/project_os_gateway_op.py <commande>
+```
+
+ou sur Windows:
+
+```cmd
+D:\ProjectOS\project-os-core\scripts\project_os_gateway.cmd <commande>
+```
+
+Commandes utiles:
+
+- `status`
+- `restart`
+- `start`
+- `stop`
+- `doctor`
+- `truth-health --channel discord`
+- `validate-live --channel discord`
+- `self-heal`
+- `discord-calibration`
+- `quickcheck`
+
+Exemples:
+
+```powershell
+py D:/ProjectOS/project-os-core/scripts/project_os_gateway_op.py restart
+py D:/ProjectOS/project-os-core/scripts/project_os_gateway_op.py quickcheck
+py D:/ProjectOS/project-os-core/scripts/project_os_gateway_op.py truth-health --channel discord
+```
+
 ## Self-heal et watchdog
 
 Un message Discord ne peut pas reveiller un gateway mort: si le listener local est casse, le message n'atteint deja plus la machine.

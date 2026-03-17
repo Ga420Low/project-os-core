@@ -391,6 +391,26 @@ class PersistentSessionStateTests(unittest.TestCase):
             finally:
                 services.close()
 
+    def test_resolve_intent_does_not_reuse_pending_reasoning_mode_on_arbitrary_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                snapshot = SessionSnapshot(
+                    pending_approvals=[
+                        {
+                            "approval_id": "approval_1",
+                            "metadata": {
+                                "approval_type": "reasoning_escalation",
+                                "selected_mode": "simple",
+                            },
+                        }
+                    ]
+                )
+                resolved = services.session_state.resolve_intent("wesh", snapshot=snapshot)
+                self.assertIsNone(resolved)
+            finally:
+                services.close()
+
     def test_resolve_intent_accepts_go_plus_reasoning_mode_in_one_message(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = self._build_services(Path(tmp))
@@ -517,7 +537,7 @@ class PersistentSessionStateTests(unittest.TestCase):
                 self.assertEqual(dispatch.operator_reply.reply_kind, "ack")
                 self.assertEqual(dispatch.metadata["resolved_action"], "approve_contract")
                 self.assertEqual(dispatch.mission_run_id, "api_run_launched")
-                self.assertIn("Run lance", dispatch.operator_reply.summary)
+                self.assertIn("contrat valide. Je lance.", dispatch.operator_reply.summary)
                 routing_rows = services.database.fetchall("SELECT * FROM routing_decisions")
                 self.assertEqual(routing_rows, [])
             finally:

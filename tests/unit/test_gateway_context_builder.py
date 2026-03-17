@@ -141,7 +141,8 @@ class GatewayContextBuilderTests(unittest.TestCase):
                 self.assertIn("Historique recent du thread:", rendered)
                 self.assertIn("On garde le browser worker pour les formulaires.", rendered)
                 self.assertIn('"raw_user_intent": "brainstorm trois options d architecture"', rendered)
-                self.assertIn("Contexte session recent:", rendered)
+                self.assertNotIn("Contexte session recent:", rendered)
+                self.assertIn("Continuite projet recente:", rendered)
                 self.assertIn("detected_mood: brainstorming", rendered)
             finally:
                 services.close()
@@ -217,6 +218,12 @@ class GatewayContextBuilderTests(unittest.TestCase):
                     return "ok"
 
                 services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                services.gateway._call_inline_chat = lambda **kwargs: _stub_simple_chat(  # type: ignore[method-assign]
+                    kwargs.get("message", ""),
+                    model=kwargs.get("model", "claude-sonnet-4-20250514"),
+                    route_reason=kwargs.get("route_reason"),
+                    context_bundle=kwargs.get("context_bundle"),
+                )
                 services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
 
                 event = ChannelEvent(
@@ -236,12 +243,15 @@ class GatewayContextBuilderTests(unittest.TestCase):
 
                 self.assertEqual(dispatch.operator_reply.reply_kind, "chat_response")
                 rendered = captured[-1]
+                self.assertIn("Session fondatrice recente:", rendered)
+                self.assertIn("session fondatrice: founder:thread:thread_ctx_project_continuity", rendered)
                 self.assertIn("Continuite projet recente:", rendered)
                 self.assertIn("garder une facade Discord naturelle", rendered)
                 self.assertIn("Keep the Discord facade natural and readable.", rendered)
                 self.assertIn("Brancher la suite d evals conversationnelles.", rendered)
                 self.assertIn("Discord continuity stays anchored on recent decisions.", rendered)
                 self.assertNotIn("Founder-only private continuity detail.", rendered)
+                self.assertEqual(dispatch.metadata["founder_session_key"], "founder:thread:thread_ctx_project_continuity")
             finally:
                 services.close()
 
@@ -285,6 +295,65 @@ class GatewayContextBuilderTests(unittest.TestCase):
         self.assertIn("prochain pas proche: Verifier le chunking avant merge.", rendered)
         self.assertIn("dernier pdf connu: artifact_pdf_1", rendered)
         self.assertIn("dernier artefact connu: artifact_reply_1", rendered)
+
+    def test_founder_session_spine_prefers_thread_state_and_falls_back_to_project_continuity(self):
+        candidate = SimpleNamespace(
+            metadata={
+                "thread_active_subject": "Pack D - Founder Session Spine",
+                "thread_recent_decisions": ["Discord reste une surface distante, pas un dashboard runtime."],
+                "thread_next_step": "",
+                "thread_last_artifact_id": "artifact_reply_42",
+                "thread_pending_approval_ids": ["approval_runtime_1"],
+            }
+        )
+
+        rendered = GatewayContextBuilder._render_founder_session_spine(
+            candidate=candidate,
+            founder_session_key="founder:branch:codex/discord-spine",
+            project_continuity_payload={
+                "deferred_gaps": [{"summary": "Relier la synthese Discord au control plane desktop."}],
+                "recent_decisions": [{"summary": "Le detail runtime doit vivre cote app."}],
+            },
+        )
+
+        self.assertIn("session fondatrice: founder:branch:codex/discord-spine", rendered)
+        self.assertIn("sujet actif: Pack D - Founder Session Spine", rendered)
+        self.assertIn("decision recente: Discord reste une surface distante, pas un dashboard runtime.", rendered)
+        self.assertIn("prochain pas proche: Relier la synthese Discord au control plane desktop.", rendered)
+        self.assertIn("dernier artefact utile: artifact_reply_42", rendered)
+        self.assertIn("approval utile en attente: approval_runtime_1", rendered)
+
+    def test_explicit_founder_session_key_beats_branch_projection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                snapshot = SessionSnapshot(
+                    active_runs=[{"branch_name": "codex/discord-spine"}],
+                    last_founder_message_at="2026-03-17T01:00:00+00:00",
+                )
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="desktop",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="desktop",
+                        text="reprends la session",
+                        thread_ref=ConversationThreadRef(thread_id="desktop_resume", channel="desktop"),
+                        metadata={"founder_session_key": "founder:session:desktop-status"},
+                    ),
+                )
+
+                founder_session_key = services.gateway.context_builder._founder_session_key(
+                    event=event,
+                    snapshot=snapshot,
+                    decision=SimpleNamespace(),
+                )
+
+                self.assertEqual(founder_session_key, "founder:session:desktop-status")
+            finally:
+                services.close()
 
     def test_identity_prompt_does_not_leak_pending_clarifications_or_thread_backlog(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -385,6 +454,323 @@ class GatewayContextBuilderTests(unittest.TestCase):
                 self.assertNotIn("Confirme si je dois integrer sur l'etat sale actuel.", rendered)
                 self.assertNotIn("Ancienne reponse bruitee", rendered)
                 self.assertNotIn("active_missions=", rendered)
+            finally:
+                services.close()
+
+    def test_short_greeting_uses_minimal_context_and_hides_session_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                captured: list[dict[str, object]] = []
+
+                snapshot = SessionSnapshot(
+                    pending_clarifications=[
+                        {
+                            "report_id": "clarif_1",
+                            "question": "Confirme si je dois relancer le gateway.",
+                            "branch_name": "codex/gateway-fix",
+                        }
+                    ],
+                    active_missions=[{"objective": "Debugger backlog Discord", "status": "running"}],
+                    last_founder_message_at="2026-03-17T00:51:16+00:00",
+                )
+
+                services.session_state.load = lambda: snapshot  # type: ignore[method-assign]
+                services.gateway.context_builder._load_recent_thread_messages = lambda **_: (
+                    ThreadTurn(
+                        role="founder",
+                        text="ancien message founder",
+                        created_at="2026-03-17T00:50:00+00:00",
+                    ),
+                )
+                services.gateway.context_builder._load_recent_operator_replies = lambda **_: (
+                    ThreadTurn(
+                        role="project_os",
+                        text="ancienne reponse avec backlog bruite",
+                        created_at="2026-03-17T00:50:10+00:00",
+                    ),
+                )
+                if services.gateway.context_builder.memory_os is not None:
+                    services.gateway.context_builder.memory_os.build_project_continuity_brief = (  # type: ignore[method-assign]
+                        lambda context: (_ for _ in ()).throw(AssertionError("project continuity must stay out of greeting prompts"))
+                    )
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    captured.append(
+                        {
+                            "message": message,
+                            "rendered": services.gateway._simple_chat_user_message(
+                                message,
+                                provider="anthropic",
+                                model=model,
+                                route_reason=route_reason,
+                                context_bundle=context_bundle,
+                            ),
+                        }
+                    )
+                    return "ok"
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
+
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="wesh",
+                        thread_ref=ConversationThreadRef(
+                            thread_id="thread_greeting_minimal",
+                            channel="discord",
+                            external_thread_id="channel:thread_greeting_minimal",
+                        ),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.metadata["query_scope"], "contextual")
+                self.assertEqual(dispatch.metadata["handoff_contract"]["pending_questions"], [])
+                rendered = str(captured[-1]["rendered"])
+                self.assertNotIn("Contexte session recent:", rendered)
+                self.assertNotIn("Continuite projet recente:", rendered)
+                self.assertNotIn("Historique recent du thread:", rendered)
+                self.assertNotIn("active_missions=", rendered)
+                self.assertNotIn("pending_clarifications=", rendered)
+            finally:
+                services.close()
+
+    def test_normal_repo_question_does_not_pull_session_metrics_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                captured: list[dict[str, object]] = []
+
+                snapshot = SessionSnapshot(
+                    pending_clarifications=[
+                        {
+                            "report_id": "clarif_1",
+                            "question": "Confirme si je dois relancer le gateway.",
+                            "branch_name": "codex/gateway-fix",
+                        }
+                    ],
+                    active_missions=[{"objective": "Debugger backlog Discord", "status": "running"}],
+                    last_founder_message_at="2026-03-17T00:51:16+00:00",
+                )
+
+                services.session_state.load = lambda: snapshot  # type: ignore[method-assign]
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    captured.append(
+                        {
+                            "message": message,
+                            "rendered": services.gateway._simple_chat_user_message(
+                                message,
+                                provider="anthropic",
+                                model=model,
+                                route_reason=route_reason,
+                                context_bundle=context_bundle,
+                            ),
+                        }
+                    )
+                    return "ok"
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
+
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="ou est ce que je peut reparer ca dans le repo ?",
+                        thread_ref=ConversationThreadRef(
+                            thread_id="thread_repo_question",
+                            channel="discord",
+                            external_thread_id="channel:thread_repo_question",
+                        ),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.metadata["query_scope"], "contextual")
+                self.assertEqual(dispatch.metadata["handoff_contract"]["pending_questions"], [])
+                rendered = str(captured[-1]["rendered"])
+                self.assertNotIn("Contexte session recent:", rendered)
+                self.assertNotIn("active_missions=", rendered)
+                self.assertNotIn("pending_clarifications=", rendered)
+                self.assertIn("discord_chat_rule:", rendered)
+            finally:
+                services.close()
+
+    def test_gateway_repo_question_with_gateway_word_does_not_flip_into_status_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                captured: list[dict[str, object]] = []
+
+                snapshot = SessionSnapshot(
+                    pending_clarifications=[
+                        {
+                            "report_id": "clarif_1",
+                            "question": "Confirme si je dois relancer le gateway.",
+                            "branch_name": "codex/gateway-fix",
+                        }
+                    ],
+                    active_missions=[{"objective": "Debugger backlog Discord", "status": "running"}],
+                    last_founder_message_at="2026-03-17T00:51:16+00:00",
+                )
+
+                services.session_state.load = lambda: snapshot  # type: ignore[method-assign]
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    captured.append(
+                        {
+                            "message": message,
+                            "rendered": services.gateway._simple_chat_user_message(
+                                message,
+                                provider="anthropic",
+                                model=model,
+                                route_reason=route_reason,
+                                context_bundle=context_bundle,
+                            ),
+                        }
+                    )
+                    return "ok"
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
+
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="ou est ce que je peux reparer le gateway dans le repo ?",
+                        thread_ref=ConversationThreadRef(
+                            thread_id="thread_repo_gateway_question",
+                            channel="discord",
+                            external_thread_id="channel:thread_repo_gateway_question",
+                        ),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.metadata["query_scope"], "contextual")
+                self.assertEqual(dispatch.metadata["status_request_mode"], "none")
+                rendered = str(captured[-1]["rendered"])
+                self.assertNotIn("Contexte session recent:", rendered)
+                self.assertNotIn("active_missions=", rendered)
+                self.assertNotIn("pending_clarifications=", rendered)
+            finally:
+                services.close()
+
+    def test_explicit_status_request_keeps_session_metrics_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                captured: list[dict[str, object]] = []
+
+                snapshot = SessionSnapshot(
+                    pending_clarifications=[
+                        {
+                            "report_id": "clarif_1",
+                            "question": "Confirme si je dois relancer le gateway.",
+                            "branch_name": "codex/gateway-fix",
+                        }
+                    ],
+                    active_missions=[{"objective": "Debugger backlog Discord", "status": "running"}],
+                    last_founder_message_at="2026-03-17T00:51:16+00:00",
+                )
+
+                services.session_state.load = lambda: snapshot  # type: ignore[method-assign]
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    captured.append(
+                        {
+                            "message": message,
+                            "rendered": services.gateway._simple_chat_user_message(
+                                message,
+                                provider="anthropic",
+                                model=model,
+                                route_reason=route_reason,
+                                context_bundle=context_bundle,
+                            ),
+                        }
+                    )
+                    return "ok"
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
+
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="combien de missions sont en attente ?",
+                        thread_ref=ConversationThreadRef(
+                            thread_id="thread_status_request",
+                            channel="discord",
+                            external_thread_id="channel:thread_status_request",
+                        ),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.metadata["query_scope"], "contextual")
+                self.assertEqual(dispatch.metadata["status_request_mode"], "summary")
+                self.assertEqual(dispatch.metadata["handoff_contract"]["pending_questions"], [])
+                rendered = str(captured[-1]["rendered"])
+                self.assertIn("Contexte session recent:", rendered)
+                self.assertIn("Synthese de statut Discord", rendered)
+                self.assertIn("Active missions: 1", rendered)
+                self.assertIn("active_missions=1", rendered)
+                self.assertNotIn("Pending clarifications:", rendered)
+                self.assertIn("status_surface_rule: on Discord, answer status requests with a short operational synthesis only", rendered)
             finally:
                 services.close()
 

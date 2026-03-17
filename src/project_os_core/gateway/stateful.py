@@ -1293,6 +1293,16 @@ class ConversationReliabilityService:
 
 class ConversationBrainService:
     APPROVAL_RESPONSE_HINTS = ("go", "avance", "simple", "extreme", "opus", "sonnet")
+    _CLARIFICATION_ACK_HINTS = (
+        "oui",
+        "ouais",
+        "yes",
+        "yep",
+        "oui rooh",
+        "bah oui",
+        "oui de ta derniere reponse",
+        "de ta derniere reponse",
+    )
     _AMBIGUOUS_FOLLOWUP_HINTS = (
         "et du coup",
         "du coup",
@@ -1468,6 +1478,35 @@ class ConversationBrainService:
                 selected_object_ids=list(working_set.selected_object_ids),
                 selected_artifact_ids=list(working_set.selected_artifact_ids),
             )
+        if thread_ledger is not None and self._is_clarification_ack_to_last_reply(
+            normalized=normalized,
+            thread_ledger=thread_ledger,
+        ):
+            return ConversationBrainDecision(
+                backend=ConversationBrainBackend.LOCAL,
+                resolution_kind="continue_previous_answer",
+                confidence=0.84,
+                target_type="analysis_object" if working_set.selected_object_ids else None,
+                target_id=working_set.selected_object_ids[0] if working_set.selected_object_ids else None,
+                reason="clarification_acknowledged_last_reply",
+                selected_object_ids=list(working_set.selected_object_ids),
+                selected_artifact_ids=list(working_set.selected_artifact_ids),
+            )
+        if thread_ledger is not None and self._has_explicit_followup_anchor(
+            normalized=normalized,
+            thread_ledger=thread_ledger,
+            working_set=working_set,
+        ):
+            return ConversationBrainDecision(
+                backend=ConversationBrainBackend.LOCAL,
+                resolution_kind="continue_previous_answer",
+                confidence=0.86,
+                target_type="analysis_object" if working_set.selected_object_ids else None,
+                target_id=working_set.selected_object_ids[0] if working_set.selected_object_ids else None,
+                reason="explicit_followup_anchor",
+                selected_object_ids=list(working_set.selected_object_ids),
+                selected_artifact_ids=list(working_set.selected_artifact_ids),
+            )
         if thread_ledger is not None:
             clarification_question = self._clarification_question_for_low_recall(
                 normalized=normalized,
@@ -1569,6 +1608,110 @@ class ConversationBrainService:
     @classmethod
     def _looks_like_ambiguous_followup(cls, normalized: str) -> bool:
         return _contains_hint(normalized, cls._AMBIGUOUS_FOLLOWUP_HINTS)
+
+    @classmethod
+    def _is_clarification_ack_to_last_reply(cls, *, normalized: str, thread_ledger: ThreadLedgerSnapshot) -> bool:
+        if normalized not in cls._CLARIFICATION_ACK_HINTS:
+            return False
+        last_reply = _normalize_text(thread_ledger.last_authoritative_reply_summary or "")
+        if not last_reply:
+            return False
+        return last_reply.startswith("tu parles ") or "ou d autre chose exactement" in last_reply or "quel element exactement" in last_reply
+
+    @classmethod
+    def _has_explicit_followup_anchor(
+        cls,
+        *,
+        normalized: str,
+        thread_ledger: ThreadLedgerSnapshot,
+        working_set: WorkingSetPlan,
+    ) -> bool:
+        if not (thread_ledger.last_operator_reply_id or thread_ledger.last_authoritative_reply_summary):
+            return False
+        message_tokens = cls._meaningful_tokens(normalized)
+        if len(message_tokens) < 2:
+            return False
+        for anchor in cls._explicit_anchor_texts(thread_ledger=thread_ledger, working_set=working_set):
+            anchor_normalized = _normalize_text(anchor)
+            if not anchor_normalized:
+                continue
+            if normalized in anchor_normalized and len(normalized.split()) >= 3:
+                return True
+            anchor_tokens = cls._meaningful_tokens(anchor_normalized)
+            overlap = message_tokens & anchor_tokens
+            if len(overlap) >= 3:
+                return True
+            if len(overlap) >= 2 and len(message_tokens) <= 6:
+                return True
+        return False
+
+    @classmethod
+    def _explicit_anchor_texts(
+        cls,
+        *,
+        thread_ledger: ThreadLedgerSnapshot,
+        working_set: WorkingSetPlan,
+    ) -> list[str]:
+        anchors: list[str] = []
+        if thread_ledger.last_authoritative_reply_summary:
+            anchors.append(thread_ledger.last_authoritative_reply_summary)
+        anchors.extend(thread_ledger.decisions[:3])
+        del working_set
+        return [item for item in anchors if str(item).strip()]
+
+    @staticmethod
+    def _meaningful_tokens(normalized: str) -> set[str]:
+        stopwords = {
+            "le",
+            "la",
+            "les",
+            "de",
+            "des",
+            "du",
+            "un",
+            "une",
+            "et",
+            "ou",
+            "ce",
+            "cette",
+            "cet",
+            "ca",
+            "c",
+            "que",
+            "qui",
+            "quoi",
+            "dans",
+            "sur",
+            "pour",
+            "avec",
+            "est",
+            "sont",
+            "pas",
+            "plus",
+            "tres",
+            "tout",
+            "tous",
+            "autre",
+            "exactement",
+            "ma",
+            "mon",
+            "ta",
+            "ton",
+            "deux",
+            "trois",
+            "ouais",
+            "oui",
+            "bah",
+            "rooh",
+            "je",
+            "tu",
+            "il",
+            "elle",
+            "on",
+            "nous",
+            "vous",
+        }
+        return {token for token in normalized.split() if len(token) >= 2 and token not in stopwords}
 
     def apply_to_candidate(self, *, candidate: ConversationMemoryCandidate, resolution: ConversationResolution) -> None:
         if not self.reliability.should_force_discussion(resolution):

@@ -71,7 +71,7 @@ class SchedulerServiceTests(unittest.TestCase):
             services = _build_services(Path(tmp))
             try:
                 tasks = services.scheduler.list_tasks()
-                self.assertEqual(len(tasks), 8)
+                self.assertEqual(len(tasks), 9)
                 self.assertEqual(
                     [task.name for task in tasks],
                     [
@@ -83,6 +83,7 @@ class SchedulerServiceTests(unittest.TestCase):
                         "memory_compact",
                         "memory_curator_sleeptime",
                         "memory_supersession_scan",
+                        "project_review_loop",
                     ],
                 )
                 daily_audit = next(task for task in tasks if task.name == "daily_audit")

@@ -992,6 +992,23 @@ class ApiRunService:
                     connection=connection,
                     refresh_snapshot=False,
                 )
+            self._record_dead_letter(
+                domain="api_run_failure",
+                source_entity_kind=TraceEntityKind.API_RUN.value,
+                source_entity_id=run_id,
+                error_code="run_failed",
+                error_message=str(exc),
+                replayable=False,
+                recovery_command=f"project-os api-runs show-artifacts --run-id {run_id}",
+                artifact_path=str(blockage.metadata.get("artifact_path") or raw_output_path),
+                run_id=run_id,
+                metadata={
+                    "run_request_id": request.run_request_id,
+                    "mode": request.mode.value,
+                    "branch_name": request.branch_name,
+                    "blockage_report_id": blockage.report_id,
+                },
+            )
             self.logger.log(
                 "ERROR",
                 "api_run_failed",
@@ -1864,6 +1881,24 @@ class ApiRunService:
                     "artifact_path": str(artifact_path),
                 },
             )
+            self._record_dead_letter(
+                domain="operator_delivery",
+                source_entity_kind="operator_delivery",
+                source_entity_id=delivery_id,
+                error_code=final_status.value,
+                error_message=error or (str(row["last_error"]) if row["last_error"] else None),
+                replayable=True,
+                recovery_command=f"project-os api-runs requeue-operator-delivery --delivery-id {delivery_id}",
+                artifact_path=str(artifact_path),
+                run_id=str(event_row["run_id"]) if event_row and event_row["run_id"] else None,
+                metadata={
+                    "adapter": str(row["adapter"]),
+                    "surface": str(row["surface"]),
+                    "channel_hint": str(row["channel_hint"]),
+                    "lifecycle_event_id": str(row["lifecycle_event_id"]),
+                    "attempts": attempts,
+                },
+            )
             return str(artifact_path)
         except Exception as exc:
             self.logger.log(
@@ -1895,6 +1930,15 @@ class ApiRunService:
         metadata["last_requeued_at"] = updated_at
         metadata["replay_status"] = "queued"
         metadata.pop("retry_backoff_seconds", None)
+        self.database.update_dead_letter_status_for_source(
+            source_entity_kind="operator_delivery",
+            source_entity_id=delivery_id,
+            status="requeued",
+            metadata={
+                "last_requeued_at": updated_at,
+                "requeue_count": metadata["requeue_count"],
+            },
+        )
         self.database.execute(
             """
             UPDATE api_run_operator_deliveries
@@ -1928,6 +1972,62 @@ class ApiRunService:
             "delivery_guarantee": str(metadata.get("delivery_guarantee") or OperatorDeliveryGuarantee.IMPORTANT.value),
             "metadata": metadata,
         }
+
+    def _record_dead_letter(
+        self,
+        *,
+        domain: str,
+        source_entity_kind: str,
+        source_entity_id: str,
+        error_code: str | None,
+        error_message: str | None,
+        replayable: bool,
+        recovery_command: str | None,
+        artifact_path: str | None,
+        correlation_id: str | None = None,
+        run_id: str | None = None,
+        mission_run_id: str | None = None,
+        dispatch_id: str | None = None,
+        channel_event_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> str | None:
+        try:
+            dead_letter_id = self.database.record_dead_letter(
+                domain=domain,
+                source_entity_kind=source_entity_kind,
+                source_entity_id=source_entity_id,
+                status="active",
+                error_code=error_code,
+                error_message=error_message,
+                replayable=replayable,
+                recovery_command=recovery_command,
+                artifact_path=artifact_path,
+                correlation_id=correlation_id,
+                run_id=run_id,
+                mission_run_id=mission_run_id,
+                dispatch_id=dispatch_id,
+                channel_event_id=channel_event_id,
+                metadata=metadata,
+            )
+            self.database.record_trace_edge(
+                parent_id=source_entity_id,
+                parent_kind=source_entity_kind,
+                child_id=dead_letter_id,
+                child_kind=TraceEntityKind.DEAD_LETTER.value,
+                relation=TraceRelationKind.DEAD_LETTERED_AS.value,
+                metadata={"domain": domain, "replayable": replayable},
+            )
+            return dead_letter_id
+        except Exception as exc:
+            self.logger.log(
+                "WARNING",
+                "api_run_dead_letter_record_failed",
+                domain=domain,
+                source_entity_kind=source_entity_kind,
+                source_entity_id=source_entity_id,
+                error=str(exc),
+            )
+            return None
 
     def monitor_snapshot(self, *, limit: int = 5) -> dict[str, Any]:
         snapshot = self._build_monitor_snapshot(limit=limit)

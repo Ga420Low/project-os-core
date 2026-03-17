@@ -11,7 +11,7 @@ import sys
 import textwrap
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
@@ -139,6 +139,11 @@ class DeepResearchService:
             "actor_id": str(event.message.actor_id or "").strip(),
             "source_event_id": str(event.event_id or "").strip(),
             "source_message_id": str(event.message.metadata.get("message_id") or event.message.message_id or "").strip(),
+            "correlation_id": str(event.correlation_id or event.message.metadata.get("correlation_id") or "").strip() or None,
+            "source_dispatch_id": str(event.message.metadata.get("dispatch_id") or "").strip() or None,
+            "source_intent_id": str(event.message.metadata.get("intent_id") or "").strip() or None,
+            "source_decision_id": str(event.message.metadata.get("decision_id") or "").strip() or None,
+            "source_mission_run_id": str(event.message.metadata.get("mission_run_id") or "").strip() or None,
             "reply_to": self._reply_to_for_event(event),
             "reply_target": self._reply_target_for_event(event),
             "created_at": created_at,
@@ -165,6 +170,7 @@ class DeepResearchService:
                 "research_profile": research_profile,
                 "research_intensity": research_intensity,
                 "source_event_id": request["source_event_id"],
+                "correlation_id": request["correlation_id"],
             },
         )
         process = self._spawn_detached_job(request_path)
@@ -184,8 +190,22 @@ class DeepResearchService:
                 "job_path": str(request_path),
                 "dossier_path": request["dossier_path"],
                 "reply_target": request["reply_target"],
+                "correlation_id": request["correlation_id"],
             },
         )
+        if request["source_event_id"]:
+            self.journal.database.record_trace_edge(
+                parent_id=str(request["source_event_id"]),
+                parent_kind=TraceEntityKind.CHANNEL_EVENT.value,
+                child_id=job_id,
+                child_kind=TraceEntityKind.DEEP_RESEARCH_JOB.value,
+                relation=TraceRelationKind.PRODUCED.value,
+                metadata={
+                    "research_profile": research_profile,
+                    "research_intensity": research_intensity,
+                    "correlation_id": request["correlation_id"],
+                },
+            )
         return payload
 
     def run_job_path(self, *, job_path: str) -> dict[str, Any]:
@@ -205,6 +225,112 @@ class DeepResearchService:
         if not isinstance(request, dict):
             raise RuntimeError("Deep research lane payload must be a JSON object.")
         return self.run_lane_request(lane_request=request, lane_root=request_path.parent)
+
+    def resume_job(
+        self,
+        *,
+        job_id: str | None = None,
+        job_path: str | None = None,
+        force: bool = False,
+        stale_after_minutes: int = 15,
+    ) -> dict[str, Any]:
+        if not job_id and not job_path:
+            raise ValueError("resume_job requires job_id or job_path.")
+        request_path = (
+            self.path_policy.ensure_allowed_write(job_path)
+            if job_path
+            else self._job_root(str(job_id)) / "request.json"
+        )
+        if not request_path.exists():
+            raise FileNotFoundError(f"Unknown deep research job payload: {request_path}")
+        job_root = request_path.parent
+        request = self._read_managed_json(request_path)
+        if not isinstance(request, dict):
+            raise RuntimeError("Deep research payload must be a JSON object.")
+
+        status_payload = self._read_managed_json(job_root / "status.json")
+        status = str(status_payload.get("status") or "").strip().lower()
+        updated_at_raw = str(status_payload.get("updated_at") or status_payload.get("failed_at") or "").strip()
+        stale_after = max(1, int(stale_after_minutes))
+        now = datetime.now(timezone.utc)
+        if not force and status == "completed" and (job_root / "result.json").exists():
+            return {
+                "job_id": str(request.get("job_id") or job_id or ""),
+                "status": "skipped_completed",
+                "reason": "already_completed",
+                "job_path": str(request_path),
+            }
+        if not force and status == "running" and updated_at_raw:
+            try:
+                updated_at = datetime.fromisoformat(updated_at_raw)
+            except ValueError:
+                updated_at = None
+            if updated_at is not None and (now - updated_at) <= timedelta(minutes=stale_after):
+                return {
+                    "job_id": str(request.get("job_id") or job_id or ""),
+                    "status": "skipped_running",
+                    "reason": "fresh_running_status",
+                    "job_path": str(request_path),
+                    "updated_at": updated_at_raw,
+                }
+        payload = self.run_job_request(request=request, job_root=job_root)
+        payload["resumed"] = True
+        payload["resume_reason"] = "forced" if force else (status or "missing_status")
+        payload["job_path"] = str(request_path)
+        self.journal.database.update_dead_letter_status_for_source(
+            source_entity_kind=TraceEntityKind.DEEP_RESEARCH_JOB.value,
+            source_entity_id=str(request.get("job_id") or job_id or ""),
+            status="resolved",
+            metadata={
+                "resolved_by": "resume_job",
+                "resolved_at": payload.get("completed_at") or datetime.now(timezone.utc).isoformat(),
+            },
+        )
+        return payload
+
+    def resume_incomplete_jobs(
+        self,
+        *,
+        limit: int = 10,
+        stale_after_minutes: int = 15,
+        force: bool = False,
+    ) -> dict[str, Any]:
+        root = self.path_policy.ensure_allowed_write(self.paths.runtime_root / "deep_research")
+        items: list[dict[str, Any]] = []
+        resumed = 0
+        skipped = 0
+        for request_path in sorted(root.glob("*/request.json"))[: max(1, int(limit))]:
+            request = self._read_managed_json(request_path)
+            job_root = request_path.parent
+            status_payload = self._read_managed_json(job_root / "status.json")
+            status = str(status_payload.get("status") or "").strip().lower()
+            if not force and status == "completed" and (job_root / "result.json").exists():
+                skipped += 1
+                items.append(
+                    {
+                        "job_id": str(request.get("job_id") or job_root.name),
+                        "status": "skipped_completed",
+                        "job_path": str(request_path),
+                    }
+                )
+                continue
+            payload = self.resume_job(
+                job_path=str(request_path),
+                force=force,
+                stale_after_minutes=stale_after_minutes,
+            )
+            if str(payload.get("status") or "").startswith("skipped_"):
+                skipped += 1
+            else:
+                resumed += 1
+            items.append(payload)
+        return {
+            "status": "ok",
+            "total": len(items),
+            "resumed": resumed,
+            "skipped": skipped,
+            "items": items,
+        }
 
     def run_lane_request(self, *, lane_request: dict[str, Any], lane_root: Path) -> dict[str, Any]:
         lane = str(lane_request.get("lane") or lane_request.get("phase") or "").strip().lower()
@@ -413,6 +539,12 @@ class DeepResearchService:
                 "completed_at": datetime.now(timezone.utc).isoformat(),
             }
             self._write_managed_json(job_root / "status.json", payload)
+            self.journal.database.update_dead_letter_status_for_source(
+                source_entity_kind=TraceEntityKind.DEEP_RESEARCH_JOB.value,
+                source_entity_id=job_id,
+                status="resolved",
+                metadata={"resolved_at": payload["completed_at"]},
+            )
             self.journal.append(
                 "deep_research_job_completed",
                 "deep_research",
@@ -457,6 +589,13 @@ class DeepResearchService:
                     "error_type": error_payload["error_type"],
                     "error": error_payload["error"],
                 },
+            )
+            self._record_dead_letter(
+                job_id=job_id,
+                request=request,
+                error_type=error_payload["error_type"],
+                error=error_payload["error"],
+                artifact_path=str(job_root / "status.json"),
             )
             raise
 
@@ -4549,6 +4688,64 @@ class DeepResearchService:
         folder = self.path_policy.ensure_allowed_write(self.paths.runtime_root / "deep_research" / job_id)
         folder.mkdir(parents=True, exist_ok=True)
         return folder
+
+    def _read_managed_json(self, path: Path) -> dict[str, Any]:
+        target = self.path_policy.ensure_allowed_write(path)
+        if not target.exists():
+            return {}
+        try:
+            payload = json.loads(target.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _record_dead_letter(
+        self,
+        *,
+        job_id: str,
+        request: dict[str, Any],
+        error_type: str,
+        error: str,
+        artifact_path: str | None,
+    ) -> str | None:
+        try:
+            dead_letter_id = self.journal.database.record_dead_letter(
+                domain="deep_research_job",
+                source_entity_kind=TraceEntityKind.DEEP_RESEARCH_JOB.value,
+                source_entity_id=job_id,
+                status="active",
+                error_code=error_type,
+                error_message=error,
+                replayable=True,
+                recovery_command=f"project-os research resume-job --job-id {job_id}",
+                artifact_path=artifact_path,
+                correlation_id=str(request.get("correlation_id") or "").strip() or None,
+                mission_run_id=str(request.get("source_mission_run_id") or "").strip() or None,
+                dispatch_id=str(request.get("source_dispatch_id") or "").strip() or None,
+                channel_event_id=str(request.get("source_event_id") or "").strip() or None,
+                metadata={
+                    "title": str(request.get("title") or "").strip() or None,
+                    "research_profile": str(request.get("research_profile") or "").strip() or None,
+                    "research_intensity": str(request.get("research_intensity") or "").strip() or None,
+                },
+            )
+            self.journal.database.record_trace_edge(
+                parent_id=job_id,
+                parent_kind=TraceEntityKind.DEEP_RESEARCH_JOB.value,
+                child_id=dead_letter_id,
+                child_kind=TraceEntityKind.DEAD_LETTER.value,
+                relation=TraceRelationKind.DEAD_LETTERED_AS.value,
+                metadata={"error_type": error_type},
+            )
+            return dead_letter_id
+        except Exception as exc:
+            self.logger.log(
+                "WARNING",
+                "deep_research_dead_letter_record_failed",
+                job_id=job_id,
+                error=str(exc),
+            )
+            return None
 
     def _write_managed_json(self, destination: Path, payload: Any) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)

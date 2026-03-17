@@ -9,7 +9,7 @@ from typing import Any, Iterator
 from uuid import uuid4
 
 
-CURRENT_SCHEMA_VERSION = "18"
+CURRENT_SCHEMA_VERSION = "21"
 
 
 def _quote_identifier(name: str) -> str:
@@ -169,6 +169,7 @@ class CanonicalDatabase:
                     target_profile TEXT,
                     requested_worker TEXT,
                     requested_risk_class TEXT,
+                    correlation_id TEXT,
                     metadata_json TEXT NOT NULL,
                     created_at TEXT NOT NULL
                 );
@@ -184,6 +185,7 @@ class CanonicalDatabase:
                     status TEXT NOT NULL,
                     execution_class TEXT,
                     routing_decision_id TEXT,
+                    correlation_id TEXT,
                     metadata_json TEXT NOT NULL,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -233,6 +235,7 @@ class CanonicalDatabase:
                     budget_state_json TEXT NOT NULL,
                     route_reason TEXT NOT NULL,
                     blocked_reasons_json TEXT NOT NULL,
+                    correlation_id TEXT,
                     created_at TEXT NOT NULL
                 );
 
@@ -242,6 +245,7 @@ class CanonicalDatabase:
                     runtime_state_id TEXT,
                     inputs_json TEXT NOT NULL,
                     outputs_json TEXT NOT NULL,
+                    correlation_id TEXT,
                     created_at TEXT NOT NULL
                 );
 
@@ -280,6 +284,48 @@ class CanonicalDatabase:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS dead_letter_records (
+                    dead_letter_id TEXT PRIMARY KEY,
+                    domain TEXT NOT NULL,
+                    source_entity_kind TEXT NOT NULL,
+                    source_entity_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    error_code TEXT,
+                    error_message TEXT,
+                    replayable INTEGER NOT NULL DEFAULT 0,
+                    recovery_command TEXT,
+                    artifact_path TEXT,
+                    correlation_id TEXT,
+                    run_id TEXT,
+                    mission_run_id TEXT,
+                    dispatch_id TEXT,
+                    channel_event_id TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS debug_replay_runs (
+                    replay_id TEXT PRIMARY KEY,
+                    source_entity_kind TEXT NOT NULL,
+                    source_entity_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    idempotency_key TEXT,
+                    source_identifier TEXT,
+                    trigger_kind TEXT NOT NULL,
+                    correlation_id TEXT,
+                    run_id TEXT,
+                    mission_run_id TEXT,
+                    dispatch_id TEXT,
+                    channel_event_id TEXT,
+                    result_entity_kind TEXT,
+                    result_entity_id TEXT,
+                    artifact_path TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS bootstrap_states (
                     bootstrap_state_id TEXT PRIMARY KEY,
                     strict_ready INTEGER NOT NULL,
@@ -309,6 +355,7 @@ class CanonicalDatabase:
                     source_message_id TEXT,
                     conversation_key TEXT,
                     ingress_dedup_key TEXT,
+                    correlation_id TEXT,
                     thread_ref_json TEXT NOT NULL,
                     message_json TEXT NOT NULL,
                     raw_payload_json TEXT NOT NULL,
@@ -349,6 +396,7 @@ class CanonicalDatabase:
                     intent_id TEXT NOT NULL,
                     decision_id TEXT,
                     mission_run_id TEXT,
+                    correlation_id TEXT,
                     memory_candidate_id TEXT,
                     promotion_decision_id TEXT,
                     promoted_memory_ids_json TEXT NOT NULL,
@@ -739,6 +787,63 @@ class CanonicalDatabase:
                     created_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS incident_records (
+                    incident_id TEXT PRIMARY KEY,
+                    severity TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    summary TEXT NOT NULL,
+                    symptom TEXT NOT NULL,
+                    root_cause_hypothesis TEXT,
+                    fix_summary TEXT,
+                    source_ids_json TEXT NOT NULL DEFAULT '[]',
+                    verification_refs_json TEXT NOT NULL DEFAULT '[]',
+                    correlation_id TEXT,
+                    run_id TEXT,
+                    mission_run_id TEXT,
+                    dispatch_id TEXT,
+                    channel_event_id TEXT,
+                    replay_id TEXT,
+                    dead_letter_id TEXT,
+                    eval_case_id TEXT,
+                    latest_eval_run_id TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    resolved_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS eval_cases (
+                    eval_case_id TEXT PRIMARY KEY,
+                    suite_id TEXT NOT NULL,
+                    scenario TEXT NOT NULL,
+                    target_system TEXT NOT NULL,
+                    expected_behavior TEXT NOT NULL,
+                    runner_kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    idempotency_key TEXT,
+                    source_ids_json TEXT NOT NULL DEFAULT '[]',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    provenance_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS eval_runs (
+                    eval_run_id TEXT PRIMARY KEY,
+                    suite_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    trigger_kind TEXT NOT NULL,
+                    case_ids_json TEXT NOT NULL DEFAULT '[]',
+                    results_json TEXT NOT NULL DEFAULT '[]',
+                    passed_count INTEGER NOT NULL DEFAULT 0,
+                    failed_count INTEGER NOT NULL DEFAULT 0,
+                    skipped_count INTEGER NOT NULL DEFAULT 0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    provenance_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS mem_cubes (
                     cube_id TEXT PRIMARY KEY,
                     layer TEXT NOT NULL,
@@ -1112,12 +1217,18 @@ class CanonicalDatabase:
                 ("action_evidences", "failure_reason TEXT"),
                 ("action_evidences", "policy_verdict TEXT"),
                 ("action_evidences", "artifact_count INTEGER NOT NULL DEFAULT 0"),
+                ("mission_intents", "correlation_id TEXT"),
                 ("mission_runs", "parent_mission_id TEXT"),
                 ("mission_runs", "step_index INTEGER NOT NULL DEFAULT 0"),
                 ("mission_runs", "total_steps INTEGER NOT NULL DEFAULT 1"),
+                ("mission_runs", "correlation_id TEXT"),
+                ("routing_decisions", "correlation_id TEXT"),
+                ("routing_decision_traces", "correlation_id TEXT"),
                 ("channel_events", "source_message_id TEXT"),
                 ("channel_events", "conversation_key TEXT"),
                 ("channel_events", "ingress_dedup_key TEXT"),
+                ("channel_events", "correlation_id TEXT"),
+                ("gateway_dispatch_results", "correlation_id TEXT"),
                 ("api_run_requests", "communication_mode TEXT"),
                 ("api_run_requests", "speech_policy TEXT"),
                 ("api_run_requests", "operator_language TEXT"),
@@ -1167,8 +1278,12 @@ class CanonicalDatabase:
                 ON memory_records(openmemory_id);
             CREATE INDEX IF NOT EXISTS idx_mission_runs_intent
                 ON mission_runs(intent_id);
+            CREATE INDEX IF NOT EXISTS idx_mission_intents_correlation_created
+                ON mission_intents(correlation_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_mission_runs_parent_step
                 ON mission_runs(parent_mission_id, step_index, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_mission_runs_correlation_created
+                ON mission_runs(correlation_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_mission_chains_status_updated
                 ON mission_chains(status, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_name_enabled
@@ -1177,6 +1292,10 @@ class CanonicalDatabase:
                 ON scheduled_tasks(enabled, next_run_at ASC);
             CREATE INDEX IF NOT EXISTS idx_routing_decisions_intent
                 ON routing_decisions(intent_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_routing_decisions_correlation_created
+                ON routing_decisions(correlation_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_routing_traces_correlation_created
+                ON routing_decision_traces(correlation_id, created_at DESC);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_trace_edges_relation
                 ON trace_edges(parent_id, parent_kind, child_id, child_kind, relation);
             CREATE INDEX IF NOT EXISTS idx_trace_edges_parent_created
@@ -1191,8 +1310,27 @@ class CanonicalDatabase:
                 ON output_quarantine_records(source_entity_kind, source_entity_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_output_quarantine_run_created
                 ON output_quarantine_records(run_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_dead_letter_domain_created
+                ON dead_letter_records(domain, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_dead_letter_source_created
+                ON dead_letter_records(source_entity_kind, source_entity_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_dead_letter_status_created
+                ON dead_letter_records(status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_dead_letter_correlation_created
+                ON dead_letter_records(correlation_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_debug_replay_source_created
+                ON debug_replay_runs(source_entity_kind, source_entity_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_debug_replay_status_created
+                ON debug_replay_runs(status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_debug_replay_correlation_created
+                ON debug_replay_runs(correlation_id, created_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_debug_replay_idempotency
+                ON debug_replay_runs(idempotency_key)
+                WHERE idempotency_key IS NOT NULL;
             CREATE INDEX IF NOT EXISTS idx_channel_events_channel_created
                 ON channel_events(channel, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_channel_events_correlation_created
+                ON channel_events(correlation_id, created_at DESC);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_events_ingress_dedup
                 ON channel_events(ingress_dedup_key)
                 WHERE ingress_dedup_key IS NOT NULL;
@@ -1202,6 +1340,8 @@ class CanonicalDatabase:
                 ON promotion_decisions(candidate_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_gateway_dispatch_event
                 ON gateway_dispatch_results(channel_event_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_gateway_dispatch_correlation_created
+                ON gateway_dispatch_results(correlation_id, created_at DESC);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_discord_thread_bindings_key
                 ON discord_thread_bindings(binding_key);
             CREATE INDEX IF NOT EXISTS idx_discord_thread_bindings_mission_updated
@@ -1262,6 +1402,21 @@ class CanonicalDatabase:
                 ON dataset_candidates(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_eval_candidates_created
                 ON eval_candidates(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_incident_records_status_updated
+                ON incident_records(status, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_incident_records_severity_created
+                ON incident_records(severity, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_incident_records_correlation_created
+                ON incident_records(correlation_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_eval_cases_suite_status
+                ON eval_cases(suite_id, status, updated_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_eval_cases_idempotency
+                ON eval_cases(idempotency_key)
+                WHERE idempotency_key IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS idx_eval_runs_suite_created
+                ON eval_runs(suite_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_eval_runs_status_created
+                ON eval_runs(status, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_mem_cubes_layer_updated
                 ON mem_cubes(layer, updated_at DESC);
             CREATE INDEX IF NOT EXISTS idx_mem_cubes_kind_updated
@@ -1567,6 +1722,694 @@ class CanonicalDatabase:
             connection=connection,
         )
         return quarantine_record_id
+
+    def record_dead_letter(
+        self,
+        *,
+        domain: str,
+        source_entity_kind: str,
+        source_entity_id: str,
+        status: str = "active",
+        error_code: str | None = None,
+        error_message: str | None = None,
+        replayable: bool = False,
+        recovery_command: str | None = None,
+        artifact_path: str | None = None,
+        correlation_id: str | None = None,
+        run_id: str | None = None,
+        mission_run_id: str | None = None,
+        dispatch_id: str | None = None,
+        channel_event_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        dead_letter_id: str | None = None,
+        created_at: str | None = None,
+        updated_at: str | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> str:
+        record_id = dead_letter_id or _new_prefixed_id("dead_letter")
+        created_value = created_at or _utc_now_iso()
+        updated_value = updated_at or created_value
+        self.upsert(
+            "dead_letter_records",
+            {
+                "dead_letter_id": record_id,
+                "domain": domain,
+                "source_entity_kind": source_entity_kind,
+                "source_entity_id": source_entity_id,
+                "status": status,
+                "error_code": error_code,
+                "error_message": error_message,
+                "replayable": 1 if replayable else 0,
+                "recovery_command": recovery_command,
+                "artifact_path": artifact_path,
+                "correlation_id": correlation_id,
+                "run_id": run_id,
+                "mission_run_id": mission_run_id,
+                "dispatch_id": dispatch_id,
+                "channel_event_id": channel_event_id,
+                "metadata_json": dump_json(metadata or {}),
+                "created_at": created_value,
+                "updated_at": updated_value,
+            },
+            conflict_columns="dead_letter_id",
+            immutable_columns=["created_at"],
+            connection=connection,
+        )
+        return record_id
+
+    def update_dead_letter_status_for_source(
+        self,
+        *,
+        source_entity_kind: str,
+        source_entity_id: str,
+        status: str,
+        metadata: dict[str, Any] | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> int:
+        rows = self.fetchall(
+            """
+            SELECT dead_letter_id, metadata_json
+            FROM dead_letter_records
+            WHERE source_entity_kind = ?
+              AND source_entity_id = ?
+              AND status IN ('active', 'requeued')
+            ORDER BY created_at DESC
+            """,
+            (source_entity_kind, source_entity_id),
+            connection=connection,
+        )
+        updated_at = _utc_now_iso()
+        count = 0
+        for row in rows:
+            current_metadata: dict[str, Any]
+            try:
+                current_metadata = json.loads(str(row["metadata_json"] or "{}"))
+            except Exception:
+                current_metadata = {}
+            current_metadata.update(metadata or {})
+            self.execute(
+                """
+                UPDATE dead_letter_records
+                SET status = ?, metadata_json = ?, updated_at = ?
+                WHERE dead_letter_id = ?
+                """,
+                (status, dump_json(current_metadata), updated_at, str(row["dead_letter_id"])),
+                connection=connection,
+            )
+            count += 1
+        return count
+
+    def fetch_debug_replay_by_idempotency_key(self, idempotency_key: str) -> sqlite3.Row | None:
+        normalized = str(idempotency_key or "").strip()
+        if not normalized:
+            return None
+        return self.fetchone(
+            "SELECT * FROM debug_replay_runs WHERE idempotency_key = ?",
+            (normalized,),
+        )
+
+    def record_debug_replay_run(
+        self,
+        *,
+        source_entity_kind: str,
+        source_entity_id: str,
+        status: str = "running",
+        idempotency_key: str | None = None,
+        source_identifier: str | None = None,
+        trigger_kind: str = "manual",
+        correlation_id: str | None = None,
+        run_id: str | None = None,
+        mission_run_id: str | None = None,
+        dispatch_id: str | None = None,
+        channel_event_id: str | None = None,
+        result_entity_kind: str | None = None,
+        result_entity_id: str | None = None,
+        artifact_path: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        replay_id: str | None = None,
+        created_at: str | None = None,
+        updated_at: str | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> str:
+        record_id = replay_id or _new_prefixed_id("debug_replay")
+        created_value = created_at or _utc_now_iso()
+        updated_value = updated_at or created_value
+        self.upsert(
+            "debug_replay_runs",
+            {
+                "replay_id": record_id,
+                "source_entity_kind": source_entity_kind,
+                "source_entity_id": source_entity_id,
+                "status": status,
+                "idempotency_key": idempotency_key,
+                "source_identifier": source_identifier,
+                "trigger_kind": trigger_kind,
+                "correlation_id": correlation_id,
+                "run_id": run_id,
+                "mission_run_id": mission_run_id,
+                "dispatch_id": dispatch_id,
+                "channel_event_id": channel_event_id,
+                "result_entity_kind": result_entity_kind,
+                "result_entity_id": result_entity_id,
+                "artifact_path": artifact_path,
+                "metadata_json": dump_json(metadata or {}),
+                "created_at": created_value,
+                "updated_at": updated_value,
+            },
+            conflict_columns="replay_id",
+            immutable_columns=["created_at"],
+            connection=connection,
+        )
+        return record_id
+
+    def update_debug_replay_run(
+        self,
+        replay_id: str,
+        *,
+        status: str,
+        correlation_id: str | None = None,
+        run_id: str | None = None,
+        mission_run_id: str | None = None,
+        dispatch_id: str | None = None,
+        channel_event_id: str | None = None,
+        result_entity_kind: str | None = None,
+        result_entity_id: str | None = None,
+        artifact_path: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        row = self.fetchone(
+            "SELECT metadata_json FROM debug_replay_runs WHERE replay_id = ?",
+            (replay_id,),
+            connection=connection,
+        )
+        existing_metadata: dict[str, Any]
+        try:
+            existing_metadata = json.loads(str(row["metadata_json"] or "{}")) if row is not None else {}
+        except Exception:
+            existing_metadata = {}
+        existing_metadata.update(metadata or {})
+        self.execute(
+            """
+            UPDATE debug_replay_runs
+            SET status = ?, correlation_id = COALESCE(?, correlation_id), run_id = COALESCE(?, run_id),
+                mission_run_id = COALESCE(?, mission_run_id), dispatch_id = COALESCE(?, dispatch_id),
+                channel_event_id = COALESCE(?, channel_event_id), result_entity_kind = COALESCE(?, result_entity_kind),
+                result_entity_id = COALESCE(?, result_entity_id), artifact_path = COALESCE(?, artifact_path),
+                metadata_json = ?, updated_at = ?
+            WHERE replay_id = ?
+            """,
+            (
+                status,
+                correlation_id,
+                run_id,
+                mission_run_id,
+                dispatch_id,
+                channel_event_id,
+                result_entity_kind,
+                result_entity_id,
+                artifact_path,
+                dump_json(existing_metadata),
+                _utc_now_iso(),
+                replay_id,
+            ),
+            connection=connection,
+        )
+
+    def fetch_trace_report(self, correlation_id: str) -> dict[str, Any]:
+        normalized = str(correlation_id or "").strip()
+        payload: dict[str, Any] = {
+            "found": False,
+            "correlation_id": normalized,
+            "summary": {},
+            "channel_events": [],
+            "mission_intents": [],
+            "routing_decisions": [],
+            "routing_traces": [],
+            "mission_runs": [],
+            "gateway_dispatches": [],
+            "debug_replays": [],
+            "dead_letters": [],
+            "incidents": [],
+            "eval_runs": [],
+            "trace_edges": [],
+        }
+        if not normalized:
+            return payload
+
+        def _loads(raw: Any, default: Any) -> Any:
+            if raw in (None, ""):
+                return default
+            try:
+                return json.loads(str(raw))
+            except Exception:
+                return default
+
+        channel_events = [
+            {
+                "event_id": str(row["event_id"]),
+                "surface": str(row["surface"]),
+                "event_type": str(row["event_type"]),
+                "actor_id": str(row["actor_id"]),
+                "channel": str(row["channel"]),
+                "message_kind": str(row["message_kind"]) if row["message_kind"] else None,
+                "source_message_id": str(row["source_message_id"]) if row["source_message_id"] else None,
+                "conversation_key": str(row["conversation_key"]) if row["conversation_key"] else None,
+                "ingress_dedup_key": str(row["ingress_dedup_key"]) if row["ingress_dedup_key"] else None,
+                "correlation_id": str(row["correlation_id"]) if row["correlation_id"] else None,
+                "thread_ref": _loads(row["thread_ref_json"], {}),
+                "message": _loads(row["message_json"], {}),
+                "raw_payload": _loads(row["raw_payload_json"], {}),
+                "created_at": str(row["created_at"]),
+            }
+            for row in self.fetchall(
+                """
+                SELECT *
+                FROM channel_events
+                WHERE correlation_id = ?
+                ORDER BY created_at ASC
+                """,
+                (normalized,),
+            )
+        ]
+        mission_intents = [
+            {
+                "intent_id": str(row["intent_id"]),
+                "source": str(row["source"]),
+                "actor_id": str(row["actor_id"]),
+                "channel": str(row["channel"]),
+                "objective": str(row["objective"]),
+                "target_profile": str(row["target_profile"]) if row["target_profile"] else None,
+                "requested_worker": str(row["requested_worker"]) if row["requested_worker"] else None,
+                "requested_risk_class": str(row["requested_risk_class"]) if row["requested_risk_class"] else None,
+                "correlation_id": str(row["correlation_id"]) if row["correlation_id"] else None,
+                "metadata": _loads(row["metadata_json"], {}),
+                "created_at": str(row["created_at"]),
+            }
+            for row in self.fetchall(
+                """
+                SELECT *
+                FROM mission_intents
+                WHERE correlation_id = ?
+                ORDER BY created_at ASC
+                """,
+                (normalized,),
+            )
+        ]
+        routing_decisions = [
+            {
+                "decision_id": str(row["decision_id"]),
+                "intent_id": str(row["intent_id"]),
+                "mission_run_id": str(row["mission_run_id"]) if row["mission_run_id"] else None,
+                "execution_class": str(row["execution_class"]),
+                "risk_class": str(row["risk_class"]),
+                "allowed": bool(row["allowed"]),
+                "chosen_worker": str(row["chosen_worker"]) if row["chosen_worker"] else None,
+                "model_route": _loads(row["model_route_json"], {}),
+                "approval_gate": _loads(row["approval_gate_json"], {}),
+                "budget_state": _loads(row["budget_state_json"], {}),
+                "route_reason": str(row["route_reason"]),
+                "blocked_reasons": _loads(row["blocked_reasons_json"], []),
+                "correlation_id": str(row["correlation_id"]) if row["correlation_id"] else None,
+                "created_at": str(row["created_at"]),
+            }
+            for row in self.fetchall(
+                """
+                SELECT *
+                FROM routing_decisions
+                WHERE correlation_id = ?
+                ORDER BY created_at ASC
+                """,
+                (normalized,),
+            )
+        ]
+        routing_traces = [
+            {
+                "trace_id": str(row["trace_id"]),
+                "decision_id": str(row["decision_id"]),
+                "runtime_state_id": str(row["runtime_state_id"]) if row["runtime_state_id"] else None,
+                "inputs": _loads(row["inputs_json"], {}),
+                "outputs": _loads(row["outputs_json"], {}),
+                "correlation_id": str(row["correlation_id"]) if row["correlation_id"] else None,
+                "created_at": str(row["created_at"]),
+            }
+            for row in self.fetchall(
+                """
+                SELECT *
+                FROM routing_decision_traces
+                WHERE correlation_id = ?
+                ORDER BY created_at ASC
+                """,
+                (normalized,),
+            )
+        ]
+        mission_runs = [
+            {
+                "mission_run_id": str(row["mission_run_id"]),
+                "intent_id": str(row["intent_id"]),
+                "objective": str(row["objective"]),
+                "profile_name": str(row["profile_name"]) if row["profile_name"] else None,
+                "parent_mission_id": str(row["parent_mission_id"]) if row["parent_mission_id"] else None,
+                "step_index": int(row["step_index"]),
+                "total_steps": int(row["total_steps"]),
+                "status": str(row["status"]),
+                "execution_class": str(row["execution_class"]) if row["execution_class"] else None,
+                "routing_decision_id": str(row["routing_decision_id"]) if row["routing_decision_id"] else None,
+                "correlation_id": str(row["correlation_id"]) if row["correlation_id"] else None,
+                "metadata": _loads(row["metadata_json"], {}),
+                "created_at": str(row["created_at"]),
+                "updated_at": str(row["updated_at"]),
+            }
+            for row in self.fetchall(
+                """
+                SELECT *
+                FROM mission_runs
+                WHERE correlation_id = ?
+                ORDER BY created_at ASC
+                """,
+                (normalized,),
+            )
+        ]
+        gateway_dispatches = [
+            {
+                "dispatch_id": str(row["dispatch_id"]),
+                "channel_event_id": str(row["channel_event_id"]),
+                "envelope_id": str(row["envelope_id"]),
+                "intent_id": str(row["intent_id"]),
+                "decision_id": str(row["decision_id"]) if row["decision_id"] else None,
+                "mission_run_id": str(row["mission_run_id"]) if row["mission_run_id"] else None,
+                "correlation_id": str(row["correlation_id"]) if row["correlation_id"] else None,
+                "memory_candidate_id": str(row["memory_candidate_id"]) if row["memory_candidate_id"] else None,
+                "promotion_decision_id": str(row["promotion_decision_id"]) if row["promotion_decision_id"] else None,
+                "promoted_memory_ids": _loads(row["promoted_memory_ids_json"], []),
+                "reply": _loads(row["reply_json"], {}),
+                "metadata": _loads(row["metadata_json"], {}),
+                "created_at": str(row["created_at"]),
+            }
+            for row in self.fetchall(
+                """
+                SELECT *
+                FROM gateway_dispatch_results
+                WHERE correlation_id = ?
+                ORDER BY created_at ASC
+                """,
+                (normalized,),
+            )
+        ]
+        incidents = [
+            {
+                "incident_id": str(row["incident_id"]),
+                "severity": str(row["severity"]),
+                "status": str(row["status"]),
+                "summary": str(row["summary"]),
+                "symptom": str(row["symptom"]),
+                "verification_refs": _loads(row["verification_refs_json"], []),
+                "latest_eval_run_id": str(row["latest_eval_run_id"]) if row["latest_eval_run_id"] else None,
+                "correlation_id": str(row["correlation_id"]) if row["correlation_id"] else None,
+                "created_at": str(row["created_at"]),
+                "updated_at": str(row["updated_at"]),
+                "resolved_at": str(row["resolved_at"]) if row["resolved_at"] else None,
+            }
+            for row in self.fetchall(
+                """
+                SELECT *
+                FROM incident_records
+                WHERE correlation_id = ?
+                ORDER BY created_at ASC
+                """,
+                (normalized,),
+            )
+        ]
+        incident_eval_run_ids = [
+            str(item["latest_eval_run_id"])
+            for item in incidents
+            if item.get("latest_eval_run_id")
+        ]
+        eval_runs: list[dict[str, Any]] = []
+        if incident_eval_run_ids:
+            placeholders = ", ".join("?" for _ in incident_eval_run_ids)
+            eval_runs = [
+                {
+                    "eval_run_id": str(row["eval_run_id"]),
+                    "suite_id": str(row["suite_id"]),
+                    "status": str(row["status"]),
+                    "trigger_kind": str(row["trigger_kind"]),
+                    "case_ids": _loads(row["case_ids_json"], []),
+                    "passed_count": int(row["passed_count"]),
+                    "failed_count": int(row["failed_count"]),
+                    "skipped_count": int(row["skipped_count"]),
+                    "metadata": _loads(row["metadata_json"], {}),
+                    "provenance": _loads(row["provenance_json"], {}),
+                    "created_at": str(row["created_at"]),
+                    "updated_at": str(row["updated_at"]),
+                }
+                for row in self.fetchall(
+                    f"""
+                    SELECT *
+                    FROM eval_runs
+                    WHERE eval_run_id IN ({placeholders})
+                    ORDER BY created_at ASC
+                    """,
+                    tuple(incident_eval_run_ids),
+                )
+            ]
+
+        entities = channel_events + mission_intents + routing_decisions + routing_traces + mission_runs + gateway_dispatches + incidents + eval_runs
+        if not entities:
+            return payload
+
+        entity_ids = {
+            item["event_id"]
+            for item in channel_events
+        } | {
+            item["intent_id"]
+            for item in mission_intents
+        } | {
+            item["decision_id"]
+            for item in routing_decisions
+        } | {
+            item["trace_id"]
+            for item in routing_traces
+        } | {
+            item["mission_run_id"]
+            for item in mission_runs
+        } | {
+            item["dispatch_id"]
+            for item in gateway_dispatches
+        } | {
+            item["incident_id"]
+            for item in incidents
+        } | {
+            item["eval_run_id"]
+            for item in eval_runs
+        }
+        trace_edges: list[dict[str, Any]] = []
+        if entity_ids:
+            placeholders = ", ".join("?" for _ in entity_ids)
+            debug_replay_rows = self.fetchall(
+                f"""
+                SELECT *
+                FROM debug_replay_runs
+                WHERE correlation_id = ?
+                   OR source_entity_id IN ({placeholders})
+                   OR result_entity_id IN ({placeholders})
+                ORDER BY created_at ASC
+                """,
+                (normalized, *tuple(entity_ids), *tuple(entity_ids)),
+            )
+            dead_letter_rows = self.fetchall(
+                f"""
+                SELECT *
+                FROM dead_letter_records
+                WHERE correlation_id = ?
+                   OR source_entity_id IN ({placeholders})
+                ORDER BY created_at ASC
+                """,
+                (normalized, *tuple(entity_ids)),
+            )
+            rows = self.fetchall(
+                f"""
+                SELECT *
+                FROM trace_edges
+                WHERE parent_id IN ({placeholders})
+                   OR child_id IN ({placeholders})
+                ORDER BY created_at ASC
+                """,
+                tuple(entity_ids) + tuple(entity_ids),
+            )
+            trace_edges = [
+                {
+                    "trace_edge_id": str(row["trace_edge_id"]),
+                    "parent_id": str(row["parent_id"]),
+                    "parent_kind": str(row["parent_kind"]),
+                    "child_id": str(row["child_id"]),
+                    "child_kind": str(row["child_kind"]),
+                    "relation": str(row["relation"]),
+                    "metadata": _loads(row["metadata_json"], {}),
+                    "created_at": str(row["created_at"]),
+                }
+                for row in rows
+            ]
+            debug_replays = [
+                {
+                    "replay_id": str(row["replay_id"]),
+                    "source_entity_kind": str(row["source_entity_kind"]),
+                    "source_entity_id": str(row["source_entity_id"]),
+                    "status": str(row["status"]),
+                    "idempotency_key": str(row["idempotency_key"]) if row["idempotency_key"] else None,
+                    "source_identifier": str(row["source_identifier"]) if row["source_identifier"] else None,
+                    "trigger_kind": str(row["trigger_kind"]),
+                    "correlation_id": str(row["correlation_id"]) if row["correlation_id"] else None,
+                    "run_id": str(row["run_id"]) if row["run_id"] else None,
+                    "mission_run_id": str(row["mission_run_id"]) if row["mission_run_id"] else None,
+                    "dispatch_id": str(row["dispatch_id"]) if row["dispatch_id"] else None,
+                    "channel_event_id": str(row["channel_event_id"]) if row["channel_event_id"] else None,
+                    "result_entity_kind": str(row["result_entity_kind"]) if row["result_entity_kind"] else None,
+                    "result_entity_id": str(row["result_entity_id"]) if row["result_entity_id"] else None,
+                    "artifact_path": str(row["artifact_path"]) if row["artifact_path"] else None,
+                    "metadata": _loads(row["metadata_json"], {}),
+                    "created_at": str(row["created_at"]),
+                    "updated_at": str(row["updated_at"]),
+                }
+                for row in debug_replay_rows
+            ]
+            dead_letters = [
+                {
+                    "dead_letter_id": str(row["dead_letter_id"]),
+                    "domain": str(row["domain"]),
+                    "source_entity_kind": str(row["source_entity_kind"]),
+                    "source_entity_id": str(row["source_entity_id"]),
+                    "status": str(row["status"]),
+                    "error_code": str(row["error_code"]) if row["error_code"] else None,
+                    "error_message": str(row["error_message"]) if row["error_message"] else None,
+                    "replayable": bool(row["replayable"]),
+                    "recovery_command": str(row["recovery_command"]) if row["recovery_command"] else None,
+                    "artifact_path": str(row["artifact_path"]) if row["artifact_path"] else None,
+                    "correlation_id": str(row["correlation_id"]) if row["correlation_id"] else None,
+                    "run_id": str(row["run_id"]) if row["run_id"] else None,
+                    "mission_run_id": str(row["mission_run_id"]) if row["mission_run_id"] else None,
+                    "dispatch_id": str(row["dispatch_id"]) if row["dispatch_id"] else None,
+                    "channel_event_id": str(row["channel_event_id"]) if row["channel_event_id"] else None,
+                    "metadata": _loads(row["metadata_json"], {}),
+                    "created_at": str(row["created_at"]),
+                    "updated_at": str(row["updated_at"]),
+                }
+                for row in dead_letter_rows
+            ]
+        else:
+            debug_replays = [
+                {
+                    "replay_id": str(row["replay_id"]),
+                    "source_entity_kind": str(row["source_entity_kind"]),
+                    "source_entity_id": str(row["source_entity_id"]),
+                    "status": str(row["status"]),
+                    "idempotency_key": str(row["idempotency_key"]) if row["idempotency_key"] else None,
+                    "source_identifier": str(row["source_identifier"]) if row["source_identifier"] else None,
+                    "trigger_kind": str(row["trigger_kind"]),
+                    "correlation_id": str(row["correlation_id"]) if row["correlation_id"] else None,
+                    "run_id": str(row["run_id"]) if row["run_id"] else None,
+                    "mission_run_id": str(row["mission_run_id"]) if row["mission_run_id"] else None,
+                    "dispatch_id": str(row["dispatch_id"]) if row["dispatch_id"] else None,
+                    "channel_event_id": str(row["channel_event_id"]) if row["channel_event_id"] else None,
+                    "result_entity_kind": str(row["result_entity_kind"]) if row["result_entity_kind"] else None,
+                    "result_entity_id": str(row["result_entity_id"]) if row["result_entity_id"] else None,
+                    "artifact_path": str(row["artifact_path"]) if row["artifact_path"] else None,
+                    "metadata": _loads(row["metadata_json"], {}),
+                    "created_at": str(row["created_at"]),
+                    "updated_at": str(row["updated_at"]),
+                }
+                for row in self.fetchall(
+                    """
+                    SELECT *
+                    FROM debug_replay_runs
+                    WHERE correlation_id = ?
+                    ORDER BY created_at ASC
+                    """,
+                    (normalized,),
+                )
+            ]
+            dead_letters = [
+                {
+                    "dead_letter_id": str(row["dead_letter_id"]),
+                    "domain": str(row["domain"]),
+                    "source_entity_kind": str(row["source_entity_kind"]),
+                    "source_entity_id": str(row["source_entity_id"]),
+                    "status": str(row["status"]),
+                    "error_code": str(row["error_code"]) if row["error_code"] else None,
+                    "error_message": str(row["error_message"]) if row["error_message"] else None,
+                    "replayable": bool(row["replayable"]),
+                    "recovery_command": str(row["recovery_command"]) if row["recovery_command"] else None,
+                    "artifact_path": str(row["artifact_path"]) if row["artifact_path"] else None,
+                    "correlation_id": str(row["correlation_id"]) if row["correlation_id"] else None,
+                    "run_id": str(row["run_id"]) if row["run_id"] else None,
+                    "mission_run_id": str(row["mission_run_id"]) if row["mission_run_id"] else None,
+                    "dispatch_id": str(row["dispatch_id"]) if row["dispatch_id"] else None,
+                    "channel_event_id": str(row["channel_event_id"]) if row["channel_event_id"] else None,
+                    "metadata": _loads(row["metadata_json"], {}),
+                    "created_at": str(row["created_at"]),
+                    "updated_at": str(row["updated_at"]),
+                }
+                for row in self.fetchall(
+                    """
+                    SELECT *
+                    FROM dead_letter_records
+                    WHERE correlation_id = ?
+                    ORDER BY created_at ASC
+                    """,
+                    (normalized,),
+                )
+            ]
+
+        created_values = [
+            item["created_at"]
+            for item in entities
+            if isinstance(item, dict) and item.get("created_at")
+        ]
+        summary = {
+            "channel_event_ids": [item["event_id"] for item in channel_events],
+            "dispatch_ids": [item["dispatch_id"] for item in gateway_dispatches],
+            "intent_ids": [item["intent_id"] for item in mission_intents],
+            "decision_ids": [item["decision_id"] for item in routing_decisions],
+            "trace_ids": [item["trace_id"] for item in routing_traces],
+            "mission_run_ids": [item["mission_run_id"] for item in mission_runs],
+            "surface": channel_events[0]["surface"] if channel_events else None,
+            "channel": channel_events[0]["channel"] if channel_events else (mission_intents[0]["channel"] if mission_intents else None),
+            "conversation_key": channel_events[0]["conversation_key"] if channel_events else None,
+            "first_created_at": min(created_values) if created_values else None,
+            "last_created_at": max(created_values) if created_values else None,
+            "counts": {
+                "channel_events": len(channel_events),
+                "gateway_dispatches": len(gateway_dispatches),
+                "mission_intents": len(mission_intents),
+                "routing_decisions": len(routing_decisions),
+                "routing_traces": len(routing_traces),
+                "mission_runs": len(mission_runs),
+                "debug_replays": len(debug_replays),
+                "dead_letters": len(dead_letters),
+                "incidents": len(incidents),
+                "eval_runs": len(eval_runs),
+                "trace_edges": len(trace_edges),
+            },
+        }
+
+        payload.update(
+            {
+                "found": True,
+                "summary": summary,
+                "channel_events": channel_events,
+                "mission_intents": mission_intents,
+                "routing_decisions": routing_decisions,
+                "routing_traces": routing_traces,
+                "mission_runs": mission_runs,
+                "gateway_dispatches": gateway_dispatches,
+                "debug_replays": debug_replays,
+                "dead_letters": dead_letters,
+                "incidents": incidents,
+                "eval_runs": eval_runs,
+                "trace_edges": trace_edges,
+            }
+        )
+        return payload
 
     def upsert_vector(
         self,

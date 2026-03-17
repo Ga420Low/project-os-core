@@ -430,6 +430,63 @@ class GatewayPromptOpsTests(unittest.TestCase):
             finally:
                 services.close()
 
+    def test_simple_chat_prompt_includes_desktop_handoff_rule_for_status_requests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                prompt = services.gateway._simple_chat_user_message(
+                    "donne-moi le detail du gateway et de la queue",
+                    provider="anthropic",
+                    model="claude-haiku-4-5-20251001",
+                    route_reason="discord_simple_route",
+                    context_bundle=GatewayContextBundle(
+                        mood_hint=MoodHint(mood="focused", guidance="reste net"),
+                        session_brief="Synthese de statut Discord\nActive runs: 1",
+                        handoff_contract=None,  # type: ignore[arg-type]
+                        query_scope="contextual",
+                        status_request_mode="detailed",
+                        founder_session_key="founder:branch:codex/discord-spine",
+                        desktop_control_plane_handoff=(
+                            "Je te donne la synthese ici. Pour le detail operatoire, ouvre Project OS.exe > Home / Session / Runs / Discord."
+                        ),
+                        desktop_control_plane_views=("Home", "Session", "Runs", "Discord"),
+                    ),
+                )
+
+                self.assertIn("desktop_handoff_rule:", prompt)
+                self.assertIn("desktop_handoff_views: Home / Session / Runs / Discord", prompt)
+                self.assertIn("status_surface_rule: even for detailed status requests on Discord", prompt)
+            finally:
+                services.close()
+
+    def test_simple_chat_prompt_marks_desktop_surface_without_self_handoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                prompt = services.gateway._simple_chat_user_message(
+                    "donne-moi le detail du gateway",
+                    provider="anthropic",
+                    model="claude-haiku-4-5-20251001",
+                    route_reason="desktop_status_route",
+                    context_bundle=GatewayContextBundle(
+                        mood_hint=MoodHint(mood="focused", guidance="reste net"),
+                        session_brief="Desktop status\nActive runs: 1",
+                        handoff_contract=None,  # type: ignore[arg-type]
+                        surface="desktop",
+                        query_scope="contextual",
+                        status_request_mode="detailed",
+                        founder_session_key="founder:session:desktop-status",
+                    ),
+                )
+
+                self.assertIn("- surface: Project OS.exe", prompt)
+                self.assertIn("control_surface_rule:", prompt)
+                self.assertIn("status_surface_rule: on Project OS.exe", prompt)
+                self.assertNotIn("desktop_handoff_rule:", prompt)
+                self.assertNotIn("desktop_handoff_views:", prompt)
+            finally:
+                services.close()
+
     def test_reasoning_escalation_assessment_detects_explicit_longform_request(self):
         with tempfile.TemporaryDirectory() as tmp:
             services = self._build_services(Path(tmp))

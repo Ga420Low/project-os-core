@@ -1,6 +1,20 @@
 # Discord Operating Model
 
-`Discord` est la surface humaine prioritaire de `Project OS`.
+`Discord` est la surface conversationnelle distante de `Project OS`.
+
+Ce document se lit en tandem avec:
+
+- `docs/roadmap/DISCORD_FOUNDER_SURFACE_REPAIR_V2_PLAN.md`
+- `docs/architecture/FOUNDER_SURFACE_MODEL.md`
+
+Le futur point d'entree local pilotable principal est `Project OS.exe`.
+`Discord` reste:
+
+- la branche de discussion
+- l'arbitrage
+- le travail distant
+- le pilotage leger
+- la supervision resumee et actionnable
 
 Le but n'est pas de faire un simple bot de chat.
 Le but est de faire une interface operateur haut niveau.
@@ -9,6 +23,43 @@ Corollaire produit:
 
 - si un humain doit lire un fichier JSON pour comprendre l'etat d'un run, le workflow est mauvais
 - `Discord` doit porter la partie conversation, arbitrage et retour humain des gros runs
+- l'app locale doit porter le control plane, la vue systeme et le terminal maitre
+- `Discord` ne doit pas devenir un tableau de bord systeme par defaut
+
+## Doctrine de surface
+
+`Discord` doit montrer par defaut:
+
+- reponse utile
+- clarification utile
+- relance utile
+- decision courte
+- etat operateur actionnable
+- incident formule humainement
+
+`Discord` ne doit pas montrer par defaut:
+
+- `queue`
+- `backlog`
+- `pending missions`
+- `gateway health`
+- `internal routing`
+- `provider details`
+- `technical approvals`
+- traces brutes
+
+`Discord` peut montrer sur demande explicite ou sur alerte reellement actionnable:
+
+- details d'execution
+- sante gateway
+- file d'attente
+- backlog mission
+- modele/provider reels
+- details de cout et de lane
+
+Regle dure:
+
+- `control-plane data stays out of normal chat unless explicitly requested or truly actionnable`
 
 ## Roles de Discord
 
@@ -56,6 +107,7 @@ Corollaires:
 - `OpenClaw` n'est pas un second cerveau autonome
 - `OpenClaw` ne doit pas improviser une personnalite ou une memoire paralleles
 - `Claude API` peut etre le moteur principal de discussion Discord sans devenir la verite du systeme
+- la voix publique reste celle d'un seul agent visible, jamais celle des sous-agents
 
 Implementation actuelle:
 
@@ -134,6 +186,8 @@ Les deliberations multi-angles se branchent sur cette topologie existante:
 
 - la memoire canonique
 - la verite machine
+- l'unique coeur pilotable local du projet
+- le control plane
 - l'endroit ou les workers decident eux-memes
 - un contournement du `Mission Router`
 
@@ -142,6 +196,7 @@ Les deliberations multi-angles se branchent sur cette topologie existante:
 - un endroit ou la persona est improvisee
 - une couche qui cache le vrai provider du tour
 - une surface qui perd l'intention brute du fondateur entre deux appels modele
+- une surface qui expose naturellement les sous-agents
 
 ## Types de messages
 
@@ -176,6 +231,10 @@ Promotions typiques:
 ## Routing modele recommande
 
 Le meme agent doit rester coherent, mais le cout cognitif doit s'adapter.
+
+Regle dure supplementaire:
+
+- pas de double personnalite entre la surface Discord et la surface desktop
 
 ### Cas banal Discord
 
@@ -357,8 +416,9 @@ Regles:
 
 Le mapping canonique reste:
 
-- `Discord` = vue operateur
-- `Project OS` = verite runtime
+- `Discord` = remote conversation plane
+- `Project OS.exe` = operational control plane
+- `Project OS runtime` = verite runtime
 
 References:
 

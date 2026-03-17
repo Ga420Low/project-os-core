@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +30,7 @@ from ..models import (
     RoutingDecisionTrace,
     RunSpeechPolicy,
     SensitivityClass,
+    TraceContext,
     TraceEntityKind,
     TraceRelationKind,
     RuntimeState,
@@ -175,9 +176,57 @@ class MissionRouter:
             "summary": f"{len(items)} recent session summaries available.",
         }
 
+    @staticmethod
+    def _conversation_key_from_metadata(metadata: dict[str, Any]) -> str | None:
+        value = str(metadata.get("conversation_key") or "").strip()
+        return value or None
+
+    def _intent_trace_metadata(
+        self,
+        *,
+        intent: MissionIntent,
+        correlation_id: str,
+        phase: str,
+        decision_id: str | None = None,
+        mission_run_id: str | None = None,
+        run_id: str | None = None,
+        created_at: str | None = None,
+    ) -> dict[str, Any]:
+        metadata = dict(intent.metadata)
+        conversation_key = self._conversation_key_from_metadata(metadata)
+        metadata["correlation_id"] = correlation_id
+        metadata["trace_context"] = to_jsonable(
+            TraceContext(
+                correlation_id=correlation_id,
+                channel=intent.channel,
+                conversation_key=conversation_key,
+                intent_id=intent.intent_id,
+                decision_id=decision_id,
+                mission_run_id=mission_run_id,
+                run_id=run_id,
+                phase=phase,
+                created_at=created_at or intent.created_at,
+            )
+        )
+        return metadata
+
     def envelope_to_intent(self, envelope: OperatorEnvelope) -> MissionIntent:
+        metadata = dict(envelope.metadata)
+        correlation_id = str(metadata.get("correlation_id") or "").strip() or new_id("correlation")
+        intent_id = new_id("intent")
+        metadata["correlation_id"] = correlation_id
+        metadata["trace_context"] = to_jsonable(
+            TraceContext(
+                correlation_id=correlation_id,
+                channel=envelope.channel,
+                conversation_key=self._conversation_key_from_metadata(metadata),
+                channel_event_id=str(metadata.get("channel_event_id") or "").strip() or None,
+                intent_id=intent_id,
+                phase="intent",
+            )
+        )
         return MissionIntent(
-            intent_id=new_id("intent"),
+            intent_id=intent_id,
             source="operator_envelope",
             actor_id=envelope.actor_id,
             channel=envelope.channel,
@@ -188,7 +237,8 @@ class MissionRouter:
             communication_mode=envelope.communication_mode,
             operator_language=envelope.operator_language,
             audience=envelope.audience,
-            metadata=dict(envelope.metadata),
+            correlation_id=correlation_id,
+            metadata=metadata,
         )
 
     def route_intent(
@@ -198,6 +248,12 @@ class MissionRouter:
         persist: bool = True,
         runtime_override: RuntimeState | None = None,
     ) -> tuple[RoutingDecision, RoutingDecisionTrace, MissionRun | None]:
+        correlation_id = str(intent.correlation_id or intent.metadata.get("correlation_id") or "").strip() or new_id("correlation")
+        intent = replace(
+            intent,
+            correlation_id=correlation_id,
+            metadata=self._intent_trace_metadata(intent=intent, correlation_id=correlation_id, phase="intent"),
+        )
         runtime_state = runtime_override or self.runtime.latest_runtime_state()
         profile = self._profile_for(intent.target_profile)
         risk_class = intent.requested_risk_class or self._infer_risk_class(intent)
@@ -254,6 +310,7 @@ class MissionRouter:
                 total_steps=1,
                 status=MissionStatus.QUEUED if allowed else MissionStatus.FAILED,
                 execution_class=execution_class,
+                correlation_id=correlation_id,
             )
 
         decision = RoutingDecision(
@@ -271,6 +328,7 @@ class MissionRouter:
             speech_policy=speech_policy,
             operator_language=intent.operator_language or self.execution_policy.operator_language,
             audience=intent.audience or self.execution_policy.operator_audience,
+            correlation_id=correlation_id,
             adaptive_model_route=adaptive_model_route,
             route_reason=model_route.reason if allowed else ";".join(blocked_reasons or [approval_gate.reason or "blocked"]),
             blocked_reasons=blocked_reasons,
@@ -287,6 +345,7 @@ class MissionRouter:
             outputs={
                 "decision": to_jsonable(decision),
             },
+            correlation_id=correlation_id,
         )
 
         if persist:
@@ -301,7 +360,23 @@ class MissionRouter:
                 status=MissionStatus.QUEUED if allowed else MissionStatus.FAILED,
                 execution_class=execution_class,
                 routing_decision_id=decision.decision_id,
-                metadata={"route_reason": decision.route_reason},
+                correlation_id=correlation_id,
+                metadata={
+                    "route_reason": decision.route_reason,
+                    "correlation_id": correlation_id,
+                    "trace_context": to_jsonable(
+                        TraceContext(
+                            correlation_id=correlation_id,
+                            channel=intent.channel,
+                            conversation_key=self._conversation_key_from_metadata(intent.metadata),
+                            intent_id=intent.intent_id,
+                            decision_id=decision.decision_id,
+                            mission_run_id=mission_run.mission_run_id,
+                            phase="routing",
+                            created_at=mission_run.created_at,
+                        )
+                    ),
+                },
                 created_at=mission_run.created_at,
                 updated_at=mission_run.updated_at,
             )
@@ -827,6 +902,7 @@ class MissionRouter:
                 "target_profile": intent.target_profile,
                 "requested_worker": intent.requested_worker,
                 "requested_risk_class": intent.requested_risk_class.value if intent.requested_risk_class else None,
+                "correlation_id": intent.correlation_id,
                 "metadata_json": dump_json(intent.metadata),
                 "created_at": intent.created_at,
             },
@@ -848,6 +924,7 @@ class MissionRouter:
                 "status": mission_run.status.value,
                 "execution_class": mission_run.execution_class.value if mission_run.execution_class else None,
                 "routing_decision_id": mission_run.routing_decision_id,
+                "correlation_id": mission_run.correlation_id,
                 "metadata_json": dump_json(mission_run.metadata),
                 "created_at": mission_run.created_at,
                 "updated_at": mission_run.updated_at,
@@ -872,6 +949,7 @@ class MissionRouter:
                 "budget_state_json": dump_json(to_jsonable(decision.budget_state)),
                 "route_reason": decision.route_reason,
                 "blocked_reasons_json": dump_json(decision.blocked_reasons),
+                "correlation_id": decision.correlation_id,
                 "created_at": decision.created_at,
             },
             conflict_columns="decision_id",
@@ -887,6 +965,7 @@ class MissionRouter:
                 "runtime_state_id": trace.runtime_state_id,
                 "inputs_json": dump_json(trace.inputs),
                 "outputs_json": dump_json(trace.outputs),
+                "correlation_id": trace.correlation_id,
                 "created_at": trace.created_at,
             },
             conflict_columns="trace_id",

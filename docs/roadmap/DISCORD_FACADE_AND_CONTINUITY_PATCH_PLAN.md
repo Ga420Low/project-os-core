@@ -4,6 +4,10 @@
 
 Feuille de route canonique proposee.
 
+Note de cadrage:
+
+- pour la doctrine `single visible agent / multi-surface / Discord = remote conversation / Project OS.exe = control plane`, lire aussi `docs/roadmap/DISCORD_FOUNDER_SURFACE_REPAIR_V2_PLAN.md`
+
 Ce document organise le patch conversationnel demande pour `Project OS`.
 Il ne remplace pas:
 
@@ -27,6 +31,14 @@ Livrer un patch global, mergeable en plusieurs packs, qui:
 - fiabilise une continuite durable en trois couches
 - n'ouvre pas de reecriture generale
 - ne touche pas a `Deep Research`
+
+Recadrage directeur:
+
+- on ne pense plus `patch Discord isole`
+- on pense `agent unique multi-surface`
+- `Discord` = `remote conversation plane`
+- `Project OS.exe` = `operational control plane`
+- la continuite cible est `founder-session first`
 
 ## Point de depart reel
 
@@ -77,6 +89,8 @@ Livrer un patch global, mergeable en plusieurs packs, qui:
   - une seule identite publique, meme si plusieurs modeles ou lanes existent
 - `no-loss Discord delivery`
   - un incident de delivery ne doit pas faire disparaitre le travail produit
+- `control-plane data stays out of normal chat unless explicitly requested`
+- `cross-surface continuity must not create contradictory agent state`
 
 Ces invariants sont superieurs au patch.
 Si un lot les fragilise, le lot doit etre recadre ou coupe.
@@ -204,6 +218,12 @@ Le bon resultat percu est:
 - il connait les decisions recentes
 - il ne donne pas l'impression d'avoir oublie le travail en cours
 
+Corollaire:
+
+- la continuite ne doit plus etre pensee seulement par thread Discord
+- elle doit suivre une `founder session spine`
+- partageable entre Discord et desktop sans seconde personnalite
+
 ### 5. Pas de seconde verite, pas de reecriture
 
 Le patch doit:
@@ -234,6 +254,20 @@ Pourquoi pas l'inverse:
 - commencer par la memoire longue sans contrat visible stable augmenterait les faux rappels et la confusion
 - commencer par un refactor structurel elargirait le scope trop tot
 - toucher `Deep Research` ou le systeme de modes au premier lot casserait des systemes volontaires
+
+## Relecture de vision des packs
+
+- `Pack 1 - Surface split`
+  - separer clairement `chat plane` et `control plane`
+- `Pack 2 - Clarification and referent anchoring`
+  - dernier referent explicite gagne
+  - pas de boucle de clarification inutile
+- `Pack 3 - Discord medium format and human delivery`
+  - Discord court, utile, actionnable
+- `Pack 4 - Founder session spine`
+  - continuite unique entre Discord et desktop
+- `Pack 5 - Cross-surface evals and regression rails`
+  - tests Discord seul, desktop seul, Discord <-> desktop
 
 ## Packs
 

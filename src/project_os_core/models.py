@@ -279,6 +279,11 @@ class TraceEntityKind(str, Enum):
     API_RUN = "api_run"
     DEEP_RESEARCH_JOB = "deep_research_job"
     OUTPUT_QUARANTINE = "output_quarantine"
+    DEBUG_REPLAY = "debug_replay"
+    DEAD_LETTER = "dead_letter"
+    INCIDENT = "incident"
+    EVAL_CASE = "eval_case"
+    EVAL_RUN = "eval_run"
 
 
 class TraceRelationKind(str, Enum):
@@ -288,6 +293,8 @@ class TraceRelationKind(str, Enum):
     REFERENCES = "references"
     CONTINUES_FROM = "continues_from"
     QUARANTINED_AS = "quarantined_as"
+    DEAD_LETTERED_AS = "dead_lettered_as"
+    VERIFIED_BY = "verified_by"
 
 
 class DataProvenanceMarker(str, Enum):
@@ -311,6 +318,57 @@ class OutputQuarantineStatus(str, Enum):
     ACTIVE = "active"
     RELEASED = "released"
     DISCARDED = "discarded"
+
+
+class DeadLetterStatus(str, Enum):
+    ACTIVE = "active"
+    REQUEUED = "requeued"
+    RESOLVED = "resolved"
+    DISCARDED = "discarded"
+
+
+class DebugReplayStatus(str, Enum):
+    RUNNING = "running"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    REUSED = "reused"
+
+
+class IncidentSeverity(str, Enum):
+    P0 = "p0"
+    P1 = "p1"
+    P2 = "p2"
+    P3 = "p3"
+
+
+class IncidentStatus(str, Enum):
+    OPEN = "open"
+    TRIAGED = "triaged"
+    REPRO_READY = "repro_ready"
+    FIX_IN_PROGRESS = "fix_in_progress"
+    VERIFIED = "verified"
+    CLOSED = "closed"
+    NON_REPRODUCIBLE = "non_reproducible"
+
+
+class EvalCaseStatus(str, Enum):
+    ACTIVE = "active"
+    DISABLED = "disabled"
+    RETIRED = "retired"
+
+
+class EvalRunnerKind(str, Enum):
+    TRACE_REPORT = "trace_report"
+    DEAD_LETTER_STATUS = "dead_letter_status"
+    INCIDENT_STATUS = "incident_status"
+    MANUAL_REVIEW = "manual_review"
+
+
+class EvalRunStatus(str, Enum):
+    RUNNING = "running"
+    PASSED = "passed"
+    FAILED = "failed"
+    MIXED = "mixed"
 
 
 def to_jsonable(value: Any) -> Any:
@@ -540,6 +598,7 @@ class ChannelEvent:
     event_type: str
     message: OperatorMessage
     raw_payload: dict[str, Any] = field(default_factory=dict)
+    correlation_id: str | None = None
     created_at: str = field(default_factory=utc_now_iso)
 
 
@@ -616,6 +675,7 @@ class MissionIntent:
     communication_mode: CommunicationMode = CommunicationMode.DISCUSSION
     operator_language: str = "fr"
     audience: OperatorAudience = OperatorAudience.NON_DEVELOPER
+    correlation_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
 
@@ -641,6 +701,7 @@ class MissionRun:
     status: MissionStatus = MissionStatus.QUEUED
     execution_class: MissionExecutionClass | None = None
     routing_decision_id: str | None = None
+    correlation_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
@@ -917,6 +978,7 @@ class GatewayDispatchResult:
     decision_id: str | None
     mission_run_id: str | None
     operator_reply: OperatorReply
+    correlation_id: str | None = None
     promoted_memory_ids: list[str] = field(default_factory=list)
     memory_candidate_id: str | None = None
     promotion_decision_id: str | None = None
@@ -1172,6 +1234,7 @@ class RoutingDecision:
     speech_policy: RunSpeechPolicy = RunSpeechPolicy.SILENT_UNTIL_TERMINAL_STATE
     operator_language: str = "fr"
     audience: OperatorAudience = OperatorAudience.NON_DEVELOPER
+    correlation_id: str | None = None
     adaptive_model_route: AdaptiveModelRoute | None = None
     blocked_reasons: list[str] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now_iso)
@@ -1184,7 +1247,27 @@ class RoutingDecisionTrace:
     runtime_state_id: str | None
     inputs: dict[str, Any]
     outputs: dict[str, Any]
+    correlation_id: str | None = None
     created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class TraceContext:
+    correlation_id: str
+    surface: str | None = None
+    channel: str | None = None
+    thread_id: str | None = None
+    conversation_key: str | None = None
+    channel_event_id: str | None = None
+    dispatch_id: str | None = None
+    intent_id: str | None = None
+    decision_id: str | None = None
+    mission_run_id: str | None = None
+    run_id: str | None = None
+    phase: str | None = None
+    created_at: str = field(default_factory=utc_now_iso)
+    otel_trace_id: str | None = None
+    otel_span_id: str | None = None
 
 
 @dataclass(slots=True)
@@ -1222,6 +1305,110 @@ class OutputQuarantineRecord:
     payload: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class DeadLetterRecord:
+    dead_letter_id: str
+    domain: str
+    source_entity_kind: TraceEntityKind | str
+    source_entity_id: str
+    status: DeadLetterStatus | str = DeadLetterStatus.ACTIVE
+    error_code: str | None = None
+    error_message: str | None = None
+    replayable: bool = False
+    recovery_command: str | None = None
+    artifact_path: str | None = None
+    correlation_id: str | None = None
+    run_id: str | None = None
+    mission_run_id: str | None = None
+    dispatch_id: str | None = None
+    channel_event_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class DebugReplayRun:
+    replay_id: str
+    source_entity_kind: TraceEntityKind | str
+    source_entity_id: str
+    status: DebugReplayStatus | str = DebugReplayStatus.RUNNING
+    idempotency_key: str | None = None
+    source_identifier: str | None = None
+    trigger_kind: str = "manual"
+    correlation_id: str | None = None
+    run_id: str | None = None
+    mission_run_id: str | None = None
+    dispatch_id: str | None = None
+    channel_event_id: str | None = None
+    result_entity_kind: TraceEntityKind | str | None = None
+    result_entity_id: str | None = None
+    artifact_path: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class IncidentRecord:
+    incident_id: str
+    severity: IncidentSeverity | str
+    status: IncidentStatus | str = IncidentStatus.OPEN
+    summary: str = ""
+    symptom: str = ""
+    root_cause_hypothesis: str | None = None
+    fix_summary: str | None = None
+    source_ids: list[str] = field(default_factory=list)
+    verification_refs: list[str] = field(default_factory=list)
+    correlation_id: str | None = None
+    run_id: str | None = None
+    mission_run_id: str | None = None
+    dispatch_id: str | None = None
+    channel_event_id: str | None = None
+    replay_id: str | None = None
+    dead_letter_id: str | None = None
+    eval_case_id: str | None = None
+    latest_eval_run_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+    resolved_at: str | None = None
+
+
+@dataclass(slots=True)
+class EvalCase:
+    eval_case_id: str
+    suite_id: str
+    scenario: str
+    target_system: str
+    expected_behavior: str
+    runner_kind: EvalRunnerKind | str
+    status: EvalCaseStatus | str = EvalCaseStatus.ACTIVE
+    idempotency_key: str | None = None
+    source_ids: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class EvalRun:
+    eval_run_id: str
+    suite_id: str
+    status: EvalRunStatus | str = EvalRunStatus.RUNNING
+    trigger_kind: str = "manual"
+    case_ids: list[str] = field(default_factory=list)
+    results: list[dict[str, Any]] = field(default_factory=list)
+    passed_count: int = 0
+    failed_count: int = 0
+    skipped_count: int = 0
+    metadata: dict[str, Any] = field(default_factory=dict)
+    provenance: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
 
 
 @dataclass(slots=True)

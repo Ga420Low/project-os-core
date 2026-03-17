@@ -2,6 +2,11 @@
 
 Ce document fixe comment `Project OS` parle pendant les runs.
 
+Il doit rester coherent avec:
+
+- `docs/roadmap/DISCORD_FOUNDER_SURFACE_REPAIR_V2_PLAN.md`
+- `docs/roadmap/PROJECT_OS_DESKTOP_CONTROL_ROOM_V1_PLAN.md`
+
 Le principe central est simple:
 
 - le texte naturel doit creer de la valeur
@@ -13,6 +18,24 @@ Regle produit complementaire:
 - ils ne sont pas une interface humaine suffisante
 - un humain ne doit pas avoir besoin d'ouvrir un JSON pour comprendre la vie d'un run
 - si un message affiche un `cout estime`, il doit venir du calculateur canonique partage (`src/project_os_core/costing.py`)
+
+Regle de surface supplementaire:
+
+- les evenements systeme vont d'abord au `control plane`
+- `Discord` ne recoit qu'une version courte, utile et actionnable
+- les details d'execution restent inspectables dans `Project OS.exe`
+
+Regle de handoff supplementaire:
+
+- si `Discord` recoit une vraie demande de statut, il peut repondre
+- mais il doit le faire en mode `synthese`
+- si le detail runtime est demande ou utile, la reponse doit pointer explicitement vers `Project OS.exe`
+- les vues cibles par defaut sont:
+  - `Home`
+  - `Session`
+  - `Runs`
+  - `Discord`
+  - `Costs`
 
 ## Objectif
 
@@ -146,8 +169,15 @@ Regle supplementaire:
 
 Si `Discord` est configure:
 
-- c'est la surface de conversation prioritaire
+- c'est une surface de conversation prioritaire et parallele
 - un gros run ne doit pas exister uniquement dans le dashboard ou dans les fichiers runtime
+
+Si l'app locale `Project OS.exe` existe:
+
+- elle devient la control room locale de reference
+- `Discord` reste la voie distante et conversationnelle
+- les deux surfaces doivent rester coherentes sur les etats visibles, sans imposer une sync complete du chat en v1
+- les signaux systeme detailles doivent vivre d'abord dans l'app
 
 Si `Discord` n'est pas encore configure:
 
@@ -196,6 +226,11 @@ Format impose:
 
 Le dashboard et les cartes Discord remplacent la narration.
 
+Avec `Project OS Desktop Control Room v1`, cette regle devient:
+
+- l'app locale, le dashboard et les cartes Discord remplacent la narration
+- la preuve visible locale doit converger a terme dans `Project OS.exe`
+
 Regle dure supplementaire:
 
 - les fichiers sous `runtime/api_runs/` ne comptent pas comme communication humaine
@@ -220,6 +255,12 @@ Ils doivent montrer:
 - combien ca coute
 - si c'est bloque
 - si c'est termine
+
+## Matrice de communication
+
+- `queue / backlog / runs / health / approvals techniques / traces / routing / provider details` -> `Project OS.exe`
+- `conversation / clarification / decision courte / relance / rapport humain bref` -> `Discord`
+- `artefacts / journaux / snapshots / evidence complete` -> `runtime local`
 
 ## Signals a apprendre
 

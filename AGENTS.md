@@ -476,6 +476,12 @@ Regles obligatoires:
   - si la cloture touche aussi le runtime ou OpenClaw, preferer `py scripts/project_os_tests.py --suite full --with-strict-doctor --with-openclaw-doctor --with-doc-audit`
   - ne jamais annoncer une cloture sans mentionner le verdict de l'audit doc
   - si l'audit doc echoue, corriger la doc ou enregistrer explicitement un defer canonique avant de fermer
+ - discipline de verification et timeouts:
+   - avant de lancer une verification, choisir une commande et un `timeout` coherents avec la duree probable de la suite
+   - ne pas batcher plusieurs fichiers `pytest` moyens ou lourds dans une seule commande avec un timeout court "par defaut"
+   - pour les suites gateway, prompt ou orchestration, preferer des runs par fichier ou les entrees canoniques `py scripts/project_os_tests.py --suite ...`
+   - si une commande a timeoute, ne pas conclure "ca n'a pas casse" sans rerun adapte et verdict vert explicite
+   - annoncer des resultats incrementaux fiables vaut mieux qu'un gros run combine mal budgete
  - gate de qualite des roadmaps:
    - toute roadmap canonique doit contenir au minimum `But`, `Point de depart reel`, `Pourquoi cet ordre`, `Sources` ou `Cartographie externe`
    - si la roadmap depend d'inspirations externes, elle doit expliquer `chez qui on recupere quoi`

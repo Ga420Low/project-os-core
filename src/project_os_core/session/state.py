@@ -506,14 +506,27 @@ class PersistentSessionState:
         for token, mode in aliases.items():
             if re.search(rf"\b{re.escape(token)}\b", normalized):
                 return {"selected_mode": mode}
-        if fallback_mode:
-            return {"selected_mode": str(fallback_mode).strip().lower()}
+        del fallback_mode
         return {}
 
-    def build_context_brief(self, *, snapshot: SessionSnapshot | None = None) -> str:
+    def build_context_brief(self, *, snapshot: SessionSnapshot | None = None, mode: str = "detailed") -> str:
         """Construit un brief compact du contexte de session pour une eventuelle escalade."""
 
         snapshot = snapshot or self.load()
+        if mode == "summary":
+            lines = [
+                "Synthese de statut Discord",
+                f"Active runs: {len(snapshot.active_runs)}",
+                f"Pending approvals: {len(snapshot.pending_approvals)}",
+                f"Pending deliveries: {snapshot.pending_deliveries}",
+                f"Active missions: {len(snapshot.active_missions)}",
+                f"Last run completed at: {snapshot.last_run_completed_at or 'none'}",
+                f"Last founder message at: {snapshot.last_founder_message_at or 'none'}",
+            ]
+            if snapshot.active_missions:
+                first = snapshot.active_missions[0]
+                lines.append(f"Current mission sample: {first['objective']} [{first['status']}]")
+            return "\n".join(lines)
         lines = [
             "Persistent Session State",
             f"Active runs: {len(snapshot.active_runs)}",

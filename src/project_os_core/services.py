@@ -6,6 +6,7 @@ from .api_runs.service import ApiRunService
 from .config import RuntimeConfig, load_runtime_config
 from .database import CanonicalDatabase
 from .deep_research import DeepResearchService
+from .evals.service import EvalService
 from .gateway.openclaw_live import OpenClawLiveService
 from .gateway.stateful import (
     AnalysisObjectService,
@@ -19,6 +20,7 @@ from .gateway.stateful import (
     WorkingSetPlannerService,
 )
 from .github.service import GitHubLearningService
+from .incidents.service import IncidentService
 from .embedding import EmbeddingStrategy, choose_embedding_strategy
 from .gateway.service import GatewayService
 from .learning.service import LearningService
@@ -60,6 +62,8 @@ class AppServices:
     temporal_graph: TemporalGraphService
     tier_manager: TierManagerService
     learning: LearningService
+    incidents: IncidentService
+    evals: EvalService
     github: GitHubLearningService
     runtime: RuntimeStore
     router: MissionRouter
@@ -161,6 +165,19 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         path_policy=path_policy,
         auto_sync_runbook_deferred=config.learning_config.auto_sync_runbook_deferred,
         runbook_deferred_globs=config.learning_config.runbook_deferred_globs,
+    )
+    incidents = IncidentService(
+        database=database,
+        journal=journal,
+        paths=paths,
+        path_policy=path_policy,
+    )
+    evals = EvalService(
+        database=database,
+        journal=journal,
+        paths=paths,
+        path_policy=path_policy,
+        repo_root=config.repo_root,
     )
     github = GitHubLearningService(
         config=config.github_config,
@@ -297,6 +314,8 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         temporal_graph=temporal_graph,
         tier_manager=tier_manager,
         learning=learning,
+        incidents=incidents,
+        evals=evals,
         github=github,
         runtime=runtime,
         router=router,

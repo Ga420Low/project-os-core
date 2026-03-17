@@ -9,7 +9,7 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from unittest.mock import patch
 
 from ..models import (
@@ -55,6 +55,12 @@ class SmokeTurn:
     metadata: dict[str, Any] = field(default_factory=dict)
     patched_scaffold_payload: dict[str, Any] | None = None
     stub_simple_chat_response: str | None = None
+    stub_simple_chat_callable: Callable[..., str] | None = None
+    surface: str | None = None
+    channel: str | None = None
+    thread_id: str | None = None
+    external_thread_id: str | None = None
+    force_inline_chat: bool = False
 
 
 @dataclass(slots=True, frozen=True)
@@ -70,6 +76,27 @@ class SmokeScenario:
 
 
 def visible_smoke_scenarios() -> tuple[SmokeScenario, ...]:
+    shared_founder_session_key = "founder:session:cross-surface-evals"
+
+    def _cross_surface_probe_reply(
+        message: str,
+        model: str = "claude-sonnet-4-20250514",
+        *,
+        route_reason: str | None = None,
+        context_bundle=None,
+    ) -> str:
+        del message, model, route_reason
+        surface = str(getattr(context_bundle, "surface", "") or "unknown").strip().lower()
+        founder_session_key = str(getattr(context_bundle, "founder_session_key", "") or "missing").strip()
+        status_mode = str(getattr(context_bundle, "status_request_mode", "") or "none").strip()
+        handoff = "present" if str(getattr(context_bundle, "desktop_control_plane_handoff", "") or "").strip() else "absent"
+        views = "/".join(getattr(context_bundle, "desktop_control_plane_views", ()) or ()) or "none"
+        spine = "present" if str(getattr(context_bundle, "founder_session_spine_summary", "") or "").strip() else "absent"
+        return (
+            f"surface={surface}; session={founder_session_key}; status_mode={status_mode}; "
+            f"handoff={handoff}; views={views}; spine={spine}"
+        )
+
     deep_research_base_payload = {
         "path": "D:\\ProjectOS\\project-os-core\\docs\\systems\\MEMORY_SYSTEMS_DOSSIER.md",
         "relative_path": "docs/systems/MEMORY_SYSTEMS_DOSSIER.md",
@@ -431,7 +458,181 @@ def visible_smoke_scenarios() -> tuple[SmokeScenario, ...]:
                 ),
             ),
         ),
-)
+        SmokeScenario(
+            scenario_id="pending_reasoning_approval_does_not_hijack_greeting",
+            description="Un approval de mode en attente ne doit pas hijacker un salut arbitraire.",
+            layer="smoke",
+            requires_anthropic=True,
+            turns=(
+                SmokeTurn(
+                    prompt=(
+                        "J'ai besoin d'une analyse architecture avec compromis pour la roadmap persona, "
+                        "le cout et le niveau de challenge avant qu'on decide proprement."
+                    ),
+                    expectation=TurnExpectation(
+                        expected_reply_kind="approval_required",
+                        required_summary_terms=("cout estime", "temps estime", "mode recommande"),
+                        required_paths={
+                            "metadata.approval_metadata.approval_type": "reasoning_escalation",
+                        },
+                    ),
+                ),
+                SmokeTurn(
+                    prompt="Wesh",
+                    expectation=TurnExpectation(
+                        expected_reply_kind="chat_response",
+                        expected_provider="anthropic",
+                        expected_delivery_modes=("inline_text", "thread_chunked_text"),
+                        forbidden_summary_terms=("mode selectionne", "reponds go", "modes disponibles", "api utilisee"),
+                    ),
+                ),
+            ),
+        ),
+        SmokeScenario(
+            scenario_id="reasoning_rejection_reply_stays_visible",
+            description="Un rejet d'approbation de mode doit produire une vraie reponse visible sur Discord.",
+            layer="smoke",
+            turns=(
+                SmokeTurn(
+                    prompt=(
+                        "J'ai besoin d'une analyse architecture avec compromis pour la roadmap persona, "
+                        "le cout et le niveau de challenge avant qu'on decide proprement."
+                    ),
+                    expectation=TurnExpectation(
+                        expected_reply_kind="approval_required",
+                        required_summary_terms=("cout estime", "temps estime", "mode recommande"),
+                        required_paths={
+                            "metadata.approval_metadata.approval_type": "reasoning_escalation",
+                        },
+                    ),
+                ),
+                SmokeTurn(
+                    prompt="Bah non ?",
+                    expectation=TurnExpectation(
+                        expected_reply_kind="chat_response",
+                        required_summary_any=("je ne lance pas", "on reste sur le fil normal"),
+                    ),
+                ),
+            ),
+        ),
+        SmokeScenario(
+            scenario_id="cross_surface_discord_status_handoff_contract",
+            description="Une demande de statut sur Discord reste synthetique et handoff vers Project OS.exe.",
+            layer="cross-surface",
+            turns=(
+                SmokeTurn(
+                    prompt="donne-moi le detail du gateway et de la queue",
+                    metadata={"founder_session_key": shared_founder_session_key},
+                    stub_simple_chat_callable=_cross_surface_probe_reply,
+                    expectation=TurnExpectation(
+                        expected_reply_kind="chat_response",
+                        expected_delivery_modes=("inline_text", "thread_chunked_text"),
+                        required_summary_terms=(
+                            f"session={shared_founder_session_key}",
+                            "surface=discord",
+                            "status_mode=detailed",
+                            "handoff=present",
+                            "views=Home/Session/Runs/Discord",
+                            "Project OS.exe",
+                        ),
+                        required_paths={
+                            "metadata.founder_session_key": shared_founder_session_key,
+                            "metadata.status_request_mode": "detailed",
+                            "operator_reply.metadata.desktop_control_plane_handoff.surface": "Project OS.exe",
+                        },
+                    ),
+                ),
+            ),
+        ),
+        SmokeScenario(
+            scenario_id="cross_surface_desktop_status_stays_local",
+            description="Sur la surface desktop, le detail de statut reste local et ne se rehandoff pas vers Project OS.exe.",
+            layer="cross-surface",
+            turns=(
+                SmokeTurn(
+                    prompt="donne-moi le detail du gateway et de la queue",
+                    metadata={"founder_session_key": shared_founder_session_key},
+                    surface="desktop",
+                    channel="desktop",
+                    thread_id="project_os_desktop_control_room",
+                    external_thread_id="desktop:project_os_desktop_control_room",
+                    force_inline_chat=True,
+                    stub_simple_chat_callable=_cross_surface_probe_reply,
+                    expectation=TurnExpectation(
+                        expected_reply_kind="chat_response",
+                        expected_delivery_modes=("inline_text", "thread_chunked_text"),
+                        required_summary_terms=(
+                            f"session={shared_founder_session_key}",
+                            "surface=desktop",
+                            "status_mode=detailed",
+                            "handoff=absent",
+                            "spine=present",
+                        ),
+                        forbidden_summary_terms=("Project OS.exe >",),
+                        required_paths={
+                            "metadata.founder_session_key": shared_founder_session_key,
+                            "metadata.status_request_mode": "detailed",
+                        },
+                    ),
+                ),
+            ),
+        ),
+        SmokeScenario(
+            scenario_id="cross_surface_founder_session_key_stays_consistent",
+            description="La session fondatrice reste coherente entre desktop et Discord sans retomber en dashboard brut.",
+            layer="cross-surface",
+            turns=(
+                SmokeTurn(
+                    prompt="Le sujet actif reste la facade Discord. Quel prochain pas tu prends ?",
+                    metadata={"founder_session_key": shared_founder_session_key},
+                    surface="desktop",
+                    channel="desktop",
+                    thread_id="project_os_desktop_resume",
+                    external_thread_id="desktop:project_os_desktop_resume",
+                    force_inline_chat=True,
+                    stub_simple_chat_callable=_cross_surface_probe_reply,
+                    expectation=TurnExpectation(
+                        expected_reply_kind="chat_response",
+                        expected_delivery_modes=("inline_text", "thread_chunked_text"),
+                        required_summary_terms=(
+                            f"session={shared_founder_session_key}",
+                            "surface=desktop",
+                            "status_mode=none",
+                            "handoff=absent",
+                            "spine=present",
+                        ),
+                        required_paths={"metadata.founder_session_key": shared_founder_session_key},
+                    ),
+                ),
+                SmokeTurn(
+                    prompt="donne-moi un statut synthetique du gateway ici",
+                    metadata={"founder_session_key": shared_founder_session_key},
+                    surface="discord",
+                    channel="discord",
+                    thread_id="discord_cross_surface_resume",
+                    external_thread_id="channel:discord_cross_surface_resume",
+                    stub_simple_chat_callable=_cross_surface_probe_reply,
+                    expectation=TurnExpectation(
+                        expected_reply_kind="chat_response",
+                        expected_delivery_modes=("inline_text", "thread_chunked_text"),
+                        required_summary_terms=(
+                            f"session={shared_founder_session_key}",
+                            "surface=discord",
+                            "status_mode=detailed",
+                            "handoff=present",
+                            "Project OS.exe",
+                        ),
+                        forbidden_summary_terms=("route_reason", "provider:", "api utilisee"),
+                        required_paths={
+                            "metadata.founder_session_key": shared_founder_session_key,
+                            "metadata.status_request_mode": "detailed",
+                            "operator_reply.metadata.desktop_control_plane_handoff.surface": "Project OS.exe",
+                        },
+                    ),
+                ),
+            ),
+        ),
+    )
 
 
 def scenario_catalog() -> dict[str, SmokeScenario]:
@@ -441,7 +642,7 @@ def scenario_catalog() -> dict[str, SmokeScenario]:
 def scenario_ids_for_layers(layers: tuple[str, ...] | None = None) -> list[str]:
     requested_layers = set(layers or ("smoke",))
     if "all" in requested_layers:
-        requested_layers = {"smoke", "persona"}
+        requested_layers = {"smoke", "persona", "cross-surface"}
     return [
         scenario.scenario_id
         for scenario in visible_smoke_scenarios()
@@ -504,6 +705,30 @@ def manual_acceptance_checks() -> tuple[dict[str, Any], ...]:
             "watch_for": [
                 "Le bot n'a pas l'air d'avoir oublie le travail recent.",
                 "Pas de faux rappels confiants.",
+            ],
+        },
+        {
+            "check_id": "manual_cross_surface_resume",
+            "title": "Reprise Discord -> Project OS.exe",
+            "prompt_flow": [
+                "Commence une decision ou une relance rapide sur Discord.",
+                "Ouvre ensuite Project OS.exe et verifie la meme session fondatrice.",
+            ],
+            "watch_for": [
+                "La meme session reste reconnaissable entre les deux surfaces.",
+                "Discord reste une synthese et l'app porte le detail operatoire.",
+            ],
+        },
+        {
+            "check_id": "manual_cross_surface_return_to_discord",
+            "title": "Reprise Project OS.exe -> Discord",
+            "prompt_flow": [
+                "Depuis Project OS.exe, regarde l'etat d'une session ou d'un run.",
+                "Reviens sur Discord et demande une synthese du meme sujet.",
+            ],
+            "watch_for": [
+                "Le bot ne repart pas comme si le sujet etait totalement neuf.",
+                "La synthese Discord ne fuit pas le dashboard runtime.",
             ],
         },
     )
@@ -647,8 +872,8 @@ def run_smoke_suite(
                 _mark_runtime_ready(services, profile_name)
                 prepared_profiles.add(profile_name)
 
-        thread_id = f"discord_facade_smoke::{scenario.scenario_id}"
-        external_thread_id = f"channel:{thread_id}"
+        default_thread_id = f"discord_facade_smoke::{scenario.scenario_id}"
+        default_external_thread_id = f"channel:{default_thread_id}"
         turn_results: list[dict[str, Any]] = []
         scenario_errors: list[str] = []
 
@@ -681,13 +906,19 @@ def run_smoke_suite(
                 )
 
             for turn_index, turn in enumerate(scenario.turns, start=1):
-                event = _build_discord_event(
+                turn_surface = turn.surface or surface
+                turn_channel = turn.channel or channel
+                turn_thread_id = turn.thread_id or default_thread_id
+                turn_external_thread_id = turn.external_thread_id or (
+                    f"{turn_surface}:{turn_thread_id}" if turn_surface != "discord" else f"channel:{turn_thread_id}"
+                )
+                event = _build_surface_event(
                     prompt=turn.prompt,
                     actor_id=actor_id,
-                    channel=channel,
-                    surface=surface,
-                    thread_id=thread_id,
-                    external_thread_id=external_thread_id,
+                    channel=turn_channel,
+                    surface=turn_surface,
+                    thread_id=turn_thread_id,
+                    external_thread_id=turn_external_thread_id,
                     metadata=turn.metadata,
                 )
                 started = time.perf_counter()
@@ -765,8 +996,9 @@ def _dispatch_turn(services: AppServices, *, event: ChannelEvent, turn: SmokeTur
                     return_value=turn.patched_scaffold_payload,
                 )
             )
-        if turn.stub_simple_chat_response is not None:
+        if turn.stub_simple_chat_response is not None or turn.stub_simple_chat_callable is not None:
             stub_response = turn.stub_simple_chat_response
+            stub_callable = turn.stub_simple_chat_callable
 
             def _stub_simple_chat(
                 message: str,
@@ -775,8 +1007,15 @@ def _dispatch_turn(services: AppServices, *, event: ChannelEvent, turn: SmokeTur
                 route_reason: str | None = None,
                 context_bundle=None,
             ) -> str:
+                if stub_callable is not None:
+                    return stub_callable(
+                        message,
+                        model=model,
+                        route_reason=route_reason,
+                        context_bundle=context_bundle,
+                    )
                 del message, model, route_reason, context_bundle
-                return stub_response
+                return str(stub_response)
 
             stack.enter_context(
                 patch.object(services.gateway, "_call_simple_chat", side_effect=_stub_simple_chat)
@@ -791,6 +1030,10 @@ def _dispatch_turn(services: AppServices, *, event: ChannelEvent, turn: SmokeTur
             stack.enter_context(
                 patch.object(services.gateway, "_should_inline_chat", new=lambda event, decision: True)
             )
+        elif turn.force_inline_chat:
+            stack.enter_context(
+                patch.object(services.gateway, "_should_inline_chat", new=lambda event, decision: True)
+            )
         return services.gateway.dispatch_event(
             event,
             target_profile=turn.target_profile,
@@ -799,7 +1042,7 @@ def _dispatch_turn(services: AppServices, *, event: ChannelEvent, turn: SmokeTur
         )
 
 
-def _build_discord_event(
+def _build_surface_event(
     *,
     prompt: str,
     actor_id: str,
@@ -887,7 +1130,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--layer",
         action="append",
         default=[],
-        choices=("smoke", "persona", "manual", "all"),
+        choices=("smoke", "persona", "cross-surface", "manual", "all"),
         help="Scenario layer to run. Repeatable. Defaults to smoke.",
     )
     parser.add_argument("--list-scenarios", action="store_true", help="List available scenarios and exit.")

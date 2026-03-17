@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Project OS Control Room</title>
+    <link rel="stylesheet" href="../node_modules/@fontsource/sora/600.css" />
+    <link rel="stylesheet" href="../node_modules/@fontsource/sora/700.css" />
+    <link rel="stylesheet" href="../node_modules/@fontsource/manrope/500.css" />
+    <link rel="stylesheet" href="../node_modules/@fontsource/manrope/600.css" />
+    <link rel="stylesheet" href="../node_modules/@fontsource/manrope/700.css" />
+    <link rel="stylesheet" href="../node_modules/xterm/css/xterm.css" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="ambient-layer" aria-hidden="true">
+      <div class="ambient-orb orb-primary"></div>
+      <div class="ambient-orb orb-secondary"></div>
+      <div class="ambient-orb orb-tertiary"></div>
+    </div>
+
+    <div class="shell" id="app-shell">
+      <header class="topbar">
+        <div class="brand-block chrome-card" data-magnetic>
+          <div class="brand">Project<span>OS</span></div>
+          <div class="brand-subtitle">Control room local fondateur</div>
+        </div>
+
+        <div class="topbar-center">
+          <div class="chrome-pill nav-shell">
+            <nav class="tabs" aria-label="Navigation principale">
+              <button class="tab active" data-tab="home" data-magnetic>Home</button>
+              <button class="tab" data-tab="session" data-magnetic>Session</button>
+              <button class="tab" data-tab="runs" data-magnetic>Runs</button>
+              <button class="tab" data-tab="discord" data-magnetic>Discord</button>
+              <button class="tab" data-tab="costs" data-magnetic>Costs</button>
+              <button class="tab" data-tab="conversations" data-magnetic>Conversations</button>
+              <button class="tab" data-tab="terminals" data-magnetic>Terminals</button>
+              <button class="tab" data-tab="settings" data-magnetic>Settings</button>
+            </nav>
+          </div>
+          <div class="chrome-pill usage-shell">
+            <div class="codex-usage-strip" id="codex-usage-strip">Codex: indisponible</div>
+          </div>
+        </div>
+
+        <div class="topbar-actions chrome-pill">
+          <button class="action-button" id="refresh-button" type="button" data-magnetic>Refresh</button>
+          <div class="status-chip" id="startup-chip">startup</div>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="view active" data-view="home">
+          <div class="home-hero glass-panel">
+            <div class="hero-copy">
+              <div class="eyebrow">Surface locale principale</div>
+              <h1 class="hero-title" id="hero-title">Project OS pret pour la session</h1>
+              <p class="hero-summary" id="hero-summary">Chargement du contexte startup...</p>
+              <ul class="hero-story-ribbon" id="home-story"></ul>
+            </div>
+            <div class="hero-aside">
+              <div class="hero-badge">Hybrid Luxe</div>
+              <div class="hero-glass-node">
+                <div class="hero-node-label">Control surface</div>
+                <div class="hero-node-value">Desktop first</div>
+                <div class="hero-node-detail">Verite locale, terminal maitre, rail fondateur</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="pulse-grid" id="pulse-grid"></div>
+
+          <div class="home-stage">
+            <div class="control-focus">
+              <section class="panel premium-panel">
+                <div class="panel-header">
+                  <div>
+                    <div class="panel-title">Current Session</div>
+                    <div class="panel-subtitle">Ce qui attend vraiment maintenant</div>
+                  </div>
+                  <div class="panel-chip" id="current-run-chip">0 runs</div>
+                </div>
+                <ul id="session-list" class="stack-list stack-list-rich"></ul>
+              </section>
+
+              <section class="panel premium-panel">
+                <div class="panel-header">
+                  <div>
+                    <div class="panel-title">Recent Runs</div>
+                    <div class="panel-subtitle">Activite locale la plus proche</div>
+                  </div>
+                  <div class="panel-chip" id="recent-runs-chip">0 entries</div>
+                </div>
+                <ul id="runs-list" class="stack-list stack-list-rich"></ul>
+              </section>
+
+              <section class="panel premium-panel quick-panel">
+                <div class="panel-header">
+                  <div>
+                    <div class="panel-title">Quick Actions</div>
+                    <div class="panel-subtitle">Le check du matin, les reprises utiles et la sante critique</div>
+                  </div>
+                  <div class="panel-chip subtle-chip" id="discord-chip">remote</div>
+                </div>
+                <div class="quick-panel-grid">
+                  <div class="quick-panel-actions">
+                    <ul id="actions-list" class="action-list action-list-glass"></ul>
+                    <div class="action-note" id="startup-action-note">Le self-check du matin s'affichera ici.</div>
+                  </div>
+                  <div class="quick-panel-checks">
+                    <ul id="startup-health-list" class="health-card-list health-card-list-compact"></ul>
+                  </div>
+                </div>
+              </section>
+            </div>
+
+            <aside class="founder-rail">
+              <section class="panel rail-panel">
+                <div class="panel-header">
+                  <div>
+                    <div class="panel-title">Founder Context</div>
+                    <div class="panel-subtitle">Le rappel utile sans fouiller la base</div>
+                  </div>
+                </div>
+                <ul id="sidebar-highlight-list" class="sidebar-highlight-list"></ul>
+              </section>
+
+              <section class="panel rail-panel">
+                <div class="panel-header">
+                  <div>
+                    <div class="panel-title">Roadmaps</div>
+                    <div class="panel-subtitle">Dernieres feuilles de route detectees</div>
+                  </div>
+                </div>
+                <ul id="roadmap-list" class="stack-list compact-slim"></ul>
+              </section>
+
+              <section class="panel rail-panel">
+                <div class="panel-header">
+                  <div>
+                    <div class="panel-title">Pinned Topics</div>
+                    <div class="panel-subtitle">Roadmaps, packs, sujets lourds</div>
+                  </div>
+                </div>
+                <ul id="pinned-topic-list" class="stack-list compact-slim"></ul>
+              </section>
+
+              <section class="panel rail-panel">
+                <div class="panel-header">
+                  <div>
+                    <div class="panel-title">Surface Signals</div>
+                    <div class="panel-subtitle">Quelques signaux utiles sans ouvrir d'autres onglets</div>
+                  </div>
+                  <div class="panel-chip" id="monitor-mode-chip">single screen</div>
+                </div>
+                <div class="dual-list-shell">
+                  <div class="dual-list-column">
+                    <div class="micro-heading">Discord Activity</div>
+                    <ul id="discord-list" class="stack-list compact-slim"></ul>
+                  </div>
+                  <div class="dual-list-column">
+                    <div class="micro-heading">Runtime Notes</div>
+                    <dl class="info-grid compact-info-grid" id="runtime-facts"></dl>
+                  </div>
+                </div>
+              </section>
+            </aside>
+          </div>
+        </section>
+
+        <section class="view" data-view="session">
+          <div class="view-shell">
+            <div class="view-hero glass-panel view-hero-slim">
+              <div>
+                <div class="eyebrow">Session locale</div>
+                <h2>Clarifications, contrats et missions</h2>
+                <p class="view-summary" id="session-summary-text">Chargement...</p>
+              </div>
+            </div>
+            <div class="summary-strip premium-summary-strip" id="session-summary-strip"></div>
+            <div class="grid-3">
+              <section class="panel">
+                <div class="panel-title">Pending Clarifications</div>
+                <ul id="clarifications-list" class="stack-list"></ul>
+              </section>
+              <section class="panel">
+                <div class="panel-title">Pending Contracts</div>
+                <ul id="contracts-list" class="stack-list"></ul>
+              </section>
+              <section class="panel">
+                <div class="panel-title">Pending Approvals</div>
+                <ul id="approvals-list" class="stack-list"></ul>
+              </section>
+            </div>
+            <section class="panel panel-tall mission-stage">
+              <div class="panel-title">Active Missions</div>
+              <ul id="missions-list" class="stack-list stack-list-wide"></ul>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" data-view="runs">
+          <div class="view-shell">
+            <div class="view-hero glass-panel view-hero-slim">
+              <div>
+                <div class="eyebrow">Runs</div>
+                <h2>Vue operateur lisible</h2>
+                <p class="view-summary" id="runs-summary-text">Chargement...</p>
+              </div>
+            </div>
+            <div class="summary-strip premium-summary-strip" id="runs-summary-strip"></div>
+            <section class="panel panel-tall hero-list-panel">
+              <div class="panel-title">Latest Runs</div>
+              <ul id="runs-detail-list" class="stack-list stack-list-wide stack-list-rich"></ul>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" data-view="discord">
+          <div class="view-shell">
+            <div class="view-hero glass-panel view-hero-slim">
+              <div>
+                <div class="eyebrow">Discord / OpenClaw</div>
+                <h2>Activite distante et preuve live</h2>
+                <p class="view-summary" id="discord-summary-text">Chargement...</p>
+              </div>
+            </div>
+            <div class="summary-strip premium-summary-strip" id="discord-summary-strip"></div>
+            <section class="panel hero-proof-panel">
+              <div class="panel-title">Live Proof</div>
+              <div class="focus-note" id="discord-live-proof">Chargement...</div>
+            </section>
+            <div class="grid-2">
+              <section class="panel">
+                <div class="panel-title">Recent Events</div>
+                <ul id="discord-events-list" class="stack-list stack-list-rich"></ul>
+              </section>
+              <section class="panel">
+                <div class="panel-title">Recent Deliveries</div>
+                <ul id="discord-deliveries-list" class="stack-list stack-list-rich"></ul>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" data-view="costs">
+          <div class="view-shell">
+            <div class="view-hero glass-panel view-hero-slim">
+              <div>
+                <div class="eyebrow">Costs</div>
+                <h2>Depense locale et frontieres de cout</h2>
+                <p class="view-summary" id="costs-summary-text">Chargement...</p>
+              </div>
+            </div>
+            <div class="focus-note premium-note" id="costs-note">Chargement...</div>
+            <div class="summary-strip premium-summary-strip" id="costs-lane-strip"></div>
+            <div class="grid-3">
+              <article class="metric-card finance-card">
+                <div class="metric-label">Today</div>
+                <div class="metric-value" id="cost-today">0.00 EUR</div>
+                <div class="metric-meta">estimation locale</div>
+              </article>
+              <article class="metric-card finance-card">
+                <div class="metric-label">Month</div>
+                <div class="metric-value" id="cost-month">0.00 EUR</div>
+                <div class="metric-meta">estimation locale</div>
+              </article>
+              <article class="metric-card finance-card">
+                <div class="metric-label">Current Run</div>
+                <div class="metric-value" id="cost-current-run">0.00 EUR</div>
+                <div class="metric-meta">run actif</div>
+              </article>
+            </div>
+            <section class="panel panel-tall">
+              <div class="panel-title">Cost Boundary</div>
+              <dl class="info-grid" id="cost-boundary-list"></dl>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" data-view="conversations">
+          <div class="view-shell">
+            <div class="view-hero glass-panel view-hero-slim">
+              <div>
+                <div class="eyebrow">Conversations</div>
+                <h2>Rappel recent et sujets epingles</h2>
+                <p class="view-summary" id="conversations-summary-text">Chargement...</p>
+              </div>
+            </div>
+            <div class="summary-strip premium-summary-strip" id="conversations-summary-strip"></div>
+            <div class="focus-note premium-note" id="conversations-note">Chargement...</div>
+            <div class="grid-2">
+              <section class="panel">
+                <div class="panel-title">Pinned Topics</div>
+                <ul id="conversations-pinned-list" class="stack-list stack-list-rich"></ul>
+              </section>
+              <section class="panel">
+                <div class="panel-title">7 Day Window</div>
+                <ul id="conversations-week-list" class="conversation-list"></ul>
+              </section>
+            </div>
+            <section class="panel panel-tall">
+              <div class="panel-title">Archive Exchanges</div>
+              <ul id="conversations-archive-list" class="conversation-list"></ul>
+            </section>
+          </div>
+        </section>
+
+        <section class="view" data-view="terminals">
+          <div class="view-shell">
+            <div class="view-hero glass-panel view-hero-slim">
+              <div>
+                <div class="eyebrow">Terminals</div>
+                <h2>Layout maitrise</h2>
+                <p class="view-summary" id="terminals-summary-text">Chargement...</p>
+              </div>
+              <div class="terminal-launchers" id="terminal-launchers"></div>
+            </div>
+            <div class="summary-strip premium-summary-strip" id="terminals-summary-strip"></div>
+            <div class="grid-2">
+              <section class="panel">
+                <div class="panel-title">Persistent Panels</div>
+                <ul id="panels-list" class="stack-list"></ul>
+              </section>
+              <section class="panel">
+                <div class="panel-title">Terminal Contract</div>
+                <dl class="info-grid">
+                  <dt>Master lane</dt><dd>Codex embarque dans le stage docke</dd>
+                  <dt>Placement</dt><dd>ancre, jamais popup sauvage</dd>
+                  <dt>Layout</dt><dd id="layout-mode-value">anchored_bottom</dd>
+                  <dt>Monitor mode</dt><dd id="monitor-mode-value">single_screen</dd>
+                </dl>
+              </section>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" data-view="settings">
+          <div class="view-shell">
+            <div class="view-hero glass-panel view-hero-slim">
+              <div>
+                <div class="eyebrow">Settings</div>
+                <h2>Parametres de coque locale</h2>
+                <p class="view-summary" id="settings-summary-text">Chargement...</p>
+              </div>
+            </div>
+            <div class="summary-strip premium-summary-strip" id="settings-pref-strip"></div>
+            <section class="panel panel-tall">
+              <div class="panel-title">Workspace State</div>
+              <pre class="json-panel" id="workspace-json">Chargement...</pre>
+            </section>
+          </div>
+        </section>
+      </main>
+
+      <section class="terminal-panel glass-panel terminal-dock" id="terminal-panel">
+        <div class="terminal-header">
+          <div class="terminal-title-group">
+            <div>
+              <div class="panel-title">Master Terminal</div>
+              <div class="panel-subtitle">Surface reservee pour le lane humain principal</div>
+            </div>
+            <div class="dock-preset-group" id="dock-preset-group">
+              <button class="dock-preset active" type="button" data-preset="compact" data-magnetic>Compact</button>
+              <button class="dock-preset" type="button" data-preset="work" data-magnetic>Work</button>
+              <button class="dock-preset" type="button" data-preset="focus" data-magnetic>Focus</button>
+            </div>
+          </div>
+          <div class="terminal-toolbar">
+            <div class="terminal-tabs" id="terminal-tabs"></div>
+            <span class="terminal-pill" id="terminal-status-pill">Codex</span>
+          </div>
+        </div>
+
+        <div class="terminal-context-header">
+          <div class="section-heading">Recent Founder Context</div>
+          <div class="context-chip" id="conversation-context-note">Chargement...</div>
+        </div>
+        <ul id="conversation-strip" class="conversation-strip"></ul>
+
+        <div class="terminal-body">
+          <div class="terminal-stage" id="terminal-stage"></div>
+          <div class="terminal-empty" id="terminal-empty">Aucun terminal attache. Le lane maitre sera restaure ici.</div>
+        </div>
+      </section>
+    </div>
+
+    <script src="../node_modules/xterm/lib/xterm.js"></script>
+    <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

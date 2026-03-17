@@ -22,6 +22,7 @@ from project_os_core.models import (
     SensitivityClass,
     new_id,
 )
+from project_os_core.session.state import SessionSnapshot
 from project_os_core.services import build_app_services
 
 
@@ -823,7 +824,7 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
 
                 self.assertEqual(proposal_dispatch.operator_reply.reply_kind, "approval_required")
                 self.assertEqual(stop_dispatch.metadata["resolved_action"], "reject_runtime_approval")
-                self.assertEqual(stop_dispatch.operator_reply.reply_kind, "ack")
+                self.assertEqual(stop_dispatch.operator_reply.reply_kind, "chat_response")
                 self.assertIn("je ne lance pas", stop_dispatch.operator_reply.summary.lower())
                 self.assertEqual(calls, [])
 
@@ -870,6 +871,52 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self.assertEqual(calls[-1]["model"], services.config.execution_policy.discord_opus_model)
                 self.assertEqual(calls[-1]["route_reason"], "operator_forced_opus_route")
                 self.assertEqual(str(updated_approval["status"]), "approved")
+            finally:
+                services.close()
+
+    def test_gateway_pending_reasoning_approval_does_not_hijack_unrelated_greeting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "sk-ant-test")
+                self._mark_runtime_ready(services, "core")
+                serious_text = (
+                    "J'ai besoin d'une analyse architecture avec compromis pour la roadmap persona, "
+                    "le cout et le niveau de challenge avant qu'on decide proprement."
+                )
+                launch_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text=serious_text,
+                        thread_ref=ConversationThreadRef(thread_id="thread_reasoning_wesh", channel="discord"),
+                    ),
+                )
+                proposal_dispatch = services.gateway.dispatch_event(launch_event, target_profile="core")
+
+                greeting_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="Wesh",
+                        thread_ref=ConversationThreadRef(thread_id="thread_reasoning_wesh", channel="discord"),
+                    ),
+                )
+                greeting_dispatch = services.gateway.dispatch_event(greeting_event, target_profile="core")
+
+                self.assertEqual(proposal_dispatch.operator_reply.reply_kind, "approval_required")
+                self.assertEqual(greeting_dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertNotEqual(greeting_dispatch.metadata.get("resolved_action"), "update_runtime_approval_selection")
+                self.assertNotIn("mode selectionne", greeting_dispatch.operator_reply.summary.lower())
+                self.assertNotIn("reponds go", greeting_dispatch.operator_reply.summary.lower())
             finally:
                 services.close()
 
@@ -1261,6 +1308,256 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self.assertEqual(second_dispatch.metadata["brain_resolution_kind"], "clarification_needed")
                 self.assertIn("ma derniere reponse", second_dispatch.operator_reply.summary.lower())
                 self.assertEqual(call_count["chat"], 1)
+            finally:
+                services.close()
+
+    def test_gateway_explicit_option_followup_anchors_to_last_reply(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services, "core")
+                call_count = {"chat": 0}
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    del model, route_reason, context_bundle
+                    call_count["chat"] += 1
+                    if call_count["chat"] == 1:
+                        return (
+                            "Tu veux reparer :\n"
+                            "- Les 152 missions en queue qui s'accumulent ?\n"
+                            "- Le probleme de fluidite avec openclaw ?\n"
+                            "- Un bug specifique sur le mode recherche approfondie ?"
+                        )
+                    self.assertIn("Les 152 missions en queue qui s'accumulent ?", message)
+                    return "Pour les missions en queue, commence dans api_runs/service.py et la couche gateway de delivery."
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                services.gateway._call_local_chat = lambda **kwargs: _stub_simple_chat(kwargs.get("message", ""))  # type: ignore[method-assign]
+                services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
+
+                first_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="wesh",
+                        thread_ref=ConversationThreadRef(thread_id="thread_explicit_anchor", channel="discord"),
+                    ),
+                )
+                second_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="Les 152 missions en queue qui s'accumulent ?",
+                        thread_ref=ConversationThreadRef(thread_id="thread_explicit_anchor", channel="discord"),
+                    ),
+                )
+
+                first_dispatch = services.gateway.dispatch_event(first_event, target_profile="core")
+                second_dispatch = services.gateway.dispatch_event(second_event, target_profile="core")
+
+                self.assertEqual(first_dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(second_dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(second_dispatch.metadata["brain_resolution_kind"], "continue_previous_answer")
+                self.assertNotEqual(second_dispatch.metadata.get("brain_clarification"), True)
+                self.assertEqual(call_count["chat"], 2)
+            finally:
+                services.close()
+
+    def test_gateway_yes_after_brain_clarification_exits_loop(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services, "core")
+                call_count = {"chat": 0}
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    del model, route_reason, context_bundle
+                    call_count["chat"] += 1
+                    return (
+                        "Je garde la facade Discord naturelle.\n"
+                        "Prochain pas: verifier que le fallback PDF ne se declenche pas trop tot."
+                    )
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                services.gateway._call_local_chat = lambda **kwargs: _stub_simple_chat(kwargs.get("message", ""))  # type: ignore[method-assign]
+                services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
+
+                first_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="Explique-moi le nettoyage visible de la facade Discord.",
+                        thread_ref=ConversationThreadRef(thread_id="thread_clarification_ack", channel="discord"),
+                    ),
+                )
+                second_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="et du coup ?",
+                        thread_ref=ConversationThreadRef(thread_id="thread_clarification_ack", channel="discord"),
+                    ),
+                )
+                third_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="oui rooh",
+                        thread_ref=ConversationThreadRef(thread_id="thread_clarification_ack", channel="discord"),
+                    ),
+                )
+
+                first_dispatch = services.gateway.dispatch_event(first_event, target_profile="core")
+                second_dispatch = services.gateway.dispatch_event(second_event, target_profile="core")
+                third_dispatch = services.gateway.dispatch_event(third_event, target_profile="core")
+
+                self.assertEqual(first_dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(second_dispatch.operator_reply.reply_kind, "clarification_required")
+                self.assertEqual(third_dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(third_dispatch.metadata["brain_resolution_kind"], "continue_previous_answer")
+                self.assertNotEqual(third_dispatch.metadata.get("brain_clarification"), True)
+                self.assertEqual(call_count["chat"], 2)
+            finally:
+                services.close()
+
+    def test_gateway_detailed_status_request_appends_desktop_control_plane_handoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services, "core")
+
+                snapshot = SessionSnapshot(
+                    active_runs=[{"mode": "core", "branch_name": "codex/discord-spine", "started_at": "2026-03-17T01:00:00+00:00"}],
+                    pending_approvals=[{"approval_id": "approval_runtime_1"}],
+                    pending_deliveries=3,
+                    active_missions=[{"objective": "Verifier le gateway Discord", "status": "running"}],
+                    last_founder_message_at="2026-03-17T01:00:00+00:00",
+                )
+                services.session_state.load = lambda: snapshot  # type: ignore[method-assign]
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    del message, model, route_reason, context_bundle
+                    return "Le gateway tourne et la queue reste sous controle."
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                services.gateway._call_local_chat = lambda **kwargs: _stub_simple_chat(kwargs.get("message", ""))  # type: ignore[method-assign]
+                services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
+
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="donne-moi le detail du gateway et de la queue",
+                        thread_ref=ConversationThreadRef(thread_id="thread_status_handoff", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(dispatch.metadata["status_request_mode"], "detailed")
+                self.assertIn("Project OS.exe", dispatch.operator_reply.summary)
+                self.assertIn("Home / Session / Runs / Discord", dispatch.operator_reply.summary)
+                self.assertEqual(dispatch.operator_reply.metadata["desktop_control_plane_handoff"]["surface"], "Project OS.exe")
+                self.assertEqual(
+                    dispatch.operator_reply.metadata["desktop_control_plane_handoff"]["views"],
+                    ["Home", "Session", "Runs", "Discord"],
+                )
+            finally:
+                services.close()
+
+    def test_gateway_desktop_detailed_status_request_stays_local_without_self_handoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services, "core")
+
+                snapshot = SessionSnapshot(
+                    active_runs=[{"mode": "core", "branch_name": "codex/desktop-spine", "started_at": "2026-03-17T01:00:00+00:00"}],
+                    pending_approvals=[{"approval_id": "approval_runtime_1"}],
+                    pending_deliveries=2,
+                    active_missions=[{"objective": "Verifier le desktop control plane", "status": "running"}],
+                    last_founder_message_at="2026-03-17T01:00:00+00:00",
+                )
+                services.session_state.load = lambda: snapshot  # type: ignore[method-assign]
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    del message, model, route_reason, context_bundle
+                    return "Le detail operatoire reste local dans Project OS.exe."
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                services.gateway._call_local_chat = lambda **kwargs: _stub_simple_chat(kwargs.get("message", ""))  # type: ignore[method-assign]
+                services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
+
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="desktop",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="desktop",
+                        text="donne-moi le detail du gateway et de la queue",
+                        thread_ref=ConversationThreadRef(thread_id="desktop_status_handoff", channel="desktop"),
+                        metadata={"founder_session_key": "founder:session:desktop-status"},
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(dispatch.metadata["status_request_mode"], "detailed")
+                self.assertEqual(dispatch.metadata["founder_session_key"], "founder:session:desktop-status")
+                self.assertNotIn("Project OS.exe >", dispatch.operator_reply.summary)
+                self.assertNotIn("desktop_control_plane_handoff", dispatch.operator_reply.metadata)
             finally:
                 services.close()
 
@@ -2007,7 +2304,8 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self.assertEqual(dispatch.discord_run_card["metadata"]["route_reason"], "operator_forced_local_route")
                 self.assertEqual(len(stub_local.messages), 1)
                 self.assertIn("Message fondateur pour ce tour:\nparle moi de ce sujet", stub_local.messages[0])
-                self.assertIn("Contexte session recent:", stub_local.messages[0])
+                self.assertNotIn("Contexte session recent:", stub_local.messages[0])
+                self.assertIn("discord_chat_rule:", stub_local.messages[0])
                 self.assertTrue(dispatch.operator_reply.summary.startswith("[Local / Ollama]"))
             finally:
                 services.close()

@@ -24,6 +24,33 @@ Le systeme applique:
 - trace de tout ce qui compte operationnellement
 - promotion selective vers la memoire canonique
 
+## Modele a trois couches
+
+La continuite cible doit suivre trois couches:
+
+- `memoire conversationnelle immediate`
+- `memoire de session fondatrice cross-surface`
+- `memoire projet long terme`
+
+La colonne vertebrale n'est plus seulement:
+
+- `thread-centric`
+
+Elle devient:
+
+- `founder-centric`
+- `cross-surface`
+- partageable entre `Discord` et `Project OS.exe`
+
+Le spine minimal a maintenir cote agent visible est:
+
+- `active_subject`
+- `recent_decisions`
+- `next_step`
+- `last_useful_artifact`
+- `last_useful_approval`
+- `founder_session_key`
+
 ## Niveaux d'information
 
 ### Evenement brut
@@ -101,6 +128,15 @@ Puis:
 - soit candidat memoire
 - soit `MissionIntent`
 
+### Desktop -> Runtime
+
+La surface desktop suit les memes regles de verite:
+
+- trace operationnelle locale
+- promotion selective
+- jamais de seconde verite
+- continuite partageable avec la surface Discord
+
 ### Claude API -> Runtime
 
 Quand Claude API (l'auditeur) confirme un choix important apres review:
@@ -116,6 +152,7 @@ Si le fondateur utilise une surface locale directe et qu'un choix important emer
 
 - suivre les memes regles que ci-dessus
 - la supervision locale n'est pas une voie autonome du pipeline (ADR 0013)
+- la future surface locale canonique de cette famille est `Project OS.exe`
 
 ### API Run -> Runtime
 
@@ -196,6 +233,18 @@ alors il doit:
 - relire memoire + docs de reference
 - reprendre le flux avec contexte rafraichi
 
+## Regles de rappel et de referent
+
+- `last explicit referent wins`
+- `low confidence recall -> clarify`
+- `never fabricate continuity`
+
+Donc:
+
+- si deux sujets sont possibles, l'ancrage explicite le plus recent gagne
+- si le rappel cross-surface est faible, clarification courte
+- un pronom vague ne doit jamais devenir un rappel certain par simple optimisme
+
 ## Budget de continuite projet en conversation standard
 
 La conversation standard peut lire une continuite projet durable, mais seulement avec un budget borne.
@@ -217,6 +266,21 @@ Regles du budget de rappel:
 - ne jamais fabriquer une continuite
 - ne jamais transformer un signal prive en rappel visible par defaut
 - ne jamais utiliser la memoire longue pour casser les confirmations produit voulues
+
+## Regle de statut Discord vs control plane
+
+`Discord` peut repondre a une demande de statut explicite, mais seulement sous forme de synthese courte.
+
+Regles:
+
+- une simple mention de `gateway`, `provider`, `cout` ou `modele` ne suffit pas a ouvrir un dump de contexte systeme
+- il faut une vraie `status request` explicite
+- sur `Discord`, la reponse reste une synthese founder-facing
+- le detail runtime, backlog et control plane appartient a `Project OS.exe`
+
+Regle cross-surface supplementaire:
+
+- la continuite entre `Discord` et `Project OS.exe` ne doit jamais creer un etat contradictoire de l'agent visible
 
 ## Cible
 

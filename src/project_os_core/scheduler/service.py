@@ -41,6 +41,13 @@ BASE_DEFAULT_TASKS: tuple[dict[str, Any], ...] = (
         "enabled": False,
     },
     {
+        "name": "project_review_loop",
+        "schedule_kind": "interval",
+        "interval_seconds": 3600 * 12,
+        "command": "project_review_loop",
+        "command_args": {"limit": 12},
+    },
+    {
         "name": "cleanup_expired_deliveries",
         "schedule_kind": "interval",
         "interval_seconds": 3600 * 12,

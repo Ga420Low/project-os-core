@@ -84,10 +84,16 @@ class DiscordFacadeSmokeTests(unittest.TestCase):
         self.assertIn("deep_research_mode_selection_preserved", catalog)
         self.assertIn("deep_research_explicit_mode_cost_gate", catalog)
         self.assertIn("reasoning_escalation_requires_confirmation", catalog)
+        self.assertIn("pending_reasoning_approval_does_not_hijack_greeting", catalog)
+        self.assertIn("reasoning_rejection_reply_stays_visible", catalog)
+        self.assertIn("cross_surface_discord_status_handoff_contract", catalog)
+        self.assertIn("cross_surface_desktop_status_stays_local", catalog)
+        self.assertIn("cross_surface_founder_session_key_stays_consistent", catalog)
 
-    def test_scenario_ids_for_layers_split_smoke_persona_and_manual(self):
+    def test_scenario_ids_for_layers_split_smoke_persona_cross_surface_and_manual(self):
         smoke_ids = set(scenario_ids_for_layers(("smoke",)))
         persona_ids = set(scenario_ids_for_layers(("persona",)))
+        cross_surface_ids = set(scenario_ids_for_layers(("cross-surface",)))
         all_ids = set(scenario_ids_for_layers(("all",)))
         manual_ids = set(scenario_ids_for_layers(("manual",)))
 
@@ -95,8 +101,11 @@ class DiscordFacadeSmokeTests(unittest.TestCase):
         self.assertNotIn("persona_identity_not_generic", smoke_ids)
         self.assertIn("persona_identity_not_generic", persona_ids)
         self.assertNotIn("ambiguous_followup_clarifies", persona_ids)
+        self.assertIn("cross_surface_discord_status_handoff_contract", cross_surface_ids)
+        self.assertNotIn("natural_reply_hides_plumbing", cross_surface_ids)
         self.assertIn("natural_reply_hides_plumbing", all_ids)
         self.assertIn("persona_identity_not_generic", all_ids)
+        self.assertIn("cross_surface_discord_status_handoff_contract", all_ids)
         self.assertEqual(manual_ids, set())
 
     def test_build_isolated_storage_config_writes_valid_payload(self):
@@ -116,7 +125,7 @@ class DiscordFacadeSmokeTests(unittest.TestCase):
     def test_manual_acceptance_checks_are_exposed(self):
         checks = manual_acceptance_checks()
 
-        self.assertGreaterEqual(len(checks), 4)
+        self.assertGreaterEqual(len(checks), 6)
         self.assertIn("check_id", checks[0])
         self.assertIn("watch_for", checks[0])
 

@@ -54,7 +54,7 @@ Le workflow officiel repose sur un duo de modeles complementaires (ADR 0013):
 - `GPT API` (gpt-5.4, 1M contexte) = Le Cerveau / Le Dev (code, planifie, brainstorme)
 - `Claude API` (opus/sonnet, 1M contexte) = L'Auditeur / Le Traducteur (review cross-model, traduit pour l'humain, filtre le bruit)
 - `Project OS` runtime = verite machine, memoire canonique, tests et evidence
-- `Discord` = surface operateur prioritaire ; terminal + dashboard = supervision locale et preuve
+- `Project OS.exe` = future surface operateur locale prioritaire ; `Discord` = surface parallele distante ; terminal + dashboard = socle de supervision et de preuve
 
 Regles:
 
@@ -66,11 +66,12 @@ Regles:
 - les gros runs de code se font en silence operationnel
 - les sorties operateur doivent etre en francais clair, non developpeur
 - un gros run ne part pas sans contrat de run et validation humaine
-- le fondateur interagit via Discord (PC + mobile), au feeling, pas de planning rigide
+- le fondateur doit pouvoir interagir d'abord via l'app locale `Project OS.exe`, et aussi via `Discord` (PC + mobile) selon le contexte
 
 Reference detaillee:
 
 - `docs/architecture/HYBRID_LARGE_CONTEXT_WORKFLOW.md`
+- `docs/architecture/FOUNDER_SURFACE_MODEL.md`
 - `docs/integrations/API_LEAD_AGENT_V1.md`
 - `docs/architecture/AGENT_IDENTITY_AND_CHANNEL_MODEL.md`
 - `docs/architecture/DOCUMENTATION_LANGUAGE_POLICY.md`
@@ -136,7 +137,13 @@ Rappels:
 
 - `Discord` n'est pas la memoire canonique
 - `Discord` n'est pas la verite machine
-- `Discord` est l'interface operateur
+- `Discord` est une interface operateur importante, mais plus l'unique surface humaine cible
+
+Position produit:
+
+- le futur point d'entree local visible du projet doit etre `Project OS.exe`
+- ce `.exe` doit etre assume comme coeur pilotable local
+- `Discord` reste une branche de discussion, de remote work et d'arbitrage
 
 ## Vision produit
 
@@ -184,7 +191,7 @@ Le systeme final est:
 - une memoire long terme structuree
 - des workers specialises
 - des preuves et des garde-fous
-- une interface operateur distante
+- une interface operateur locale forte et une surface distante parallele
 
 ## Discipline de decision
 
@@ -530,7 +537,7 @@ Autres candidats surveilles:
 
 ## Discord selective sync
 
-`Discord` reste la surface humaine prioritaire, mais pas une source de memoire brute.
+`Discord` reste une surface humaine majeure, mais plus l'unique surface prioritaire des que `Project OS.exe` existe.
 
 Pipeline retenu:
 
@@ -583,7 +590,7 @@ References:
 
 ## Discord operating model
 
-`Discord` est la surface humaine prioritaire.
+`Discord` est une surface humaine majeure et parallele.
 
 Le systeme doit y rester:
 

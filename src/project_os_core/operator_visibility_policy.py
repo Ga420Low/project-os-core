@@ -138,7 +138,8 @@ class StandardReplyPolicy:
                 f"{cls._count_label(active_runs, 'run actif', 'runs actifs')}, "
                 f"{cls._count_label(pending_clarifications, 'clarification en attente', 'clarifications en attente')}, "
                 f"{cls._count_label(pending_contracts, 'contrat en attente', 'contrats en attente')}. "
-                f"Budget {daily_spend:.2f}/{daily_limit:.2f} EUR."
+                f"Budget {daily_spend:.2f}/{daily_limit:.2f} EUR. "
+                "Pour le detail operatoire, ouvre Project OS.exe > Home / Session / Runs / Discord."
             )
         status = str(action_result.get("status") or "").strip().lower()
         if status in {"missing_target", "unhandled", "blocked"}:

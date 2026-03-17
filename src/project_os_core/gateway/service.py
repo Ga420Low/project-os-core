@@ -56,6 +56,7 @@ from ..models import (
     RoutingDecisionTrace,
     SensitivityClass,
     ThreadLedgerSnapshot,
+    TraceContext,
     TraceEntityKind,
     TraceRelationKind,
     WorkingSetPlan,
@@ -354,51 +355,57 @@ class GatewayService:
             communication_mode=communication_mode,
             operator_language="fr",
             audience=OperatorAudience.NON_DEVELOPER,
-            metadata={
-                "channel_event_id": normalized_event.event_id,
-                "message_kind": candidate.classification.value,
-                "intent_kind": candidate.metadata.get("intent_kind"),
-                "delegation_level": candidate.metadata.get("delegation_level"),
-                "interaction_state": candidate.metadata.get("interaction_state"),
-                "suggested_next_state": candidate.metadata.get("suggested_next_state"),
-                "intent_confidence": candidate.metadata.get("intent_confidence"),
-                "intent_signals": candidate.metadata.get("intent_signals", []),
-                "state_transition": candidate.metadata.get("state_transition"),
-                "directive_detection": candidate.metadata.get("directive_detection"),
-                "action_contract": candidate.metadata.get("action_contract"),
-                "channel_class": channel_class.value,
-                "sensitivity_class": candidate.metadata.get("sensitivity_class", SensitivityClass.S1.value),
-                "sensitivity_reason": candidate.metadata.get("sensitivity_reason"),
-                "input_profile": candidate.metadata.get("input_profile"),
-                "input_char_count": candidate.metadata.get("input_char_count"),
-                "attachment_count": candidate.metadata.get("attachment_count"),
-                "requires_ingress_artifact": candidate.metadata.get("requires_ingress_artifact"),
-                "requires_long_context_pipeline": candidate.metadata.get("requires_long_context_pipeline"),
-                "thread_ref": to_jsonable(normalized_event.message.thread_ref),
-                "attachments": [to_jsonable(item) for item in normalized_event.message.attachments],
-                "human_artifact_ids": [item.artifact_id for item in human_artifacts],
-                "source_artifact_ids": candidate.metadata.get("source_artifact_ids", []),
-                "long_context_digest": candidate.metadata.get("long_context_digest"),
-                "long_context_workflow_id": candidate.metadata.get("long_context_workflow_id"),
-                "long_context_summary": candidate.metadata.get("long_context_summary"),
-                "long_context_artifact_ids": candidate.metadata.get("long_context_artifact_ids", []),
-                "brain_resolution_kind": candidate.metadata.get("brain_resolution_kind"),
-                "brain_resolution_confidence": candidate.metadata.get("brain_resolution_confidence"),
-                "brain_clarification_question": candidate.metadata.get("brain_clarification_question"),
-                "research_scaffold": candidate.metadata.get("research_scaffold"),
-                "research_scaffold_path": candidate.metadata.get("research_scaffold_path"),
-                "research_scaffold_kind": candidate.metadata.get("research_scaffold_kind"),
-                "research_scaffold_title": candidate.metadata.get("research_scaffold_title"),
-                "research_scaffold_created": candidate.metadata.get("research_scaffold_created"),
-                "research_scaffold_relative_path": candidate.metadata.get("research_scaffold", {}).get("relative_path")
-                if isinstance(candidate.metadata.get("research_scaffold"), dict)
-                else None,
-                "research_scaffold_doc_name": candidate.metadata.get("research_scaffold", {}).get("doc_name")
-                if isinstance(candidate.metadata.get("research_scaffold"), dict)
-                else None,
-                **self._operator_override_metadata(normalized_event),
-                **(metadata or {}),
-            },
+            metadata=self._augment_trace_metadata(
+                {
+                    "channel_event_id": normalized_event.event_id,
+                    "message_kind": candidate.classification.value,
+                    "intent_kind": candidate.metadata.get("intent_kind"),
+                    "delegation_level": candidate.metadata.get("delegation_level"),
+                    "interaction_state": candidate.metadata.get("interaction_state"),
+                    "suggested_next_state": candidate.metadata.get("suggested_next_state"),
+                    "intent_confidence": candidate.metadata.get("intent_confidence"),
+                    "intent_signals": candidate.metadata.get("intent_signals", []),
+                    "state_transition": candidate.metadata.get("state_transition"),
+                    "directive_detection": candidate.metadata.get("directive_detection"),
+                    "action_contract": candidate.metadata.get("action_contract"),
+                    "channel_class": channel_class.value,
+                    "sensitivity_class": candidate.metadata.get("sensitivity_class", SensitivityClass.S1.value),
+                    "sensitivity_reason": candidate.metadata.get("sensitivity_reason"),
+                    "input_profile": candidate.metadata.get("input_profile"),
+                    "input_char_count": candidate.metadata.get("input_char_count"),
+                    "attachment_count": candidate.metadata.get("attachment_count"),
+                    "requires_ingress_artifact": candidate.metadata.get("requires_ingress_artifact"),
+                    "requires_long_context_pipeline": candidate.metadata.get("requires_long_context_pipeline"),
+                    "thread_ref": to_jsonable(normalized_event.message.thread_ref),
+                    "attachments": [to_jsonable(item) for item in normalized_event.message.attachments],
+                    "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                    "source_artifact_ids": candidate.metadata.get("source_artifact_ids", []),
+                    "long_context_digest": candidate.metadata.get("long_context_digest"),
+                    "long_context_workflow_id": candidate.metadata.get("long_context_workflow_id"),
+                    "long_context_summary": candidate.metadata.get("long_context_summary"),
+                    "long_context_artifact_ids": candidate.metadata.get("long_context_artifact_ids", []),
+                    "brain_resolution_kind": candidate.metadata.get("brain_resolution_kind"),
+                    "brain_resolution_confidence": candidate.metadata.get("brain_resolution_confidence"),
+                    "brain_clarification_question": candidate.metadata.get("brain_clarification_question"),
+                    "research_scaffold": candidate.metadata.get("research_scaffold"),
+                    "research_scaffold_path": candidate.metadata.get("research_scaffold_path"),
+                    "research_scaffold_kind": candidate.metadata.get("research_scaffold_kind"),
+                    "research_scaffold_title": candidate.metadata.get("research_scaffold_title"),
+                    "research_scaffold_created": candidate.metadata.get("research_scaffold_created"),
+                    "research_scaffold_relative_path": candidate.metadata.get("research_scaffold", {}).get("relative_path")
+                    if isinstance(candidate.metadata.get("research_scaffold"), dict)
+                    else None,
+                    "research_scaffold_doc_name": candidate.metadata.get("research_scaffold", {}).get("doc_name")
+                    if isinstance(candidate.metadata.get("research_scaffold"), dict)
+                    else None,
+                    **self._operator_override_metadata(normalized_event),
+                    **(metadata or {}),
+                },
+                event=normalized_event,
+                correlation_id=normalized_event.correlation_id or new_id("correlation"),
+                phase="gateway_envelope",
+                created_at=normalized_event.created_at,
+            ),
         )
         resolved = self.session_state.resolve_intent(normalized_event.message.text, snapshot=snapshot)
         if resolved is not None:
@@ -759,6 +766,10 @@ class GatewayService:
             )
             if inline_response:
                 rendered_response = self._decorate_inline_reply_summary(inline_response, decision)
+                rendered_response = self._apply_desktop_control_plane_handoff(
+                    rendered_response,
+                    context_bundle=inline_context,
+                )
                 reply = OperatorReply(
                     reply_id=new_id("reply"),
                     channel=normalized_event.message.channel,
@@ -785,6 +796,13 @@ class GatewayService:
                     reply.metadata["mood_hint"] = inline_context.mood_hint.mood
                     reply.metadata["handoff_task_id"] = inline_context.handoff_contract.task_id
                     reply.metadata["query_scope"] = inline_context.query_scope
+                    if inline_context.desktop_control_plane_handoff:
+                        reply.metadata["desktop_control_plane_handoff"] = {
+                            "surface": "Project OS.exe",
+                            "mode": inline_context.status_request_mode,
+                            "views": list(inline_context.desktop_control_plane_views),
+                            "text": inline_context.desktop_control_plane_handoff,
+                        }
                 self._finalize_reply_artifact_output(
                     event=normalized_event,
                     candidate=candidate,
@@ -852,69 +870,85 @@ class GatewayService:
         )
 
         self._persist_promotion(candidate, promotion)
+        dispatch_id = new_id("dispatch")
         dispatch = GatewayDispatchResult(
-            dispatch_id=new_id("dispatch"),
+            dispatch_id=dispatch_id,
             channel_event_id=normalized_event.event_id,
             envelope_id=envelope.envelope_id,
             intent_id=intent.intent_id,
             decision_id=decision.decision_id,
             mission_run_id=mission_run.mission_run_id if mission_run else None,
             operator_reply=reply,
+            correlation_id=normalized_event.correlation_id,
             promoted_memory_ids=promoted_memory_ids,
             memory_candidate_id=candidate.candidate_id,
             promotion_decision_id=promotion.promotion_decision_id,
             discord_run_card=to_jsonable(run_card),
-            metadata={
-                "routing_trace_id": trace.trace_id,
-                "classification": candidate.classification.value,
-                "intent_kind": candidate.metadata.get("intent_kind"),
-                "delegation_level": candidate.metadata.get("delegation_level"),
-                "interaction_state": candidate.metadata.get("interaction_state"),
-                "suggested_next_state": candidate.metadata.get("suggested_next_state"),
-                "intent_confidence": candidate.metadata.get("intent_confidence"),
-                "intent_signals": candidate.metadata.get("intent_signals", []),
-                "state_transition": candidate.metadata.get("state_transition"),
-                "directive_detection": candidate.metadata.get("directive_detection"),
-                "action_contract": candidate.metadata.get("action_contract"),
-                "sensitivity_class": candidate.metadata.get("sensitivity_class", SensitivityClass.S1.value),
-                "reply_kind": reply.reply_kind,
-                "channel_class": channel_class.value,
-                "communication_mode": communication_mode.value,
-                "human_artifact_ids": [item.artifact_id for item in human_artifacts],
-                "source_artifact_ids": candidate.metadata.get("source_artifact_ids", []),
-                "input_profile": candidate.metadata.get("input_profile"),
-                "long_context_workflow_id": candidate.metadata.get("long_context_workflow_id"),
-                "long_context_summary": candidate.metadata.get("long_context_summary"),
-                "long_context_artifact_ids": candidate.metadata.get("long_context_artifact_ids", []),
-                "response_delivery_mode": reply.response_manifest.delivery_mode if reply.response_manifest else None,
-                "response_manifest_id": reply.response_manifest.metadata.get("manifest_artifact_id")
-                if reply.response_manifest
-                else None,
-                "response_review_artifact_id": reply.response_manifest.review_artifact_id if reply.response_manifest else None,
-                "thread_ledger_id": candidate.metadata.get("thread_ledger_id"),
-                "thread_last_artifact_id": candidate.metadata.get("thread_last_artifact_id"),
-                "thread_last_pdf_artifact_id": candidate.metadata.get("thread_last_pdf_artifact_id"),
-                "working_set_id": candidate.metadata.get("working_set_id"),
-                "working_set_object_ids": candidate.metadata.get("working_set_object_ids", []),
-                "brain_resolution_kind": candidate.metadata.get("brain_resolution_kind"),
-                "brain_resolution_confidence": candidate.metadata.get("brain_resolution_confidence"),
-                "model_provider": decision.model_route.provider,
-                "requested_provider": envelope.metadata.get("requested_provider"),
-                "requested_model": envelope.metadata.get("requested_model"),
-                "requested_model_mode": envelope.metadata.get("requested_model_mode"),
-                "message_prefix_consumed": envelope.metadata.get("message_prefix_consumed"),
-                "mood_hint": inline_context.mood_hint.mood if inline_context else None,
-                "query_scope": inline_context.query_scope if inline_context else None,
-                "handoff_contract": to_jsonable(inline_context.handoff_contract) if inline_context else None,
-                "thread_binding_projection_id": inline_context.thread_binding_id if inline_context else None,
-                "thread_binding_projection_kind": inline_context.thread_binding_kind if inline_context else None,
-                "research_scaffold_path": envelope.metadata.get("research_scaffold_path"),
-                "research_scaffold_kind": envelope.metadata.get("research_scaffold_kind"),
-                "research_scaffold_title": envelope.metadata.get("research_scaffold_title"),
-                "research_scaffold_created": envelope.metadata.get("research_scaffold_created"),
-                "research_scaffold_relative_path": envelope.metadata.get("research_scaffold_relative_path"),
-                "research_scaffold_doc_name": envelope.metadata.get("research_scaffold_doc_name"),
-            },
+            metadata=self._augment_trace_metadata(
+                {
+                    "routing_trace_id": trace.trace_id,
+                    "classification": candidate.classification.value,
+                    "intent_kind": candidate.metadata.get("intent_kind"),
+                    "delegation_level": candidate.metadata.get("delegation_level"),
+                    "interaction_state": candidate.metadata.get("interaction_state"),
+                    "suggested_next_state": candidate.metadata.get("suggested_next_state"),
+                    "intent_confidence": candidate.metadata.get("intent_confidence"),
+                    "intent_signals": candidate.metadata.get("intent_signals", []),
+                    "state_transition": candidate.metadata.get("state_transition"),
+                    "directive_detection": candidate.metadata.get("directive_detection"),
+                    "action_contract": candidate.metadata.get("action_contract"),
+                    "sensitivity_class": candidate.metadata.get("sensitivity_class", SensitivityClass.S1.value),
+                    "reply_kind": reply.reply_kind,
+                    "channel_class": channel_class.value,
+                    "communication_mode": communication_mode.value,
+                    "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                    "source_artifact_ids": candidate.metadata.get("source_artifact_ids", []),
+                    "input_profile": candidate.metadata.get("input_profile"),
+                    "long_context_workflow_id": candidate.metadata.get("long_context_workflow_id"),
+                    "long_context_summary": candidate.metadata.get("long_context_summary"),
+                    "long_context_artifact_ids": candidate.metadata.get("long_context_artifact_ids", []),
+                    "response_delivery_mode": reply.response_manifest.delivery_mode if reply.response_manifest else None,
+                    "response_manifest_id": reply.response_manifest.metadata.get("manifest_artifact_id")
+                    if reply.response_manifest
+                    else None,
+                    "response_review_artifact_id": reply.response_manifest.review_artifact_id if reply.response_manifest else None,
+                    "thread_ledger_id": candidate.metadata.get("thread_ledger_id"),
+                    "thread_last_artifact_id": candidate.metadata.get("thread_last_artifact_id"),
+                    "thread_last_pdf_artifact_id": candidate.metadata.get("thread_last_pdf_artifact_id"),
+                    "working_set_id": candidate.metadata.get("working_set_id"),
+                    "working_set_object_ids": candidate.metadata.get("working_set_object_ids", []),
+                    "brain_resolution_kind": candidate.metadata.get("brain_resolution_kind"),
+                    "brain_resolution_confidence": candidate.metadata.get("brain_resolution_confidence"),
+                    "model_provider": decision.model_route.provider,
+                    "requested_provider": envelope.metadata.get("requested_provider"),
+                    "requested_model": envelope.metadata.get("requested_model"),
+                    "requested_model_mode": envelope.metadata.get("requested_model_mode"),
+                    "message_prefix_consumed": envelope.metadata.get("message_prefix_consumed"),
+                    "mood_hint": inline_context.mood_hint.mood if inline_context else None,
+                    "query_scope": inline_context.query_scope if inline_context else None,
+                    "status_request_mode": inline_context.status_request_mode if inline_context else None,
+                    "founder_session_key": inline_context.founder_session_key if inline_context else None,
+                    "desktop_control_plane_handoff": inline_context.desktop_control_plane_handoff if inline_context else None,
+                    "desktop_control_plane_views": list(inline_context.desktop_control_plane_views) if inline_context else [],
+                    "handoff_contract": to_jsonable(inline_context.handoff_contract) if inline_context else None,
+                    "thread_binding_projection_id": inline_context.thread_binding_id if inline_context else None,
+                    "thread_binding_projection_kind": inline_context.thread_binding_kind if inline_context else None,
+                    "research_scaffold_path": envelope.metadata.get("research_scaffold_path"),
+                    "research_scaffold_kind": envelope.metadata.get("research_scaffold_kind"),
+                    "research_scaffold_title": envelope.metadata.get("research_scaffold_title"),
+                    "research_scaffold_created": envelope.metadata.get("research_scaffold_created"),
+                    "research_scaffold_relative_path": envelope.metadata.get("research_scaffold_relative_path"),
+                    "research_scaffold_doc_name": envelope.metadata.get("research_scaffold_doc_name"),
+                },
+                event=normalized_event,
+                correlation_id=normalized_event.correlation_id or new_id("correlation"),
+                phase="gateway_dispatch",
+                created_at=reply.created_at,
+                dispatch_id=dispatch_id,
+                intent_id=intent.intent_id,
+                decision_id=decision.decision_id,
+                mission_run_id=mission_run.mission_run_id if mission_run else None,
+            ),
         )
         thread_binding = self._upsert_discord_thread_binding(
             event=normalized_event,
@@ -984,30 +1018,119 @@ class GatewayService:
             )
         return None
 
+    @staticmethod
+    def _conversation_key_for_event(event: ChannelEvent) -> str | None:
+        value = str(
+            event.message.metadata.get("conversation_key")
+            or event.message.thread_ref.external_thread_id
+            or event.message.thread_ref.thread_id
+            or ""
+        ).strip()
+        return value or None
+
+    @staticmethod
+    def _correlation_id_for_event(event: ChannelEvent) -> str | None:
+        raw_trace_context = event.raw_payload.get("trace_context")
+        message_trace_context = event.message.metadata.get("trace_context")
+        candidates = (
+            event.correlation_id,
+            event.message.metadata.get("correlation_id"),
+            raw_trace_context.get("correlation_id") if isinstance(raw_trace_context, dict) else None,
+            message_trace_context.get("correlation_id") if isinstance(message_trace_context, dict) else None,
+            event.raw_payload.get("correlation_id"),
+        )
+        for candidate in candidates:
+            value = str(candidate or "").strip()
+            if value:
+                return value
+        return None
+
+    def _augment_trace_metadata(
+        self,
+        metadata: dict[str, Any] | None,
+        *,
+        event: ChannelEvent,
+        correlation_id: str,
+        phase: str,
+        created_at: str | None = None,
+        dispatch_id: str | None = None,
+        intent_id: str | None = None,
+        decision_id: str | None = None,
+        mission_run_id: str | None = None,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload = dict(metadata or {})
+        conversation_key = self._conversation_key_for_event(event)
+        payload["correlation_id"] = correlation_id
+        if conversation_key:
+            payload["conversation_key"] = conversation_key
+        payload["trace_context"] = to_jsonable(
+            TraceContext(
+                correlation_id=correlation_id,
+                surface=event.surface,
+                channel=event.message.channel,
+                thread_id=event.message.thread_ref.thread_id,
+                conversation_key=conversation_key,
+                channel_event_id=event.event_id,
+                dispatch_id=dispatch_id,
+                intent_id=intent_id,
+                decision_id=decision_id,
+                mission_run_id=mission_run_id,
+                run_id=run_id,
+                phase=phase,
+                created_at=created_at or event.created_at,
+            )
+        )
+        return payload
+
     def _normalize_event_for_routing(self, event: ChannelEvent) -> ChannelEvent:
         parsed = self._parse_operator_provider_override(event.message.text)
-        if parsed is None:
-            return event
-        normalized_text, override_metadata = parsed
-        message_metadata = {
-            **event.message.metadata,
-            **override_metadata,
-            "raw_operator_text": event.message.text,
-            "normalized_operator_text": normalized_text,
-        }
-        raw_payload = dict(event.raw_payload)
-        operator_ingress = dict(raw_payload.get("operator_ingress") or {})
-        operator_ingress.update(
-            {
-                **override_metadata,
-                "raw_operator_text": event.message.text,
-                "normalized_operator_text": normalized_text,
-            }
+        normalized_text = event.message.text
+        override_metadata: dict[str, str] = {}
+        if parsed is not None:
+            normalized_text, override_metadata = parsed
+        correlation_id = self._correlation_id_for_event(event) or new_id("correlation")
+        thread_ref = replace(
+            event.message.thread_ref,
+            metadata={
+                **event.message.thread_ref.metadata,
+                "correlation_id": correlation_id,
+                "conversation_key": self._conversation_key_for_event(event),
+            },
         )
-        raw_payload["operator_ingress"] = operator_ingress
+        message_metadata = self._augment_trace_metadata(
+            {
+                **event.message.metadata,
+                **override_metadata,
+            },
+            event=event,
+            correlation_id=correlation_id,
+            phase="ingress",
+            created_at=event.created_at,
+        )
+        raw_payload = self._augment_trace_metadata(
+            dict(event.raw_payload),
+            event=event,
+            correlation_id=correlation_id,
+            phase="ingress",
+            created_at=event.created_at,
+        )
+        if parsed is not None:
+            message_metadata["raw_operator_text"] = event.message.text
+            message_metadata["normalized_operator_text"] = normalized_text
+            operator_ingress = dict(raw_payload.get("operator_ingress") or {})
+            operator_ingress.update(
+                {
+                    **override_metadata,
+                    "raw_operator_text": event.message.text,
+                    "normalized_operator_text": normalized_text,
+                }
+            )
+            raw_payload["operator_ingress"] = operator_ingress
         return replace(
             event,
-            message=replace(event.message, text=normalized_text, metadata=message_metadata),
+            correlation_id=correlation_id,
+            message=replace(event.message, text=normalized_text, thread_ref=thread_ref, metadata=message_metadata),
             raw_payload=raw_payload,
         )
 
@@ -1298,6 +1421,7 @@ class GatewayService:
         return {
             "action": "reject_runtime_approval",
             "status": "rejected",
+            "reply_kind": "chat_response",
             "approval_id": context["approval_id"],
             "approval_type": context["metadata"].get("approval_type"),
             "objective": (
@@ -1980,45 +2104,58 @@ class GatewayService:
         channel_class: DiscordChannelClass,
         human_artifacts: list,
     ) -> GatewayDispatchResult:
+        dispatch_id = new_id("dispatch")
+        intent_id = new_id("session_intent")
         return GatewayDispatchResult(
-            dispatch_id=new_id("dispatch"),
+            dispatch_id=dispatch_id,
             channel_event_id=event.event_id,
             envelope_id=envelope.envelope_id,
-            intent_id=new_id("session_intent"),
+            intent_id=intent_id,
             decision_id=None,
             mission_run_id=str(action_result.get("run_id") or "") or None,
             operator_reply=reply,
+            correlation_id=event.correlation_id,
             promoted_memory_ids=promoted_memory_ids,
             memory_candidate_id=candidate_id,
             promotion_decision_id=promotion_decision_id,
             discord_run_card=None,
-            metadata={
-                "classification": "session_resolved",
-                "reply_kind": reply.reply_kind,
-                "channel_class": channel_class.value,
-                "communication_mode": reply.communication_mode.value,
-                "human_artifact_ids": [item.artifact_id for item in human_artifacts],
-                "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
-                "input_profile": envelope.metadata.get("input_profile"),
-                "intent_kind": envelope.metadata.get("intent_kind"),
-                "delegation_level": envelope.metadata.get("delegation_level"),
-                "interaction_state": envelope.metadata.get("interaction_state"),
-                "suggested_next_state": envelope.metadata.get("suggested_next_state"),
-                "intent_confidence": envelope.metadata.get("intent_confidence"),
-                "intent_signals": list(envelope.metadata.get("intent_signals") or []),
-                "state_transition": envelope.metadata.get("state_transition"),
-                "directive_detection": envelope.metadata.get("directive_detection"),
-                "action_contract": envelope.metadata.get("action_contract"),
-                "resolved_action": resolved.action,
-                "resolved_target_id": resolved.target_id,
-                "resolved_confidence": resolved.confidence,
-                "response_delivery_mode": reply.response_manifest.delivery_mode if reply.response_manifest else None,
-                "response_manifest_id": reply.response_manifest.metadata.get("manifest_artifact_id")
-                if reply.response_manifest
-                else None,
-                "response_review_artifact_id": reply.response_manifest.review_artifact_id if reply.response_manifest else None,
-                "action_result": to_jsonable(action_result),
-            },
+            metadata=self._augment_trace_metadata(
+                {
+                    "classification": "session_resolved",
+                    "reply_kind": reply.reply_kind,
+                    "channel_class": channel_class.value,
+                    "communication_mode": reply.communication_mode.value,
+                    "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                    "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
+                    "input_profile": envelope.metadata.get("input_profile"),
+                    "intent_kind": envelope.metadata.get("intent_kind"),
+                    "delegation_level": envelope.metadata.get("delegation_level"),
+                    "interaction_state": envelope.metadata.get("interaction_state"),
+                    "suggested_next_state": envelope.metadata.get("suggested_next_state"),
+                    "intent_confidence": envelope.metadata.get("intent_confidence"),
+                    "intent_signals": list(envelope.metadata.get("intent_signals") or []),
+                    "state_transition": envelope.metadata.get("state_transition"),
+                    "directive_detection": envelope.metadata.get("directive_detection"),
+                    "action_contract": envelope.metadata.get("action_contract"),
+                    "resolved_action": resolved.action,
+                    "resolved_target_id": resolved.target_id,
+                    "resolved_confidence": resolved.confidence,
+                    "response_delivery_mode": reply.response_manifest.delivery_mode if reply.response_manifest else None,
+                    "response_manifest_id": reply.response_manifest.metadata.get("manifest_artifact_id")
+                    if reply.response_manifest
+                    else None,
+                    "response_review_artifact_id": reply.response_manifest.review_artifact_id if reply.response_manifest else None,
+                    "action_result": to_jsonable(action_result),
+                },
+                event=event,
+                correlation_id=event.correlation_id or new_id("correlation"),
+                phase="gateway_dispatch",
+                created_at=reply.created_at,
+                dispatch_id=dispatch_id,
+                intent_id=intent_id,
+                mission_run_id=str(action_result.get("run_id") or "") or None,
+                run_id=str(action_result.get("run_id") or "") or None,
+            ),
         )
 
     def _finalize_session_resolved_reply_output(
@@ -2131,37 +2268,48 @@ class GatewayService:
         promoted_memory_ids: list[str],
         human_artifacts: list,
     ) -> GatewayDispatchResult:
+        dispatch_id = new_id("dispatch")
+        intent_id = new_id("action_contract_intent")
         return GatewayDispatchResult(
-            dispatch_id=new_id("dispatch"),
+            dispatch_id=dispatch_id,
             channel_event_id=event.event_id,
             envelope_id=envelope.envelope_id,
-            intent_id=new_id("action_contract_intent"),
+            intent_id=intent_id,
             decision_id=None,
             mission_run_id=None,
             operator_reply=reply,
+            correlation_id=event.correlation_id,
             promoted_memory_ids=promoted_memory_ids,
             memory_candidate_id=candidate_id,
             promotion_decision_id=promotion_decision_id,
             discord_run_card=None,
-            metadata={
-                "classification": envelope.metadata.get("message_kind"),
-                "reply_kind": reply.reply_kind,
-                "channel_class": channel_class.value,
-                "communication_mode": reply.communication_mode.value,
-                "human_artifact_ids": [item.artifact_id for item in human_artifacts],
-                "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
-                "input_profile": envelope.metadata.get("input_profile"),
-                "intent_kind": envelope.metadata.get("intent_kind"),
-                "delegation_level": envelope.metadata.get("delegation_level"),
-                "interaction_state": envelope.metadata.get("interaction_state"),
-                "suggested_next_state": InteractionState.DIRECTIVE.value,
-                "intent_confidence": envelope.metadata.get("intent_confidence"),
-                "intent_signals": list(envelope.metadata.get("intent_signals") or []),
-                "state_transition": "directive->directive",
-                "directive_detection": envelope.metadata.get("directive_detection"),
-                "action_contract": envelope.metadata.get("action_contract"),
-                "clarification_gate": True,
-            },
+            metadata=self._augment_trace_metadata(
+                {
+                    "classification": envelope.metadata.get("message_kind"),
+                    "reply_kind": reply.reply_kind,
+                    "channel_class": channel_class.value,
+                    "communication_mode": reply.communication_mode.value,
+                    "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                    "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
+                    "input_profile": envelope.metadata.get("input_profile"),
+                    "intent_kind": envelope.metadata.get("intent_kind"),
+                    "delegation_level": envelope.metadata.get("delegation_level"),
+                    "interaction_state": envelope.metadata.get("interaction_state"),
+                    "suggested_next_state": InteractionState.DIRECTIVE.value,
+                    "intent_confidence": envelope.metadata.get("intent_confidence"),
+                    "intent_signals": list(envelope.metadata.get("intent_signals") or []),
+                    "state_transition": "directive->directive",
+                    "directive_detection": envelope.metadata.get("directive_detection"),
+                    "action_contract": envelope.metadata.get("action_contract"),
+                    "clarification_gate": True,
+                },
+                event=event,
+                correlation_id=event.correlation_id or new_id("correlation"),
+                phase="gateway_dispatch",
+                created_at=reply.created_at,
+                dispatch_id=dispatch_id,
+                intent_id=intent_id,
+            ),
         )
 
     def _build_brain_clarification_dispatch(
@@ -2176,40 +2324,51 @@ class GatewayService:
         promoted_memory_ids: list[str],
         human_artifacts: list,
     ) -> GatewayDispatchResult:
+        dispatch_id = new_id("dispatch")
+        intent_id = new_id("brain_clarification_intent")
         return GatewayDispatchResult(
-            dispatch_id=new_id("dispatch"),
+            dispatch_id=dispatch_id,
             channel_event_id=event.event_id,
             envelope_id=envelope.envelope_id,
-            intent_id=new_id("brain_clarification_intent"),
+            intent_id=intent_id,
             decision_id=None,
             mission_run_id=None,
             operator_reply=reply,
+            correlation_id=event.correlation_id,
             promoted_memory_ids=promoted_memory_ids,
             memory_candidate_id=candidate_id,
             promotion_decision_id=promotion_decision_id,
             discord_run_card=None,
-            metadata={
-                "classification": envelope.metadata.get("message_kind"),
-                "reply_kind": reply.reply_kind,
-                "channel_class": channel_class.value,
-                "communication_mode": reply.communication_mode.value,
-                "human_artifact_ids": [item.artifact_id for item in human_artifacts],
-                "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
-                "input_profile": envelope.metadata.get("input_profile"),
-                "intent_kind": envelope.metadata.get("intent_kind"),
-                "delegation_level": envelope.metadata.get("delegation_level"),
-                "interaction_state": envelope.metadata.get("interaction_state"),
-                "suggested_next_state": InteractionState.DISCUSSION.value,
-                "intent_confidence": envelope.metadata.get("intent_confidence"),
-                "intent_signals": list(envelope.metadata.get("intent_signals") or []),
-                "state_transition": "discussion->clarification",
-                "directive_detection": envelope.metadata.get("directive_detection"),
-                "action_contract": envelope.metadata.get("action_contract"),
-                "clarification_gate": True,
-                "brain_clarification": True,
-                "brain_resolution_kind": envelope.metadata.get("brain_resolution_kind")
-                or reply.metadata.get("brain_resolution_kind"),
-            },
+            metadata=self._augment_trace_metadata(
+                {
+                    "classification": envelope.metadata.get("message_kind"),
+                    "reply_kind": reply.reply_kind,
+                    "channel_class": channel_class.value,
+                    "communication_mode": reply.communication_mode.value,
+                    "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                    "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
+                    "input_profile": envelope.metadata.get("input_profile"),
+                    "intent_kind": envelope.metadata.get("intent_kind"),
+                    "delegation_level": envelope.metadata.get("delegation_level"),
+                    "interaction_state": envelope.metadata.get("interaction_state"),
+                    "suggested_next_state": InteractionState.DISCUSSION.value,
+                    "intent_confidence": envelope.metadata.get("intent_confidence"),
+                    "intent_signals": list(envelope.metadata.get("intent_signals") or []),
+                    "state_transition": "discussion->clarification",
+                    "directive_detection": envelope.metadata.get("directive_detection"),
+                    "action_contract": envelope.metadata.get("action_contract"),
+                    "clarification_gate": True,
+                    "brain_clarification": True,
+                    "brain_resolution_kind": envelope.metadata.get("brain_resolution_kind")
+                    or reply.metadata.get("brain_resolution_kind"),
+                },
+                event=event,
+                correlation_id=event.correlation_id or new_id("correlation"),
+                phase="gateway_dispatch",
+                created_at=reply.created_at,
+                dispatch_id=dispatch_id,
+                intent_id=intent_id,
+            ),
         )
 
     def _maybe_create_gateway_route_approval(
@@ -2384,39 +2543,50 @@ class GatewayService:
             approval_state="pending",
             updated_at=getattr(reply, "created_at", None),
         )
+        dispatch_id = new_id("dispatch")
+        intent_id = new_id("approval_intent")
         return GatewayDispatchResult(
-            dispatch_id=new_id("dispatch"),
+            dispatch_id=dispatch_id,
             channel_event_id=event.event_id,
             envelope_id=envelope.envelope_id,
-            intent_id=new_id("approval_intent"),
+            intent_id=intent_id,
             decision_id=None,
             mission_run_id=None,
             operator_reply=reply,
+            correlation_id=event.correlation_id,
             promoted_memory_ids=promoted_memory_ids,
             memory_candidate_id=candidate_id,
             promotion_decision_id=promotion_decision_id,
             discord_run_card=None,
-            metadata={
-                "classification": envelope.metadata.get("message_kind"),
-                "reply_kind": reply.reply_kind,
-                "channel_class": channel_class.value,
-                "communication_mode": reply.communication_mode.value,
-                "human_artifact_ids": [item.artifact_id for item in human_artifacts],
-                "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
-                "input_profile": envelope.metadata.get("input_profile"),
-                "intent_kind": envelope.metadata.get("intent_kind"),
-                "delegation_level": envelope.metadata.get("delegation_level"),
-                "interaction_state": envelope.metadata.get("interaction_state"),
-                "suggested_next_state": InteractionState.APPROVAL.value,
-                "intent_confidence": envelope.metadata.get("intent_confidence"),
-                "intent_signals": list(envelope.metadata.get("intent_signals") or []),
-                "state_transition": "directive->approval",
-                "directive_detection": envelope.metadata.get("directive_detection"),
-                "action_contract": envelope.metadata.get("action_contract"),
-                "approval_id": approval.approval_id,
-                "approval_reason": approval.reason,
-                "approval_metadata": to_jsonable(approval.metadata),
-            },
+            metadata=self._augment_trace_metadata(
+                {
+                    "classification": envelope.metadata.get("message_kind"),
+                    "reply_kind": reply.reply_kind,
+                    "channel_class": channel_class.value,
+                    "communication_mode": reply.communication_mode.value,
+                    "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                    "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
+                    "input_profile": envelope.metadata.get("input_profile"),
+                    "intent_kind": envelope.metadata.get("intent_kind"),
+                    "delegation_level": envelope.metadata.get("delegation_level"),
+                    "interaction_state": envelope.metadata.get("interaction_state"),
+                    "suggested_next_state": InteractionState.APPROVAL.value,
+                    "intent_confidence": envelope.metadata.get("intent_confidence"),
+                    "intent_signals": list(envelope.metadata.get("intent_signals") or []),
+                    "state_transition": "directive->approval",
+                    "directive_detection": envelope.metadata.get("directive_detection"),
+                    "action_contract": envelope.metadata.get("action_contract"),
+                    "approval_id": approval.approval_id,
+                    "approval_reason": approval.reason,
+                    "approval_metadata": to_jsonable(approval.metadata),
+                },
+                event=event,
+                correlation_id=event.correlation_id or new_id("correlation"),
+                phase="gateway_dispatch",
+                created_at=reply.created_at,
+                dispatch_id=dispatch_id,
+                intent_id=intent_id,
+            ),
         )
 
     @staticmethod
@@ -2985,46 +3155,57 @@ class GatewayService:
             approval_id=approval.approval_id,
             scaffold=scaffold,
         )
+        dispatch_id = new_id("dispatch")
+        intent_id = new_id("deep_research_mode_intent")
         return GatewayDispatchResult(
-            dispatch_id=new_id("dispatch"),
+            dispatch_id=dispatch_id,
             channel_event_id=event.event_id,
             envelope_id=envelope.envelope_id,
-            intent_id=new_id("deep_research_mode_intent"),
+            intent_id=intent_id,
             decision_id=None,
             mission_run_id=None,
             operator_reply=reply,
+            correlation_id=event.correlation_id,
             promoted_memory_ids=promoted_memory_ids,
             memory_candidate_id=candidate_id,
             promotion_decision_id=promotion_decision_id,
             discord_run_card=None,
-            metadata={
-                "classification": envelope.metadata.get("message_kind"),
-                "reply_kind": reply.reply_kind,
-                "channel_class": channel_class.value,
-                "communication_mode": reply.communication_mode.value,
-                "human_artifact_ids": [item.artifact_id for item in human_artifacts],
-                "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
-                "input_profile": envelope.metadata.get("input_profile"),
-                "intent_kind": envelope.metadata.get("intent_kind"),
-                "delegation_level": envelope.metadata.get("delegation_level"),
-                "interaction_state": envelope.metadata.get("interaction_state"),
-                "suggested_next_state": InteractionState.APPROVAL.value,
-                "intent_confidence": envelope.metadata.get("intent_confidence"),
-                "intent_signals": list(envelope.metadata.get("intent_signals") or []),
-                "state_transition": "directive->approval",
-                "directive_detection": envelope.metadata.get("directive_detection"),
-                "action_contract": envelope.metadata.get("action_contract"),
-                "approval_id": approval.approval_id,
-                "approval_reason": approval.reason,
-                "approval_metadata": to_jsonable(approval.metadata),
-                "research_scaffold_path": scaffold.get("path"),
-                "research_scaffold_kind": scaffold.get("kind"),
-                "research_scaffold_title": scaffold.get("title"),
-                "research_scaffold_relative_path": scaffold.get("relative_path"),
-                "research_scaffold_doc_name": scaffold.get("doc_name"),
-                "research_profile": scaffold.get("explicit_profile") or scaffold.get("recommended_profile"),
-                "research_intensity": scaffold.get("explicit_intensity") or scaffold.get("recommended_intensity"),
-            },
+            metadata=self._augment_trace_metadata(
+                {
+                    "classification": envelope.metadata.get("message_kind"),
+                    "reply_kind": reply.reply_kind,
+                    "channel_class": channel_class.value,
+                    "communication_mode": reply.communication_mode.value,
+                    "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                    "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
+                    "input_profile": envelope.metadata.get("input_profile"),
+                    "intent_kind": envelope.metadata.get("intent_kind"),
+                    "delegation_level": envelope.metadata.get("delegation_level"),
+                    "interaction_state": envelope.metadata.get("interaction_state"),
+                    "suggested_next_state": InteractionState.APPROVAL.value,
+                    "intent_confidence": envelope.metadata.get("intent_confidence"),
+                    "intent_signals": list(envelope.metadata.get("intent_signals") or []),
+                    "state_transition": "directive->approval",
+                    "directive_detection": envelope.metadata.get("directive_detection"),
+                    "action_contract": envelope.metadata.get("action_contract"),
+                    "approval_id": approval.approval_id,
+                    "approval_reason": approval.reason,
+                    "approval_metadata": to_jsonable(approval.metadata),
+                    "research_scaffold_path": scaffold.get("path"),
+                    "research_scaffold_kind": scaffold.get("kind"),
+                    "research_scaffold_title": scaffold.get("title"),
+                    "research_scaffold_relative_path": scaffold.get("relative_path"),
+                    "research_scaffold_doc_name": scaffold.get("doc_name"),
+                    "research_profile": scaffold.get("explicit_profile") or scaffold.get("recommended_profile"),
+                    "research_intensity": scaffold.get("explicit_intensity") or scaffold.get("recommended_intensity"),
+                },
+                event=event,
+                correlation_id=event.correlation_id or new_id("correlation"),
+                phase="gateway_dispatch",
+                created_at=reply.created_at,
+                dispatch_id=dispatch_id,
+                intent_id=intent_id,
+            ),
         )
 
     def _build_deep_research_approval_dispatch(
@@ -3083,46 +3264,57 @@ class GatewayService:
             target_provider=estimated_api_provider,
             target_model=estimated_api_model,
         )
+        dispatch_id = new_id("dispatch")
+        intent_id = new_id("deep_research_approval_intent")
         return GatewayDispatchResult(
-            dispatch_id=new_id("dispatch"),
+            dispatch_id=dispatch_id,
             channel_event_id=event.event_id,
             envelope_id=envelope.envelope_id,
-            intent_id=new_id("deep_research_approval_intent"),
+            intent_id=intent_id,
             decision_id=None,
             mission_run_id=None,
             operator_reply=reply,
+            correlation_id=event.correlation_id,
             promoted_memory_ids=promoted_memory_ids,
             memory_candidate_id=candidate_id,
             promotion_decision_id=promotion_decision_id,
             discord_run_card=None,
-            metadata={
-                "classification": envelope.metadata.get("message_kind"),
-                "reply_kind": reply.reply_kind,
-                "channel_class": channel_class.value,
-                "communication_mode": reply.communication_mode.value,
-                "human_artifact_ids": [item.artifact_id for item in human_artifacts],
-                "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
-                "input_profile": envelope.metadata.get("input_profile"),
-                "intent_kind": envelope.metadata.get("intent_kind"),
-                "delegation_level": envelope.metadata.get("delegation_level"),
-                "interaction_state": envelope.metadata.get("interaction_state"),
-                "suggested_next_state": InteractionState.APPROVAL.value,
-                "intent_confidence": envelope.metadata.get("intent_confidence"),
-                "intent_signals": list(envelope.metadata.get("intent_signals") or []),
-                "state_transition": "directive->approval",
-                "directive_detection": envelope.metadata.get("directive_detection"),
-                "action_contract": envelope.metadata.get("action_contract"),
-                "approval_id": approval.approval_id,
-                "approval_reason": approval.reason,
-                "approval_metadata": to_jsonable(approval.metadata),
-                "research_scaffold_path": scaffold.get("path"),
-                "research_scaffold_kind": scaffold.get("kind"),
-                "research_scaffold_title": scaffold.get("title"),
-                "research_scaffold_relative_path": scaffold.get("relative_path"),
-                "research_scaffold_doc_name": scaffold.get("doc_name"),
-                "research_profile": scaffold.get("research_profile"),
-                "research_intensity": scaffold.get("research_intensity"),
-            },
+            metadata=self._augment_trace_metadata(
+                {
+                    "classification": envelope.metadata.get("message_kind"),
+                    "reply_kind": reply.reply_kind,
+                    "channel_class": channel_class.value,
+                    "communication_mode": reply.communication_mode.value,
+                    "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                    "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
+                    "input_profile": envelope.metadata.get("input_profile"),
+                    "intent_kind": envelope.metadata.get("intent_kind"),
+                    "delegation_level": envelope.metadata.get("delegation_level"),
+                    "interaction_state": envelope.metadata.get("interaction_state"),
+                    "suggested_next_state": InteractionState.APPROVAL.value,
+                    "intent_confidence": envelope.metadata.get("intent_confidence"),
+                    "intent_signals": list(envelope.metadata.get("intent_signals") or []),
+                    "state_transition": "directive->approval",
+                    "directive_detection": envelope.metadata.get("directive_detection"),
+                    "action_contract": envelope.metadata.get("action_contract"),
+                    "approval_id": approval.approval_id,
+                    "approval_reason": approval.reason,
+                    "approval_metadata": to_jsonable(approval.metadata),
+                    "research_scaffold_path": scaffold.get("path"),
+                    "research_scaffold_kind": scaffold.get("kind"),
+                    "research_scaffold_title": scaffold.get("title"),
+                    "research_scaffold_relative_path": scaffold.get("relative_path"),
+                    "research_scaffold_doc_name": scaffold.get("doc_name"),
+                    "research_profile": scaffold.get("research_profile"),
+                    "research_intensity": scaffold.get("research_intensity"),
+                },
+                event=event,
+                correlation_id=event.correlation_id or new_id("correlation"),
+                phase="gateway_dispatch",
+                created_at=reply.created_at,
+                dispatch_id=dispatch_id,
+                intent_id=intent_id,
+            ),
         )
 
     @staticmethod
@@ -3547,9 +3739,12 @@ class GatewayService:
         route_reason: str | None = None,
         context_bundle: GatewayContextBundle | None = None,
     ) -> str:
+        surface = str(context_bundle.surface if context_bundle is not None else "discord").strip().lower() or "discord"
+        surface_label = self._surface_prompt_label(surface)
+        is_discord_surface = surface == "discord"
         lines = [
             "Contexte runtime:",
-            "- surface: Discord",
+            f"- surface: {surface_label}",
             "- role: Project OS operator voice",
             "- function: human translator between founder intent and Project OS",
             "- host: Windows-first",
@@ -3570,10 +3765,40 @@ class GatewayService:
                     f"- query_scope: {context_bundle.query_scope}",
                 ]
             )
+            if context_bundle.query_scope == "contextual":
+                if is_discord_surface:
+                    lines.append(
+                        "- discord_chat_rule: unless the founder explicitly asks for status or runtime details, do not surface queue, backlog, pending internal work, provider details, route reasons, or internal pipeline mechanics"
+                    )
+                else:
+                    lines.append(
+                        "- control_surface_rule: on Project OS.exe, you may expose operational detail directly when it helps the founder, but keep it structured and truthful instead of narrating raw plumbing for no reason"
+                    )
+            if is_discord_surface:
+                if context_bundle.status_request_mode == "summary":
+                    lines.append(
+                        "- status_surface_rule: on Discord, answer status requests with a short operational synthesis only; do not turn the reply into a runtime dashboard"
+                    )
+                elif context_bundle.status_request_mode == "detailed":
+                    lines.append(
+                        "- status_surface_rule: even for detailed status requests on Discord, stay concise and do not dump raw plumbing beyond what is needed for the founder's decision"
+                    )
+                if context_bundle.desktop_control_plane_handoff.strip():
+                    lines.append(
+                        "- desktop_handoff_rule: give a short synthesis here and explicitly point deeper operational detail to Project OS.exe instead of turning Discord into a dashboard"
+                    )
+                if context_bundle.desktop_control_plane_views:
+                    lines.append(f"- desktop_handoff_views: {' / '.join(context_bundle.desktop_control_plane_views)}")
+            elif context_bundle.status_request_mode != "none":
+                lines.append(
+                    "- status_surface_rule: on Project OS.exe, give the operational detail directly when useful, but keep the answer readable and do not imitate a Discord handoff"
+                )
             if context_bundle.thread_binding_id:
                 lines.append(f"- thread_binding_id: {context_bundle.thread_binding_id}")
             if context_bundle.thread_binding_kind:
                 lines.append(f"- thread_binding_kind: {context_bundle.thread_binding_kind}")
+            if context_bundle.founder_session_key:
+                lines.append(f"- founder_session_key: {context_bundle.founder_session_key}")
             if context_bundle.query_scope in {"identity", "runtime_truth"}:
                 lines.append(
                     "- context_rule: answer the current identity/runtime question only; do not surface backlog, pending clarifications, or other missions unless the founder asks for them explicitly"
@@ -3581,6 +3806,8 @@ class GatewayService:
 
         sections = ["\n".join(lines)]
         if context_bundle is not None:
+            if context_bundle.founder_session_spine_summary.strip():
+                sections.append(f"Session fondatrice recente:\n{context_bundle.founder_session_spine_summary}")
             if context_bundle.session_brief.strip():
                 sections.append(f"Contexte session recent:\n{context_bundle.session_brief}")
             if context_bundle.project_continuity_summary.strip():
@@ -3596,13 +3823,23 @@ class GatewayService:
                 sections.append(f"Working set charge:\n{context_bundle.working_set_summary}")
             if context_bundle.long_context_brief.strip():
                 sections.append(f"Workflow long-context:\n{context_bundle.long_context_brief}")
-            prompt_handoff = replace(context_bundle.handoff_contract, raw_user_intent=message)
-            sections.append(
-                "Handoff contract:\n"
-                + json.dumps(to_jsonable(prompt_handoff), ensure_ascii=True, sort_keys=True, indent=2)
-            )
+            if context_bundle.handoff_contract is not None:
+                prompt_handoff = replace(context_bundle.handoff_contract, raw_user_intent=message)
+                sections.append(
+                    "Handoff contract:\n"
+                    + json.dumps(to_jsonable(prompt_handoff), ensure_ascii=True, sort_keys=True, indent=2)
+                )
         sections.append(f"Message fondateur pour ce tour:\n{message}")
         return "\n\n".join(sections)
+
+    @staticmethod
+    def _surface_prompt_label(surface: str) -> str:
+        normalized = str(surface or "").strip().lower()
+        if normalized == "discord":
+            return "Discord"
+        if normalized == "desktop":
+            return "Project OS.exe"
+        return surface or "unknown"
 
     def _brain_prompt(
         self,
@@ -3816,6 +4053,22 @@ class GatewayService:
         return StandardReplyPolicy.decorate_inline_summary(summary, decision)
 
     @staticmethod
+    def _apply_desktop_control_plane_handoff(
+        summary: str,
+        *,
+        context_bundle: GatewayContextBundle | None,
+    ) -> str:
+        rendered = str(summary or "").strip()
+        if not rendered or context_bundle is None:
+            return rendered
+        handoff = str(context_bundle.desktop_control_plane_handoff or "").strip()
+        if not handoff:
+            return rendered
+        if "project os.exe" in rendered.lower():
+            return rendered
+        return f"{rendered}\n\n{handoff}".strip()
+
+    @staticmethod
     def _candidate_sensitivity(candidate) -> SensitivityClass:
         raw = str(candidate.metadata.get("sensitivity_class") or "").strip().lower()
         try:
@@ -3908,19 +4161,30 @@ class GatewayService:
             audience=OperatorAudience.NON_DEVELOPER,
             metadata={"surface": event.surface, "duplicate_of_event_id": duplicate_event_id},
         )
+        dispatch_id = new_id("dispatch")
+        intent_id = new_id("intent")
         return GatewayDispatchResult(
-            dispatch_id=new_id("dispatch"),
+            dispatch_id=dispatch_id,
             channel_event_id=duplicate_event_id,
             envelope_id=reply.envelope_id,
-            intent_id=new_id("intent"),
+            intent_id=intent_id,
             decision_id=None,
             mission_run_id=None,
             operator_reply=reply,
+            correlation_id=event.correlation_id,
             promoted_memory_ids=[],
             memory_candidate_id=None,
             promotion_decision_id=None,
             discord_run_card=None,
-            metadata={"duplicate_ingress": True, "duplicate_of_event_id": duplicate_event_id},
+            metadata=self._augment_trace_metadata(
+                {"duplicate_ingress": True, "duplicate_of_event_id": duplicate_event_id},
+                event=event,
+                correlation_id=event.correlation_id or new_id("correlation"),
+                phase="gateway_duplicate",
+                created_at=reply.created_at,
+                dispatch_id=dispatch_id,
+                intent_id=intent_id,
+            ),
         )
 
     @staticmethod
@@ -4048,6 +4312,14 @@ class GatewayService:
     ) -> dict[str, Any] | None:
         if scaffold is None or self.deep_research is None:
             return None
+        if bool(event.message.metadata.get("debug_replay_skip_background_launch")):
+            return {
+                "launched": False,
+                "skipped": True,
+                "reason": "debug_replay_skip_background_launch",
+                "job_id": None,
+                "job_path": None,
+            }
         try:
             return self.deep_research.launch_job_from_gateway(event=event, scaffold=scaffold)
         except Exception as exc:
@@ -4115,30 +4387,41 @@ class GatewayService:
                 "deep_research_job_launched": launched,
             },
         )
+        dispatch_id = new_id("dispatch")
+        intent_id = new_id("intent")
         return GatewayDispatchResult(
-            dispatch_id=new_id("dispatch"),
+            dispatch_id=dispatch_id,
             channel_event_id=event.event_id,
             envelope_id=envelope.envelope_id,
-            intent_id=new_id("intent"),
+            intent_id=intent_id,
             decision_id=None,
             mission_run_id=None,
             operator_reply=reply,
+            correlation_id=event.correlation_id,
             promoted_memory_ids=promoted_memory_ids,
             memory_candidate_id=candidate_id,
             promotion_decision_id=promotion_decision_id,
             discord_run_card=None,
-            metadata={
-                "channel_class": channel_class.value,
-                "reply_kind": reply.reply_kind,
-                "research_scaffold_path": envelope.metadata.get("research_scaffold_path"),
-                "research_scaffold_kind": envelope.metadata.get("research_scaffold_kind"),
-                "research_scaffold_title": envelope.metadata.get("research_scaffold_title"),
-                "research_scaffold_relative_path": relative_path,
-                "research_scaffold_doc_name": doc_name,
-                "deep_research_job_id": job_payload.get("job_id"),
-                "deep_research_job_path": job_payload.get("job_path"),
-                "deep_research_job_launched": launched,
-            },
+            metadata=self._augment_trace_metadata(
+                {
+                    "channel_class": channel_class.value,
+                    "reply_kind": reply.reply_kind,
+                    "research_scaffold_path": envelope.metadata.get("research_scaffold_path"),
+                    "research_scaffold_kind": envelope.metadata.get("research_scaffold_kind"),
+                    "research_scaffold_title": envelope.metadata.get("research_scaffold_title"),
+                    "research_scaffold_relative_path": relative_path,
+                    "research_scaffold_doc_name": doc_name,
+                    "deep_research_job_id": job_payload.get("job_id"),
+                    "deep_research_job_path": job_payload.get("job_path"),
+                    "deep_research_job_launched": launched,
+                },
+                event=event,
+                correlation_id=event.correlation_id or new_id("correlation"),
+                phase="gateway_dispatch",
+                created_at=reply.created_at,
+                dispatch_id=dispatch_id,
+                intent_id=intent_id,
+            ),
         )
 
     def _estimated_deep_research_budget(self, scaffold: dict[str, Any]) -> dict[str, Any]:
@@ -4221,11 +4504,20 @@ class GatewayService:
             metadata=dict(message_raw.get("metadata")) if isinstance(message_raw.get("metadata"), dict) else {},
             created_at=str(message_raw.get("created_at") or datetime.now(timezone.utc).isoformat()),
         )
+        raw_payload = dict(raw.get("raw_payload")) if isinstance(raw.get("raw_payload"), dict) else {}
+        correlation_id = str(
+            raw.get("correlation_id")
+            or message.metadata.get("correlation_id")
+            or raw_payload.get("correlation_id")
+            or ""
+        ).strip() or None
         return ChannelEvent(
             event_id=str(raw.get("event_id") or new_id("channel_event")),
             surface=str(raw.get("surface") or "discord"),
             event_type=str(raw.get("event_type") or "message.created"),
             message=message,
+            raw_payload=raw_payload,
+            correlation_id=correlation_id,
             created_at=str(raw.get("created_at") or datetime.now(timezone.utc).isoformat()),
         )
 
@@ -4357,8 +4649,9 @@ class GatewayService:
                 "channel": event.message.channel,
                 "message_kind": candidate.classification.value,
                 "source_message_id": event.message.metadata.get("message_id"),
-                "conversation_key": event.message.thread_ref.external_thread_id or event.message.thread_ref.thread_id,
+                "conversation_key": self._conversation_key_for_event(event),
                 "ingress_dedup_key": ingress_dedup_key,
+                "correlation_id": event.correlation_id,
                 "thread_ref_json": dump_json(to_jsonable(event.message.thread_ref)),
                 "message_json": dump_json(to_jsonable(event.message)),
                 "raw_payload_json": dump_json(event.raw_payload),
@@ -4946,6 +5239,300 @@ class GatewayService:
             "replies_backfilled": reply_count,
         }
 
+    def replay_identifier(self, identifier: str, *, force: bool = False) -> dict[str, Any]:
+        context = self._resolve_replay_context(identifier)
+        source_entity_kind = str(context["source_entity_kind"])
+        source_entity_id = str(context["source_entity_id"])
+        idempotency_key = None if force else f"gateway_replay:{source_entity_kind}:{source_entity_id}"
+        if idempotency_key:
+            existing = self.database.fetch_debug_replay_by_idempotency_key(idempotency_key)
+            if existing is not None:
+                try:
+                    metadata = json.loads(str(existing["metadata_json"] or "{}"))
+                except Exception:
+                    metadata = {}
+                return {
+                    "replay_id": str(existing["replay_id"]),
+                    "status": str(existing["status"]),
+                    "reused_existing": True,
+                    "source_identifier": str(existing["source_identifier"]) if existing["source_identifier"] else identifier,
+                    "source_entity_kind": str(existing["source_entity_kind"]),
+                    "source_entity_id": str(existing["source_entity_id"]),
+                    "correlation_id": str(existing["correlation_id"]) if existing["correlation_id"] else None,
+                    "dispatch_id": str(existing["dispatch_id"]) if existing["dispatch_id"] else None,
+                    "channel_event_id": str(existing["channel_event_id"]) if existing["channel_event_id"] else None,
+                    "mission_run_id": str(existing["mission_run_id"]) if existing["mission_run_id"] else None,
+                    "artifact_path": str(existing["artifact_path"]) if existing["artifact_path"] else None,
+                    "metadata": metadata,
+                }
+
+        replay_id = self.database.record_debug_replay_run(
+            source_entity_kind=source_entity_kind,
+            source_entity_id=source_entity_id,
+            status="running",
+            idempotency_key=idempotency_key,
+            source_identifier=identifier,
+            trigger_kind="manual",
+            correlation_id=None,
+            mission_run_id=context.get("mission_run_id"),
+            dispatch_id=context.get("dispatch_id"),
+            channel_event_id=context.get("channel_event_id"),
+            metadata={
+                "requested_identifier": identifier,
+                "target_profile": context.get("target_profile"),
+                "requested_worker": context.get("requested_worker"),
+            },
+        )
+        self.database.record_trace_edge(
+            parent_id=source_entity_id,
+            parent_kind=source_entity_kind,
+            child_id=replay_id,
+            child_kind=TraceEntityKind.DEBUG_REPLAY.value,
+            relation=TraceRelationKind.REFERENCES.value,
+            metadata={"requested_identifier": identifier, "forced": force},
+        )
+
+        report_path = self.path_policy.ensure_allowed_write(
+            self.paths.runtime_root / "debug_replay" / "runs" / f"{replay_id}.json"
+        )
+        report_path.parent.mkdir(parents=True, exist_ok=True)
+        replay_started_at = datetime.now(timezone.utc).isoformat()
+        try:
+            event = self._channel_event_from_row(context["event_row"])
+            if event is None:
+                raise RuntimeError("Replay impossible: source event payload is unreadable.")
+            replay_correlation_id = new_id("correlation")
+            replay_created_at = datetime.now(timezone.utc).isoformat()
+            thread_metadata = dict(event.message.thread_ref.metadata or {})
+            thread_metadata.update(
+                {
+                    "correlation_id": replay_correlation_id,
+                    "replay_id": replay_id,
+                    "replay_source_identifier": identifier,
+                }
+            )
+            message_metadata = dict(event.message.metadata or {})
+            message_metadata.update(
+                {
+                    "source": "debug_replay",
+                    "correlation_id": replay_correlation_id,
+                    "debug_replay": True,
+                    "debug_replay_id": replay_id,
+                    "debug_replay_source_identifier": identifier,
+                    "debug_replay_skip_background_launch": True,
+                    "replay_of_event_id": event.event_id,
+                    "original_correlation_id": event.correlation_id,
+                }
+            )
+            raw_payload = dict(event.raw_payload or {})
+            raw_payload.update(
+                {
+                    "source": "debug_replay",
+                    "debug_replay": True,
+                    "replay_id": replay_id,
+                    "replay_source_identifier": identifier,
+                    "original_event_id": event.event_id,
+                    "original_correlation_id": event.correlation_id,
+                }
+            )
+            replay_event = replace(
+                event,
+                event_id=new_id("channel_event"),
+                correlation_id=replay_correlation_id,
+                created_at=replay_created_at,
+                raw_payload=raw_payload,
+                message=replace(
+                    event.message,
+                    created_at=replay_created_at,
+                    metadata=message_metadata,
+                    thread_ref=replace(event.message.thread_ref, metadata=thread_metadata),
+                ),
+            )
+            dispatch = self.dispatch_event(
+                replay_event,
+                target_profile=str(context.get("target_profile") or "").strip() or None,
+                requested_worker=str(context.get("requested_worker") or "").strip() or None,
+                risk_class=self._risk_class_from_value(context.get("requested_risk_class")),
+            )
+            self.database.record_trace_edge(
+                parent_id=replay_id,
+                parent_kind=TraceEntityKind.DEBUG_REPLAY.value,
+                child_id=replay_event.event_id,
+                child_kind=TraceEntityKind.CHANNEL_EVENT.value,
+                relation=TraceRelationKind.PRODUCED.value,
+                metadata={"dispatch_id": dispatch.dispatch_id, "correlation_id": replay_correlation_id},
+            )
+            report = {
+                "replay_id": replay_id,
+                "status": "completed",
+                "reused_existing": False,
+                "source_identifier": identifier,
+                "source_entity_kind": source_entity_kind,
+                "source_entity_id": source_entity_id,
+                "source_event_id": str(context.get("channel_event_id") or ""),
+                "started_at": replay_started_at,
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "correlation_id": replay_correlation_id,
+                "dispatch_id": dispatch.dispatch_id,
+                "channel_event_id": replay_event.event_id,
+                "mission_run_id": dispatch.mission_run_id,
+                "artifact_path": str(report_path),
+                "metadata": {
+                    "reply_kind": dispatch.operator_reply.reply_kind,
+                    "target_profile": context.get("target_profile"),
+                    "requested_worker": context.get("requested_worker"),
+                    "requested_risk_class": context.get("requested_risk_class"),
+                },
+            }
+            report_path.write_text(json.dumps(to_jsonable(report), ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
+            self.database.update_debug_replay_run(
+                replay_id,
+                status="completed",
+                correlation_id=replay_correlation_id,
+                mission_run_id=dispatch.mission_run_id,
+                dispatch_id=dispatch.dispatch_id,
+                channel_event_id=replay_event.event_id,
+                result_entity_kind=TraceEntityKind.GATEWAY_DISPATCH.value,
+                result_entity_id=dispatch.dispatch_id,
+                artifact_path=str(report_path),
+                metadata=report["metadata"],
+            )
+            return report
+        except Exception as exc:
+            report = {
+                "replay_id": replay_id,
+                "status": "failed",
+                "reused_existing": False,
+                "source_identifier": identifier,
+                "source_entity_kind": source_entity_kind,
+                "source_entity_id": source_entity_id,
+                "started_at": replay_started_at,
+                "failed_at": datetime.now(timezone.utc).isoformat(),
+                "artifact_path": str(report_path),
+                "error": str(exc),
+            }
+            report_path.write_text(json.dumps(report, ensure_ascii=True, indent=2, sort_keys=True), encoding="utf-8")
+            dead_letter_id = self.database.record_dead_letter(
+                domain="debug_replay",
+                source_entity_kind=TraceEntityKind.DEBUG_REPLAY.value,
+                source_entity_id=replay_id,
+                status="active",
+                error_code=type(exc).__name__,
+                error_message=str(exc),
+                replayable=True,
+                recovery_command=f"project-os debug replay {identifier} --force",
+                artifact_path=str(report_path),
+                correlation_id=None,
+                mission_run_id=context.get("mission_run_id"),
+                dispatch_id=context.get("dispatch_id"),
+                channel_event_id=context.get("channel_event_id"),
+                metadata={"requested_identifier": identifier},
+            )
+            self.database.record_trace_edge(
+                parent_id=replay_id,
+                parent_kind=TraceEntityKind.DEBUG_REPLAY.value,
+                child_id=dead_letter_id,
+                child_kind=TraceEntityKind.DEAD_LETTER.value,
+                relation=TraceRelationKind.DEAD_LETTERED_AS.value,
+                metadata={"requested_identifier": identifier},
+            )
+            self.database.update_debug_replay_run(
+                replay_id,
+                status="failed",
+                artifact_path=str(report_path),
+                metadata={"error": str(exc), "dead_letter_id": dead_letter_id},
+            )
+            return report
+
+    def _resolve_replay_context(self, identifier: str) -> dict[str, Any]:
+        normalized = str(identifier or "").strip()
+        if not normalized:
+            raise ValueError("Replay identifier is required.")
+        base_query = """
+            SELECT
+                ce.*,
+                gdr.dispatch_id AS replay_dispatch_id,
+                gdr.mission_run_id AS replay_mission_run_id,
+                mi.target_profile AS replay_target_profile,
+                mi.requested_worker AS replay_requested_worker,
+                mi.requested_risk_class AS replay_requested_risk_class
+            FROM channel_events ce
+            LEFT JOIN gateway_dispatch_results gdr ON gdr.channel_event_id = ce.event_id
+            LEFT JOIN mission_intents mi ON mi.intent_id = gdr.intent_id
+            {where_clause}
+            ORDER BY ce.created_at ASC
+            LIMIT 1
+        """
+        lookup_specs = [
+            ("ce.event_id = ?", (normalized,), TraceEntityKind.CHANNEL_EVENT.value, normalized),
+            ("gdr.dispatch_id = ?", (normalized,), TraceEntityKind.GATEWAY_DISPATCH.value, normalized),
+            ("gdr.mission_run_id = ?", (normalized,), TraceEntityKind.MISSION_RUN.value, normalized),
+            ("ce.correlation_id = ?", (normalized,), TraceEntityKind.CHANNEL_EVENT.value, None),
+        ]
+        for where_clause, params, source_kind, explicit_source_id in lookup_specs:
+            row = self.database.fetchone(base_query.format(where_clause=f"WHERE {where_clause}"), params)
+            if row is None:
+                continue
+            source_entity_id = explicit_source_id or str(row["event_id"])
+            return {
+                "source_entity_kind": source_kind,
+                "source_entity_id": source_entity_id,
+                "channel_event_id": str(row["event_id"]),
+                "dispatch_id": str(row["replay_dispatch_id"]) if row["replay_dispatch_id"] else None,
+                "mission_run_id": str(row["replay_mission_run_id"]) if row["replay_mission_run_id"] else None,
+                "target_profile": str(row["replay_target_profile"]) if row["replay_target_profile"] else None,
+                "requested_worker": str(row["replay_requested_worker"]) if row["replay_requested_worker"] else None,
+                "requested_risk_class": (
+                    str(row["replay_requested_risk_class"]) if row["replay_requested_risk_class"] else None
+                ),
+                "event_row": row,
+            }
+
+        support_row = self.database.fetchone(
+            """
+            SELECT channel_event_id, dispatch_id, mission_run_id
+            FROM output_quarantine_records
+            WHERE run_id = ?
+               OR mission_run_id = ?
+               OR dispatch_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (normalized, normalized, normalized),
+        )
+        if support_row is None:
+            support_row = self.database.fetchone(
+                """
+                SELECT channel_event_id, dispatch_id, mission_run_id
+                FROM dead_letter_records
+                WHERE source_entity_id = ?
+                   OR run_id = ?
+                   OR mission_run_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (normalized, normalized, normalized),
+            )
+        if support_row is not None:
+            next_identifier = (
+                str(support_row["channel_event_id"] or "").strip()
+                or str(support_row["dispatch_id"] or "").strip()
+                or str(support_row["mission_run_id"] or "").strip()
+            )
+            if next_identifier and next_identifier != normalized:
+                return self._resolve_replay_context(next_identifier)
+        raise KeyError(f"Replay source introuvable: {normalized}")
+
+    @staticmethod
+    def _risk_class_from_value(value: object) -> ActionRiskClass | None:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return None
+        try:
+            return ActionRiskClass(normalized)
+        except ValueError:
+            return None
+
     def _channel_event_from_row(self, row) -> ChannelEvent | None:
         try:
             message_payload = json.loads(str(row["message_json"] or "{}"))
@@ -4992,6 +5579,7 @@ class GatewayService:
                 created_at=str(message_payload.get("created_at") or row["created_at"]),
             ),
             raw_payload=json.loads(str(row["raw_payload_json"] or "{}")) if row["raw_payload_json"] else {},
+            correlation_id=str(row["correlation_id"]) if "correlation_id" in row.keys() and row["correlation_id"] else None,
             created_at=str(row["created_at"]),
         )
 
@@ -6010,6 +6598,7 @@ class GatewayService:
         )
 
     def _persist_dispatch(self, dispatch: GatewayDispatchResult) -> None:
+        correlation_id = dispatch.correlation_id or str(dispatch.metadata.get("correlation_id") or "").strip() or None
         self.database.upsert(
             "gateway_dispatch_results",
             {
@@ -6019,6 +6608,7 @@ class GatewayService:
                 "intent_id": dispatch.intent_id,
                 "decision_id": dispatch.decision_id,
                 "mission_run_id": dispatch.mission_run_id,
+                "correlation_id": correlation_id,
                 "memory_candidate_id": dispatch.memory_candidate_id,
                 "promotion_decision_id": dispatch.promotion_decision_id,
                 "promoted_memory_ids_json": dump_json(dispatch.promoted_memory_ids),

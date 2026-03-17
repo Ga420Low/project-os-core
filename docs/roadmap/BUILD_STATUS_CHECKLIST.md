@@ -217,14 +217,46 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
   - [ ] `Pack 7 - Cost Accounting, Safety And Live Evals`
 - [ ] Lot Debug System v1
   - [x] Feuille de route canonique posee dans `docs/roadmap/DEBUG_SYSTEM_V1_PLAN.md`
-  - [ ] `Pack 0 - Taxonomie des IDs, filiation causale, invariants DB, quarantine des sorties invalides`
-  - [ ] `Pack 1 - Correlation spine locale, debug trace, couverture via SQLite/logs/CLI`
-  - [ ] `Pack 2 - Replay canonique, reprise background, idempotence et dead letters multi-domaines`
-  - [ ] `Pack 3 - Incident engine, substrat evals unique et provenance`
+  - [x] Freeze documente: `bot live Discord` + `app / dashboard` geles jusqu'a readiness explicite de leurs chantiers propres
+  - [x] Regle posee: tant que ce freeze est actif, `Debug System v1` reste limite au socle local et aux surfaces CLI / doctor non invasives
+  - [x] `Pack 0 - Taxonomie des IDs, filiation causale, invariants DB, quarantine des sorties invalides`
+  - [x] `Pack 1 - Correlation spine locale, debug trace, couverture via SQLite/logs/CLI`
+  - [x] `Pack 2 - Replay canonique, reprise background, idempotence et dead letters multi-domaines`
+  - [x] `Pack 3 - Incident engine, substrat evals unique et provenance`
   - [ ] `Pack 4 - Dashboard, Discord debug, privacy TTL, gates progressifs`
-  - [ ] `Pack 5 - Resilience systeme`
+    - [x] Sous-lot freeze-safe: `CLI + observability doctor + audits privacy / retention / gates`
+    - [ ] Branchement `dashboard / Discord debug` apres levee du freeze
+  - [x] `Pack 5 - Resilience systeme`
   - [ ] `Pack 6 - Audit final du debug live Discord`
+    - [x] Runner d'audit final + rapport canonique + commande `project-os debug discord-audit`
+    - [ ] Execution live finale + checks manuels + decision explicite `coherent` ou `ouvrir un pack correctif`
+    - [ ] Rappel de cloture: relancer le runner en live apres levee du freeze puis repasser avec les checks manuels
   - [ ] `Pack supplementaire - Corrections du debug live Discord (si l'audit final l'exige)`
+- [x] Lot Project Review Loop
+  - [x] Commande `project-os review status`
+  - [x] Rapport canonique `latest.json` + `latest.md`
+  - [x] Sources automatiques agregees: checklist, docs audit, observability, resilience, discord audit, scheduler
+  - [x] Sections `Done / Partiel / Oublie / Non verifie / A revoir avec le fondateur`
+  - [x] Tache planifiee locale `project_review_loop`
+- [ ] Lot Desktop Control Room v1
+  - [x] Feuille de route canonique posee dans `docs/roadmap/PROJECT_OS_DESKTOP_CONTROL_ROOM_V1_PLAN.md`
+  - [x] `Pack 0 - Product contract + non-goals + surface doctrine`
+  - [x] `Pack 1 - Startup spine + session restore`
+  - [x] `Pack 2 - Desktop shell + visual foundation`
+  - [x] `Pack 3 - Terminal master + terminaux secondaires maitrises`
+  - [x] `Pack 4 - Runtime adapters deterministes`
+  - [x] `Pack 5 - Ecrans coeur lisibles`
+  - [x] `Pack 6 - Startup debug + health + degraded UX`
+  - [x] `Pack 7 - Cost discipline + frontieres modele`
+  - [ ] `Pack 8 - Extension hooks`
+- [ ] Lot Discord Founder Surface Repair v2
+  - [x] Feuille de route canonique posee dans `docs/roadmap/DISCORD_FOUNDER_SURFACE_REPAIR_V2_PLAN.md`
+  - [x] `Pack A - Shared Surface Contracts`
+  - [x] `Pack B - Discord Chat Detox`
+  - [x] `Pack C - Clarification And Referent Anchoring`
+  - [x] `Pack D - Founder Session Spine`
+  - [x] `Pack E - Desktop Control Plane Handshake`
+  - [x] `Pack F - Cross-Surface Evals`
 - [ ] Sanctuary Security Layer v1
   - [ ] Approval Truth Hardening
   - [ ] Destructive Boundary Hardening
@@ -252,6 +284,7 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
 
 - [x] Physical Storage Layout (`docs/architecture/PHYSICAL_STORAGE_LAYOUT.md`)
 - [x] Quality Standards (`docs/architecture/QUALITY_STANDARDS.md`)
+- [x] Test And Review Surfaces (`docs/architecture/TEST_AND_REVIEW_SURFACES.md`)
 - [x] Error Recovery and Resilience (`docs/architecture/ERROR_RECOVERY_AND_RESILIENCE.md`)
 - [x] Cost Optimization Strategy (`docs/architecture/COST_OPTIMIZATION_STRATEGY.md`)
 - [x] Worker Capability Contracts (`docs/architecture/WORKER_CAPABILITY_CONTRACTS.md`)

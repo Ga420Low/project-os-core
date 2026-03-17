@@ -1,6 +1,7 @@
 .venv/
 node_modules/
 dist/
+desktop/control-room/dist*/
 build/
 coverage/
 __pycache__/

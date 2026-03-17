@@ -100,7 +100,8 @@ En cible:
 
 - dashboard local = preuve visuelle que le run vit vraiment
 - terminal live = supervision robuste
-- `Discord` = canal humain principal pour discuter, arbitrer et recevoir les clarifications ou rapports finaux
+- `Project OS.exe` = future control room locale principale et terminal maitre
+- `Discord` = canal humain parallele pour discuter, arbitrer et recevoir les clarifications ou rapports finaux
 
 Si `Discord` n'est pas encore completement branche pour cette boucle:
 

@@ -2,7 +2,26 @@
 
 ## Statut
 
-Feuille de route canonique proposee.
+Feuille de route canonique en cours d'execution.
+
+Etat reel au `2026-03-17`:
+
+- `Pack 0` implemente
+- `Pack 1` implemente
+- `Pack 2` implemente
+- `Pack 3` implemente
+- `Pack 4` partiellement implemente sur le perimetre autorise pendant le freeze:
+  - `CLI`
+  - `observability doctor`
+  - audits locaux `privacy / retention / gates`
+- `Pack 4` reste ouvert pour les branchements `dashboard / Discord debug` quand le freeze sera leve
+- `Pack 5` implemente
+- `Pack 6` implemente sur le perimetre `audit-only`:
+  - runner d'audit final
+  - rapport canonique
+  - commande CLI `project-os debug discord-audit`
+- la conclusion finale de `Pack 6` reste en attente du run live reel et des checks manuels apres levee explicite du freeze
+- le lot complet reste ouvert tant que `Pack 4`, la conclusion finale de `Pack 6` et le pack correctif eventuel ne sont pas traites
 
 Ce document cadre le chantier `debug + observabilite + verification` pour `Project OS`.
 Il complete:
@@ -674,6 +693,18 @@ Note de perimetre:
 - le `debug live Discord` actuellement en cours de stabilisation ne fait pas partie du chantier direct des packs `0 -> 5`
 - ce perimetre est audite en fin de roadmap dans `Pack 6`
 - si l'audit final revele un ecart reel, on ouvre ensuite un pack supplementaire dedie aux corrections du debug Discord
+- le `bot live Discord` et l'`app / dashboard` actuellement en cours de creation sont geles jusqu'a readiness explicite de leurs chantiers propres
+- aucun pack `Debug System v1` ne doit les refondre, les rebrancher ou les forcer tant que ce freeze n'est pas leve
+- tant que ce freeze est actif, les ajouts `Debug System v1` restent limites au socle local:
+  - schema
+  - CLI
+  - traces
+  - replay
+  - incidents
+  - evals
+  - doctor
+  - retention
+  - gates
 
 ### Pack 0 - Taxonomie des IDs, filiation causale, invariants DB, quarantine des sorties invalides
 
@@ -878,6 +909,17 @@ But:
 
 - rendre le systeme operable et vivable en vrai
 
+Freeze actif:
+
+- le `bot live Discord` est gele jusqu'a stabilisation explicite de son chantier propre
+- l'`app / dashboard` est gelee jusqu'a ce que sa surface soit declaree prete a recevoir les branchements debug
+- tant que ce freeze reste actif, `Pack 4` ne doit pas modifier ces surfaces
+- pendant ce freeze, `Pack 4` est limite a:
+  - `project-os observability doctor`
+  - audits de retention / privacy / gates
+  - surfaces CLI et rapports locaux non invasifs
+  - preparation documentaire des integrations futures
+
 Travaux:
 
 - ajouter au dashboard:
@@ -1004,6 +1046,11 @@ But:
 - verifier qu'il ne regress pas apres les packs systeme
 - decider explicitement s'il faut ouvrir un pack supplementaire de correction
 
+Prerequis:
+
+- le freeze du `bot live Discord` et de l'`app / dashboard` a ete leve par leurs chantiers propres
+- la surface a auditer est consideree assez stable pour etre jugee contre la vision cible
+
 Nature du pack:
 
 - c'est un audit final avant correction eventuelle
@@ -1022,10 +1069,17 @@ Perimetre d'audit:
 
 Outils d'audit a utiliser:
 
+- `project-os debug discord-audit`
 - `python scripts/discord_facade_smoke.py`
 - `python scripts/project_os_tests.py --suite discord-facade-live`
 - `python scripts/project_os_tests.py --suite discord-persona-live`
 - scenarios `manual/live acceptance` du harness
+
+Commande canonique:
+
+- `project-os debug discord-audit` lit un rapport existant et rend un verdict `coherent / non_coherent / inconclusive`
+- `project-os debug discord-audit --run-live --layer smoke --layer persona` execute le harness cheap `Haiku`, produit un rapport canonique et prepare l'audit final sans toucher au bot ou a l'app
+- tant que le freeze n'est pas leve ou que les checks manuels restent `pending`, le verdict doit rester `inconclusive`
 
 Touchpoints principaux:
 
@@ -1047,6 +1101,14 @@ Regle:
 
 - si l'audit est vert ou acceptable avec ecarts connus, la roadmap `Debug System v1` peut etre cloturee sans modifier le debug live Discord
 - si l'audit n'est pas acceptable, on ouvre un pack supplementaire dedie, borne par les constats de l'audit
+
+Rappel a relire avant de cloturer `Pack 6`:
+
+- ne pas oublier de relancer `project-os debug discord-audit --run-live --layer smoke --layer persona --allow-missing-anthropic` quand le chantier Discord est stabilise
+- ne pas oublier de completer les checks `manual/live acceptance` puis de relancer `project-os debug discord-audit --manual-status-path ... --freeze-lifted`
+- tant que le verdict reste `inconclusive`, `Pack 6` n'est pas termine
+- si le verdict devient `non_coherent`, on n'improvise pas de patch flou: on ouvre le `Pack supplementaire - Corrections du debug live Discord`
+- si le verdict devient `coherent`, `Pack 6` peut etre cloture proprement
 
 Critere d'acceptation:
 

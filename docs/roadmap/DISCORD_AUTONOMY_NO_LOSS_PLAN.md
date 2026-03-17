@@ -113,7 +113,14 @@ La bonne cible est:
 En pratique:
 
 - `Discord` = cockpit conversationnel
+- `Project OS.exe` = future surface locale pilotable principale
 - `Project OS` = verite canonique + pipeline long contexte + artefacts
+
+Corollaire:
+
+- ce plan ne doit pas etre lu comme une exclusivite `Discord-only`
+- la future app locale devra relire les etats, deliveries et activites produits ici
+- la no-loss policy Discord reste valable meme quand l'app locale devient la surface fondatrice
 
 ## Contraintes externes confirmees
 

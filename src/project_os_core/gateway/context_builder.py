@@ -32,6 +32,7 @@ class GatewayContextBundle:
     mood_hint: MoodHint
     session_brief: str
     handoff_contract: HandoffContract
+    surface: str = "discord"
     recent_thread_messages: tuple[ThreadTurn, ...] = ()
     recent_operator_replies: tuple[ThreadTurn, ...] = ()
     conversation_key: str | None = None
@@ -45,6 +46,11 @@ class GatewayContextBundle:
     working_set_summary: str = ""
     pending_approvals_summary: str = ""
     project_continuity_summary: str = ""
+    founder_session_key: str | None = None
+    founder_session_spine_summary: str = ""
+    status_request_mode: str = "none"
+    desktop_control_plane_handoff: str = ""
+    desktop_control_plane_views: tuple[str, ...] = ()
 
 
 class GatewayContextBuilder:
@@ -74,8 +80,23 @@ class GatewayContextBuilder:
         sensitivity = self._candidate_sensitivity(candidate)
         mood_hint = self._classify_mood(raw_user_intent)
         query_scope = self._classify_query_scope(raw_user_intent)
-        include_deep_context = query_scope not in {"identity", "runtime_truth"}
-        session_brief = self.session_state.build_context_brief(snapshot=snapshot) if include_deep_context else ""
+        status_request_mode = self._status_request_mode(
+            message=raw_user_intent,
+            query_scope=query_scope,
+            candidate=candidate,
+        )
+        minimal_context_only = self._should_use_minimal_context(
+            message=raw_user_intent,
+            query_scope=query_scope,
+            candidate=candidate,
+        )
+        include_deep_context = query_scope not in {"identity", "runtime_truth"} and not minimal_context_only
+        include_session_metrics = include_deep_context and status_request_mode != "none"
+        session_brief = (
+            self.session_state.build_context_brief(snapshot=snapshot, mode=status_request_mode)
+            if include_session_metrics
+            else ""
+        )
         recent_thread_messages = (
             self._load_recent_thread_messages(
                 surface=event.surface,
@@ -110,13 +131,17 @@ class GatewayContextBuilder:
             target_model=decision.model_route.model or decision.model_route.provider,
             raw_user_intent=raw_user_intent,
             decisions_taken=self._decisions_taken(envelope=envelope, candidate=candidate, decision=decision, binding=binding),
-            pending_questions=self._pending_questions(snapshot=snapshot, include_deep_context=include_deep_context),
+            pending_questions=self._pending_questions(
+                snapshot=snapshot,
+                include_pending_questions=status_request_mode == "detailed",
+            ),
             context_snapshot=self._context_snapshot(
                 snapshot=snapshot,
                 recent_thread_messages=recent_thread_messages,
                 recent_operator_replies=recent_operator_replies,
                 query_scope=query_scope,
                 include_deep_context=include_deep_context,
+                include_session_metrics=include_session_metrics,
             ),
             style_overrides=dict(mood_hint.style_overrides),
             reason=decision.route_reason,
@@ -124,19 +149,28 @@ class GatewayContextBuilder:
         long_context_digest = candidate.metadata.get("long_context_digest")
         if not isinstance(long_context_digest, dict):
             long_context_digest = None
-        project_continuity_summary = (
-            self._build_project_continuity_summary(
+        founder_session_key = self._founder_session_key(
+            event=event,
+            snapshot=snapshot,
+            decision=decision,
+        )
+        project_continuity_payload = (
+            self._build_project_continuity_payload(
                 event=event,
                 envelope=envelope,
                 candidate=candidate,
                 decision=decision,
                 snapshot=snapshot,
                 conversation_key=conversation_key,
+                founder_session_key=founder_session_key,
             )
             if include_deep_context
-            else ""
+            else {}
         )
+        project_continuity_summary = str(project_continuity_payload.get("summary") or "").strip()
+        desktop_control_plane_views = self._desktop_control_plane_views(raw_user_intent, status_request_mode=status_request_mode)
         return GatewayContextBundle(
+            surface=event.surface,
             mood_hint=mood_hint,
             session_brief=session_brief,
             handoff_contract=handoff_contract,
@@ -153,9 +187,22 @@ class GatewayContextBuilder:
             working_set_summary=self._render_working_set_summary(candidate),
             pending_approvals_summary=self._render_pending_approvals_summary(candidate),
             project_continuity_summary=project_continuity_summary,
+            founder_session_key=founder_session_key,
+            founder_session_spine_summary=self._render_founder_session_spine(
+                candidate=candidate,
+                founder_session_key=founder_session_key,
+                project_continuity_payload=project_continuity_payload,
+            ),
+            status_request_mode=status_request_mode,
+            desktop_control_plane_handoff=self._desktop_control_plane_handoff_text(
+                surface=event.surface,
+                status_request_mode=status_request_mode,
+                views=desktop_control_plane_views,
+            ),
+            desktop_control_plane_views=desktop_control_plane_views,
         )
 
-    def _build_project_continuity_summary(
+    def _build_project_continuity_payload(
         self,
         *,
         event: ChannelEvent,
@@ -164,9 +211,10 @@ class GatewayContextBuilder:
         decision: RoutingDecision,
         snapshot: SessionSnapshot,
         conversation_key: str | None,
-    ) -> str:
+        founder_session_key: str | None,
+    ) -> dict[str, Any]:
         if self.memory_os is None:
-            return ""
+            return {}
         retrieval_context = RetrievalContext(
             query=str(envelope.metadata.get("raw_operator_text") or event.message.text).strip(),
             user_id=str(event.message.actor_id or "founder"),
@@ -181,10 +229,12 @@ class GatewayContextBuilder:
             tags=[str(candidate.metadata.get("input_profile") or "").strip()],
             limit=5,
             include_private_full=False,
-            metadata={"channel_event_id": event.event_id},
+            metadata={
+                "channel_event_id": event.event_id,
+                "founder_session_key": founder_session_key,
+            },
         )
-        continuity = self.memory_os.build_project_continuity_brief(context=retrieval_context)
-        return str(continuity.get("summary") or "").strip()
+        return self.memory_os.build_project_continuity_brief(context=retrieval_context)
 
     @staticmethod
     def _render_thread_ledger_summary(candidate) -> str:
@@ -250,6 +300,54 @@ class GatewayContextBuilder:
                 digest_line = f"{digest_line} | questions: {'; '.join(str(part) for part in questions[:2])}"
             lines.append(digest_line)
         return "\n".join(lines).strip()
+
+    @classmethod
+    def _render_founder_session_spine(
+        cls,
+        *,
+        candidate,
+        founder_session_key: str | None,
+        project_continuity_payload: dict[str, Any],
+    ) -> str:
+        lines: list[str] = []
+        if founder_session_key:
+            lines.append(f"- session fondatrice: {founder_session_key}")
+        active_subject = str(candidate.metadata.get("thread_active_subject") or "").strip()
+        if active_subject:
+            lines.append(f"- sujet actif: {cls._trim(active_subject, limit=180)}")
+        recent_decisions = candidate.metadata.get("thread_recent_decisions") or []
+        if isinstance(recent_decisions, list):
+            cleaned = [cls._trim(str(item).strip(), limit=160) for item in recent_decisions if str(item).strip()]
+            for decision in cleaned[:2]:
+                lines.append(f"- decision recente: {decision}")
+        next_step = str(candidate.metadata.get("thread_next_step") or "").strip()
+        if not next_step:
+            deferred = project_continuity_payload.get("deferred_gaps")
+            if isinstance(deferred, list) and deferred:
+                first_gap = deferred[0]
+                if isinstance(first_gap, dict):
+                    next_step = str(first_gap.get("summary") or "").strip()
+        if next_step:
+            lines.append(f"- prochain pas proche: {cls._trim(next_step, limit=160)}")
+        last_pdf = str(candidate.metadata.get("thread_last_pdf_artifact_id") or "").strip()
+        last_artifact = str(candidate.metadata.get("thread_last_artifact_id") or "").strip()
+        if last_pdf:
+            lines.append(f"- dernier artefact utile: {last_pdf}")
+        elif last_artifact:
+            lines.append(f"- dernier artefact utile: {last_artifact}")
+        approval_ids = candidate.metadata.get("thread_pending_approval_ids") or []
+        if isinstance(approval_ids, list):
+            cleaned_approvals = [str(item).strip() for item in approval_ids if str(item).strip()]
+            if cleaned_approvals:
+                lines.append(f"- approval utile en attente: {cleaned_approvals[0]}")
+        continuity_decisions = project_continuity_payload.get("recent_decisions")
+        if isinstance(continuity_decisions, list) and continuity_decisions and not recent_decisions:
+            first_decision = continuity_decisions[0]
+            if isinstance(first_decision, dict):
+                summary = str(first_decision.get("summary") or "").strip()
+                if summary:
+                    lines.append(f"- rappel projet recent: {cls._trim(summary, limit=160)}")
+        return "\n".join(lines)
 
     @staticmethod
     def _candidate_sensitivity(candidate) -> SensitivityClass:
@@ -342,6 +440,24 @@ class GatewayContextBuilder:
                     return branch_name
         return None
 
+    def _founder_session_key(
+        self,
+        *,
+        event: ChannelEvent,
+        snapshot: SessionSnapshot,
+        decision: RoutingDecision,
+    ) -> str:
+        del decision
+        actor_id = str(event.message.actor_id or "founder").strip() or "founder"
+        explicit_key = str(event.message.metadata.get("founder_session_key") or "").strip()
+        if explicit_key:
+            return explicit_key
+        branch_name = self._active_branch_name(snapshot)
+        if branch_name:
+            return f"{actor_id}:branch:{branch_name}"
+        conversation_key = str(event.message.thread_ref.external_thread_id or event.message.thread_ref.thread_id or "").strip()
+        return f"{actor_id}:thread:{conversation_key or 'default'}"
+
     @classmethod
     def _render_recent_operator_reply_text(cls, reply: dict[str, Any]) -> str:
         summary = str(reply.get("summary") or "").strip()
@@ -397,6 +513,7 @@ class GatewayContextBuilder:
         recent_operator_replies: tuple[ThreadTurn, ...],
         query_scope: str,
         include_deep_context: bool,
+        include_session_metrics: bool,
     ) -> str:
         if not include_deep_context:
             return (
@@ -405,6 +522,13 @@ class GatewayContextBuilder:
             )
         founder_tail = recent_thread_messages[-1].text if recent_thread_messages else "none"
         operator_tail = recent_operator_replies[-1].text if recent_operator_replies else "none"
+        if not include_session_metrics:
+            return (
+                f"scope={query_scope}; "
+                f"last_founder_message_at={snapshot.last_founder_message_at or 'none'}; "
+                f"thread_tail_founder={self._trim(founder_tail, limit=120)}; "
+                f"thread_tail_operator={self._trim(operator_tail, limit=120)}"
+            )
         return (
             f"active_runs={len(snapshot.active_runs)}; "
             f"pending_clarifications={len(snapshot.pending_clarifications)}; "
@@ -430,8 +554,8 @@ class GatewayContextBuilder:
         return decisions
 
     @staticmethod
-    def _pending_questions(*, snapshot: SessionSnapshot, include_deep_context: bool) -> list[str]:
-        if not include_deep_context:
+    def _pending_questions(*, snapshot: SessionSnapshot, include_pending_questions: bool) -> list[str]:
+        if not include_pending_questions:
             return []
         return [
             str(item.get("question") or "").strip()
@@ -495,6 +619,132 @@ class GatewayContextBuilder:
         ascii_text = "".join(char for char in normalized if not unicodedata.combining(char))
         cleaned = re.sub(r"[^a-z0-9\s]", " ", ascii_text)
         return re.sub(r"\s+", " ", cleaned).strip()
+
+    @classmethod
+    def _should_use_minimal_context(cls, *, message: str, query_scope: str, candidate) -> bool:
+        if query_scope != "contextual":
+            return False
+        input_profile = str(candidate.metadata.get("input_profile") or "").strip().lower()
+        if input_profile and input_profile != "short_text":
+            return False
+        normalized = cls._normalize_scope_text(message)
+        if not normalized:
+            return False
+        greetings = {"wesh", "yo", "hey", "hello", "salut", "bonjour", "bonsoir", "coucou", "cc"}
+        tokens = normalized.split()
+        return bool(tokens) and len(tokens) <= 3 and all(token in greetings for token in tokens)
+
+    @classmethod
+    def _status_request_mode(cls, *, message: str, query_scope: str, candidate) -> str:
+        del candidate
+        if query_scope != "contextual":
+            return "none"
+        normalized = cls._normalize_scope_text(message)
+        if not normalized:
+            return "none"
+        summary_patterns = (
+            "queue",
+            "en queue",
+            "backlog",
+            "combien de missions",
+            "combien de taches",
+            "combien de tasks",
+            "combien de runs",
+            "combien d approvals",
+            "combien d approbations",
+            "combien de pending",
+            "ou en est on",
+            "ou on en est",
+            "statut",
+            "status",
+            "etat",
+            "health",
+            "sante",
+            "en attente",
+        )
+        detailed_patterns = (
+            "detail",
+            "details",
+            "detaille",
+            "detaillee",
+            "detaillees",
+            "complet",
+            "complete",
+            "dashboard",
+            "debug",
+            "trace",
+            "traces",
+            "logs",
+            "gateway",
+            "cout",
+            "usage",
+            "modele",
+            "provider",
+            "budget",
+            "deliveries",
+            "delivery",
+        )
+        is_status_request = any(pattern in normalized for pattern in summary_patterns)
+        count_question = normalized.startswith("combien") and any(
+            token in normalized
+            for token in (
+                "mission",
+                "missions",
+                "tache",
+                "taches",
+                "task",
+                "tasks",
+                "run",
+                "runs",
+                "approval",
+                "approbation",
+                "pending",
+                "queue",
+                "backlog",
+            )
+        )
+        gateway_status_question = (
+            "gateway" in normalized
+            and any(token in normalized for token in ("statut", "status", "etat", "health", "sante", "marche", "down", "up"))
+        )
+        provider_status_question = (
+            any(token in normalized for token in ("provider", "modele", "cout", "usage"))
+            and any(token in normalized for token in ("quel", "quelle", "quels", "status", "statut", "etat", "utilise", "utilisee", "actuel"))
+        )
+        if not (is_status_request or count_question or gateway_status_question or provider_status_question):
+            return "none"
+        if any(pattern in normalized for pattern in detailed_patterns):
+            return "detailed"
+        return "summary"
+
+    @classmethod
+    def _desktop_control_plane_views(cls, message: str, *, status_request_mode: str) -> tuple[str, ...]:
+        if status_request_mode == "none":
+            return ()
+        normalized = cls._normalize_scope_text(message)
+        if any(token in normalized for token in ("queue", "backlog", "mission", "missions", "run", "runs", "pending")):
+            return ("Home", "Session", "Runs", "Discord")
+        if any(token in normalized for token in ("gateway", "health", "sante", "delivery", "deliveries")):
+            return ("Home", "Discord")
+        if any(token in normalized for token in ("cout", "usage", "modele", "provider", "budget")):
+            return ("Home", "Costs", "Session")
+        return ("Home", "Session")
+
+    @staticmethod
+    def _desktop_control_plane_handoff_text(
+        *,
+        surface: str,
+        status_request_mode: str,
+        views: tuple[str, ...],
+    ) -> str:
+        if str(surface or "").strip().lower() != "discord":
+            return ""
+        if status_request_mode == "none" or not views:
+            return ""
+        path = " / ".join(views)
+        if status_request_mode == "detailed":
+            return f"Je te donne la synthese ici. Pour le detail operatoire, ouvre Project OS.exe > {path}."
+        return f"Si tu veux le detail operatoire, ouvre Project OS.exe > {path}."
 
     @staticmethod
     def _classify_mood(message: str) -> MoodHint:

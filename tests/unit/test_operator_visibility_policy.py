@@ -112,7 +112,7 @@ class StandardReplyPolicyTests(unittest.TestCase):
 
         self.assertEqual(
             rendered,
-            "En ce moment: 2 runs actifs, 1 clarification en attente, 0 contrats en attente. Budget 2.50/10.00 EUR.",
+            "En ce moment: 2 runs actifs, 1 clarification en attente, 0 contrats en attente. Budget 2.50/10.00 EUR. Pour le detail operatoire, ouvre Project OS.exe > Home / Session / Runs / Discord.",
         )
 
     def test_summarize_standard_session_action_hides_internal_action_names(self):

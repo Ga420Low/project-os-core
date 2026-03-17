@@ -10,9 +10,13 @@ from typing import Any
 from .api_runs.dashboard import serve_dashboard
 from .bootstrap import bootstrap_environment, doctor_report, health_snapshot
 from .config import repo_root as resolve_repo_root
+from .debug_discord_audit import build_discord_debug_audit_report
+from .debug_health import build_debug_system_report
+from .debug_resilience import build_resilience_report, reconcile_debug_state, scan_debug_orphans
 from .docs_audit import audit_docs
 from .gateway.openclaw_adapter import build_dispatch_from_openclaw_payload
 from .mission.chain import STANDARD_CHAINS
+from .project_review import build_project_review_report, render_project_review_markdown
 from .research_scaffold import ResearchScaffoldRequest, scaffold_research
 from .models import (
     ActionRiskClass,
@@ -23,6 +27,8 @@ from .models import (
     ChannelEvent,
     ConversationThreadRef,
     DecisionStatus,
+    IncidentSeverity,
+    IncidentStatus,
     MemoryLayer,
     MemoryTier,
     MemoryType,
@@ -85,12 +91,111 @@ def main(argv: list[str] | None = None) -> int:
     docs_research_parser.add_argument("--recent-days", type=int, default=30)
     docs_research_parser.add_argument("--overwrite", action="store_true")
 
+    review_parser = subparsers.add_parser("review")
+    review_sub = review_parser.add_subparsers(dest="review_command", required=True)
+    review_status = review_sub.add_parser("status")
+    review_status.add_argument("--checklist-path")
+    review_status.add_argument("--include-historical-docs", action="store_true")
+    review_status.add_argument("--limit", type=int, default=12)
+    review_status.add_argument("--markdown", action="store_true")
+    review_status.add_argument("--strict", action="store_true")
+
+    observability_parser = subparsers.add_parser("observability")
+    observability_sub = observability_parser.add_subparsers(dest="observability_command", required=True)
+    observability_doctor = observability_sub.add_parser("doctor")
+    observability_doctor.add_argument("--strict", action="store_true")
+    observability_doctor.add_argument("--limit", type=int, default=8)
+    observability_doctor.add_argument("--repair", action="store_true")
+
+    debug_parser = subparsers.add_parser("debug")
+    debug_sub = debug_parser.add_subparsers(dest="debug_command", required=True)
+    debug_trace = debug_sub.add_parser("trace")
+    debug_trace.add_argument("correlation_id")
+    debug_replay = debug_sub.add_parser("replay")
+    debug_replay.add_argument("identifier")
+    debug_replay.add_argument("--force", action="store_true")
+    debug_orphan_scan = debug_sub.add_parser("orphan-scan")
+    debug_orphan_scan.add_argument("--limit", type=int, default=50)
+    debug_reconcile = debug_sub.add_parser("reconcile")
+    debug_reconcile.add_argument("--repair", action="store_true")
+    debug_reconcile.add_argument("--limit", type=int, default=50)
+    debug_discord_audit = debug_sub.add_parser("discord-audit")
+    debug_discord_audit.add_argument("--report-path")
+    debug_discord_audit.add_argument("--previous-report-path")
+    debug_discord_audit.add_argument("--manual-status-path")
+    debug_discord_audit.add_argument("--freeze-lifted", action="store_true")
+    debug_discord_audit.add_argument("--run-live", action="store_true")
+    debug_discord_audit.add_argument("--layer", action="append", default=[], choices=("smoke", "persona", "all"))
+    debug_discord_audit.add_argument("--allow-missing-anthropic", action="store_true")
+    debug_discord_audit.add_argument("--anthropic-model", default="claude-haiku-4-5-20251001")
+    debug_discord_audit.add_argument("--runtime-base-dir")
+    debug_discord_audit.add_argument("--limit", type=int, default=50)
+    debug_discord_audit.add_argument("--strict", action="store_true")
+    debug_incidents = debug_sub.add_parser("incidents")
+    debug_incidents.add_argument("--status", choices=[item.value for item in IncidentStatus])
+    debug_incidents.add_argument("--severity", choices=[item.value for item in IncidentSeverity])
+    debug_incidents.add_argument("--limit", type=int, default=20)
+    debug_incident_open = debug_sub.add_parser("open-incident")
+    debug_incident_open.add_argument("--severity", choices=[item.value for item in IncidentSeverity], required=True)
+    debug_incident_open.add_argument("--summary", required=True)
+    debug_incident_open.add_argument("--symptom", required=True)
+    debug_incident_open.add_argument("--root-cause")
+    debug_incident_open.add_argument("--fix-summary")
+    debug_incident_open.add_argument("--source-id", action="append", default=[])
+    debug_incident_open.add_argument("--verification-ref", action="append", default=[])
+    debug_incident_open.add_argument("--correlation-id")
+    debug_incident_open.add_argument("--run-id")
+    debug_incident_open.add_argument("--mission-run-id")
+    debug_incident_open.add_argument("--dispatch-id")
+    debug_incident_open.add_argument("--channel-event-id")
+    debug_incident_open.add_argument("--replay-id")
+    debug_incident_open.add_argument("--dead-letter-id")
+    debug_incident_open.add_argument("--eval-case-id")
+    debug_incident_open.add_argument("--metadata")
+    debug_incident_from_dead_letter = debug_sub.add_parser("incident-from-dead-letter")
+    debug_incident_from_dead_letter.add_argument("--dead-letter-id", required=True)
+    debug_incident_from_dead_letter.add_argument("--severity", choices=[item.value for item in IncidentSeverity], default=IncidentSeverity.P1.value)
+    debug_incident_from_dead_letter.add_argument("--summary")
+    debug_incident_from_dead_letter.add_argument("--symptom")
+    debug_incident_from_dead_letter.add_argument("--metadata")
+    debug_incident_status = debug_sub.add_parser("incident-set-status")
+    debug_incident_status.add_argument("--incident-id", required=True)
+    debug_incident_status.add_argument("--status", choices=[item.value for item in IncidentStatus], required=True)
+    debug_incident_status.add_argument("--fix-summary")
+    debug_incident_status.add_argument("--root-cause")
+    debug_incident_status.add_argument("--verification-ref", action="append", default=[])
+    debug_incident_status.add_argument("--latest-eval-run-id")
+    debug_incident_status.add_argument("--metadata")
+
     research_parser = subparsers.add_parser("research")
     research_sub = research_parser.add_subparsers(dest="research_command", required=True)
     research_run_job = research_sub.add_parser("run-job")
     research_run_job.add_argument("--job-path", required=True)
     research_run_lane = research_sub.add_parser("run-lane")
     research_run_lane.add_argument("--lane-request", required=True)
+    research_resume_job = research_sub.add_parser("resume-job")
+    research_resume_job.add_argument("--job-id")
+    research_resume_job.add_argument("--job-path")
+    research_resume_job.add_argument("--force", action="store_true")
+    research_resume_job.add_argument("--stale-after-minutes", type=int, default=15)
+    research_resume_incomplete = research_sub.add_parser("resume-incomplete")
+    research_resume_incomplete.add_argument("--limit", type=int, default=10)
+    research_resume_incomplete.add_argument("--force", action="store_true")
+    research_resume_incomplete.add_argument("--stale-after-minutes", type=int, default=15)
+
+    eval_parser = subparsers.add_parser("eval")
+    eval_sub = eval_parser.add_subparsers(dest="eval_command", required=True)
+    eval_seed = eval_sub.add_parser("seed-from-candidates")
+    eval_seed.add_argument("--suite-id", required=True)
+    eval_seed.add_argument("--limit", type=int, default=25)
+    eval_seed.add_argument("--target-system")
+    eval_list = eval_sub.add_parser("list-cases")
+    eval_list.add_argument("--suite-id")
+    eval_list.add_argument("--limit", type=int, default=50)
+    eval_run = eval_sub.add_parser("run")
+    eval_run.add_argument("--suite-id", required=True)
+    eval_run.add_argument("--case-id", action="append", default=[])
+    eval_run.add_argument("--target-system")
 
     secrets_parser = subparsers.add_parser("secrets")
     secrets_sub = secrets_parser.add_subparsers(dest="secrets_command", required=True)
@@ -478,9 +583,132 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
         return 0
+    if args.command == "review" and args.review_command == "status":
+        services = build_app_services(config_path=args.config_path, policy_path=args.policy_path)
+        try:
+            payload = build_project_review_report(
+                services,
+                checklist_path=args.checklist_path,
+                include_historical_docs=bool(args.include_historical_docs),
+                limit=int(args.limit),
+            )
+        finally:
+            services.close()
+        if bool(args.markdown):
+            print(render_project_review_markdown(payload))
+        else:
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+        return 1 if bool(args.strict) and str(payload.get("status") or "").lower() != "ok" else 0
 
     services = build_app_services(config_path=args.config_path, policy_path=args.policy_path)
     try:
+        if args.command == "debug" and args.debug_command == "replay":
+            payload = services.gateway.replay_identifier(args.identifier, force=bool(args.force))
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0 if payload.get("status") in {"completed", "reused"} or payload.get("reused_existing") else 1
+        if args.command == "debug" and args.debug_command == "orphan-scan":
+            payload = scan_debug_orphans(services, limit=int(args.limit))
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0 if str(payload.get("status") or "").lower() == "ok" else 1
+        if args.command == "debug" and args.debug_command == "reconcile":
+            payload = reconcile_debug_state(services, repair=bool(args.repair), limit=int(args.limit))
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0 if str(payload.get("status") or "").lower() == "ok" else 1
+        if args.command == "debug" and args.debug_command == "discord-audit":
+            payload = build_discord_debug_audit_report(
+                services,
+                report_path=args.report_path,
+                previous_report_path=args.previous_report_path,
+                manual_status_path=args.manual_status_path,
+                freeze_lifted=bool(args.freeze_lifted),
+                run_live=bool(args.run_live),
+                layers=tuple(args.layer or ("smoke", "persona")),
+                allow_missing_anthropic=bool(args.allow_missing_anthropic),
+                anthropic_model=args.anthropic_model,
+                policy_path=args.policy_path,
+                runtime_base_dir=args.runtime_base_dir,
+                limit=int(args.limit),
+            )
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            audit_status = str(payload.get("status") or "").lower()
+            if audit_status == "non_coherent":
+                return 1
+            if bool(args.strict) and audit_status != "coherent":
+                return 1
+            return 0
+        if args.command == "observability" and args.observability_command == "doctor":
+            debug_report = build_debug_system_report(services, limit=int(args.limit))
+            resilience_report = build_resilience_report(services, limit=int(args.limit))
+            statuses = {
+                str(debug_report.get("status") or "").lower(),
+                str(resilience_report.get("status") or "").lower(),
+            }
+            payload = {
+                **debug_report,
+                "status": "breach" if "breach" in statuses else ("attention" if "attention" in statuses else "ok"),
+                "debug_system": debug_report,
+                "resilience": resilience_report,
+            }
+            if bool(args.repair):
+                payload["repair"] = reconcile_debug_state(services, repair=True, limit=int(args.limit))
+                repair_status = str(payload["repair"].get("status") or "").lower()
+                if repair_status == "breach":
+                    payload["status"] = "breach"
+                elif repair_status == "attention" and payload["status"] == "ok":
+                    payload["status"] = "attention"
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 1 if bool(args.strict) and str(payload.get("status") or "").lower() == "breach" else 0
+        if args.command == "debug" and args.debug_command == "incidents":
+            payload = services.incidents.list_incidents(
+                status=args.status,
+                severity=args.severity,
+                limit=int(args.limit),
+            )
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0
+        if args.command == "debug" and args.debug_command == "open-incident":
+            payload = services.incidents.create_incident(
+                severity=args.severity,
+                summary=args.summary,
+                symptom=args.symptom,
+                root_cause_hypothesis=args.root_cause,
+                fix_summary=args.fix_summary,
+                source_ids=list(args.source_id or []),
+                verification_refs=list(args.verification_ref or []),
+                correlation_id=args.correlation_id,
+                run_id=args.run_id,
+                mission_run_id=args.mission_run_id,
+                dispatch_id=args.dispatch_id,
+                channel_event_id=args.channel_event_id,
+                replay_id=args.replay_id,
+                dead_letter_id=args.dead_letter_id,
+                eval_case_id=args.eval_case_id,
+                metadata=_json_arg(args.metadata),
+            )
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0
+        if args.command == "debug" and args.debug_command == "incident-from-dead-letter":
+            payload = services.incidents.create_from_dead_letter(
+                dead_letter_id=args.dead_letter_id,
+                severity=args.severity,
+                summary=args.summary,
+                symptom=args.symptom,
+                metadata=_json_arg(args.metadata),
+            )
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0
+        if args.command == "debug" and args.debug_command == "incident-set-status":
+            payload = services.incidents.update_incident_status(
+                incident_id=args.incident_id,
+                status=args.status,
+                fix_summary=args.fix_summary,
+                root_cause_hypothesis=args.root_cause,
+                verification_refs=list(args.verification_ref or []),
+                latest_eval_run_id=args.latest_eval_run_id,
+                metadata=_json_arg(args.metadata),
+            )
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0
         if args.command == "research" and args.research_command == "run-job":
             payload = services.deep_research.run_job_path(job_path=args.job_path)
             print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
@@ -489,6 +717,46 @@ def main(argv: list[str] | None = None) -> int:
             payload = services.deep_research.run_lane_path(lane_request_path=args.lane_request)
             print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
             return 0 if payload.get("status") == "completed" else 1
+        if args.command == "research" and args.research_command == "resume-job":
+            payload = services.deep_research.resume_job(
+                job_id=args.job_id,
+                job_path=args.job_path,
+                force=bool(args.force),
+                stale_after_minutes=int(args.stale_after_minutes),
+            )
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0 if str(payload.get("status") or "").lower() not in {"failed"} else 1
+        if args.command == "research" and args.research_command == "resume-incomplete":
+            payload = services.deep_research.resume_incomplete_jobs(
+                limit=int(args.limit),
+                force=bool(args.force),
+                stale_after_minutes=int(args.stale_after_minutes),
+            )
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0
+        if args.command == "eval" and args.eval_command == "seed-from-candidates":
+            payload = services.evals.seed_cases_from_candidates(
+                suite_id=args.suite_id,
+                limit=int(args.limit),
+                target_system=args.target_system,
+            )
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0
+        if args.command == "eval" and args.eval_command == "list-cases":
+            payload = services.evals.list_cases(
+                suite_id=args.suite_id,
+                limit=int(args.limit),
+            )
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0
+        if args.command == "eval" and args.eval_command == "run":
+            payload = services.evals.run_suite(
+                suite_id=args.suite_id,
+                case_ids=list(args.case_id or []),
+                target_system=args.target_system,
+            )
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0 if payload.get("status") == "passed" else 1
         if args.command == "secrets" and args.secrets_command == "doctor":
             print(json.dumps(services.secret_resolver.source_report(), indent=2, ensure_ascii=True, sort_keys=True))
             return 0
@@ -762,6 +1030,11 @@ def main(argv: list[str] | None = None) -> int:
             payload = services.gateway.backfill_stateful_recent(since_hours=_parse_since_hours(args.since))
             print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
             return 0
+
+        if args.command == "debug" and args.debug_command == "trace":
+            payload = services.database.fetch_trace_report(args.correlation_id)
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0 if payload.get("found") else 1
 
         if args.command == "openclaw":
             if args.openclaw_command == "bootstrap":
@@ -1144,8 +1417,10 @@ def _add_learning_decision_args(parser: argparse.ArgumentParser) -> None:
 
 def _router_intent_from_args(args) -> MissionIntent:
     metadata = _json_arg(args.metadata)
+    correlation_id = str(metadata.get("correlation_id") or "").strip() or new_id("correlation")
     metadata.update(
         {
+            "correlation_id": correlation_id,
             "daily_spend_estimate_eur": args.daily_spend_estimate_eur,
             "monthly_spend_estimate_eur": args.monthly_spend_estimate_eur,
             "paths": args.path,
@@ -1179,16 +1454,24 @@ def _router_intent_from_args(args) -> MissionIntent:
         target_profile=envelope.target_profile,
         requested_worker=envelope.requested_worker,
         requested_risk_class=envelope.requested_risk_class,
+        correlation_id=correlation_id,
         metadata=envelope.metadata,
     )
 
 
 def _gateway_event_from_args(args) -> ChannelEvent:
+    message_metadata = _json_arg(args.metadata)
+    correlation_id = str(message_metadata.get("correlation_id") or "").strip() or new_id("correlation")
+    message_metadata["correlation_id"] = correlation_id
     thread_ref = ConversationThreadRef(
         thread_id=args.thread_id,
         channel=args.channel,
         external_thread_id=args.external_thread_id,
-        metadata={"surface": args.surface},
+        metadata={
+            "surface": args.surface,
+            "correlation_id": correlation_id,
+            "conversation_key": args.external_thread_id or args.thread_id,
+        },
     )
     attachments = [
         OperatorAttachment(
@@ -1210,9 +1493,10 @@ def _gateway_event_from_args(args) -> ChannelEvent:
             text=args.text,
             thread_ref=thread_ref,
             attachments=attachments,
-            metadata=_json_arg(args.metadata),
+            metadata=message_metadata,
         ),
         raw_payload={"source": "cli"},
+        correlation_id=correlation_id,
     )
 
 
@@ -1410,6 +1694,14 @@ def _execute_scheduler_task(services, command: str, args_dict: dict[str, Any]) -
             "run_id": result.run_id if result else None,
             "status": result.status.value if result else None,
             "branch_name": branch_name,
+        }
+    if command == "project_review_loop":
+        payload = build_project_review_report(services, limit=int(args_dict.get("limit", 12)))
+        return {
+            "status": payload["status"],
+            "artifact_json_path": payload.get("artifact_json_path"),
+            "artifact_markdown_path": payload.get("artifact_markdown_path"),
+            "founder_review_count": payload.get("summary", {}).get("founder_review_count", 0),
         }
     if command == "cleanup_deliveries":
         max_age = int(args_dict.get("max_age_hours", 48))

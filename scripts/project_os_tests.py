@@ -50,9 +50,20 @@ SUITE_COMMANDS = {
             ],
         )
     ],
+    "discord-cross-surface-live": [
+        (
+            "discord founder cross-surface evals (gateway + desktop handshake rails)",
+            [
+                sys.executable,
+                "scripts/discord_facade_smoke.py",
+                "--layer",
+                "cross-surface",
+            ],
+        )
+    ],
     "discord-full-live": [
         (
-            "discord facade + persona regression (live Haiku full layers)",
+            "discord facade + persona + cross-surface regression (live Haiku full layers)",
             [
                 sys.executable,
                 "scripts/discord_facade_smoke.py",
@@ -135,6 +146,7 @@ SUITE_ESTIMATES = {
     "smoke": "~ 2 min",
     "discord-facade-live": "~ 2-5 min + low Anthropic cost",
     "discord-persona-live": "~ 3-6 min + low Anthropic cost",
+    "discord-cross-surface-live": "~ 1-3 min, mostly gateway-only",
     "discord-full-live": "~ 5-10 min + low Anthropic cost",
     "gateway": "~ 3 min",
     "full": "several minutes",
