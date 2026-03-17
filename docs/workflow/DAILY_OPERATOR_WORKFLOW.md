@@ -77,14 +77,14 @@ pos approve-contract --id xxx
 ### Recevoir un resultat
 
 ```
-Systeme:   "project-os/audit-memory termine - 3 issues trouvees, aucune critique.
+Systeme:   "codex/project-os-audit-memory termine - 3 issues trouvees, aucune critique.
             0.28EUR. Review dispo quand tu veux."
 ```
 
 ### Repondre a une clarification
 
 ```
-Systeme:   "Question sur project-os/refactor-memory -
+Systeme:   "Question sur codex/project-os-refactor-memory -
             Deux modules se bloquent. A) Separer (recommande) B) Fusionner
             Pas urgent, j'ai 4h. Si tu reponds pas je fais A."
 Fondateur: "A"

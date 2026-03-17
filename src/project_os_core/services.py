@@ -7,6 +7,17 @@ from .config import RuntimeConfig, load_runtime_config
 from .database import CanonicalDatabase
 from .deep_research import DeepResearchService
 from .gateway.openclaw_live import OpenClawLiveService
+from .gateway.stateful import (
+    AnalysisObjectService,
+    ArtifactLedgerService,
+    BundleComposerService,
+    ConversationBrainService,
+    ConversationReliabilityHarness,
+    ConversationReliabilityService,
+    MemoryCoprocessorBridge,
+    ThreadLedgerService,
+    WorkingSetPlannerService,
+)
 from .github.service import GitHubLearningService
 from .embedding import EmbeddingStrategy, choose_embedding_strategy
 from .gateway.service import GatewayService
@@ -53,6 +64,15 @@ class AppServices:
     runtime: RuntimeStore
     router: MissionRouter
     session_state: PersistentSessionState
+    thread_ledgers: ThreadLedgerService
+    artifact_ledgers: ArtifactLedgerService
+    analysis_objects: AnalysisObjectService
+    analysis_bundles: BundleComposerService
+    working_sets: WorkingSetPlannerService
+    memory_coprocessor: MemoryCoprocessorBridge
+    conversation_reliability: ConversationReliabilityService
+    conversation_reliability_harness: ConversationReliabilityHarness
+    conversation_brain: ConversationBrainService
     gateway: GatewayService
     deep_research: DeepResearchService
     openclaw: OpenClawLiveService
@@ -192,6 +212,20 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         default_openai_model=config.execution_policy.default_model,
     )
     session_state = PersistentSessionState(database=database, api_runs=api_runs)
+    thread_ledgers = ThreadLedgerService(database=database)
+    artifact_ledgers = ArtifactLedgerService(database=database, paths=paths, path_policy=path_policy)
+    analysis_objects = AnalysisObjectService(database=database)
+    analysis_bundles = BundleComposerService(database=database)
+    working_sets = WorkingSetPlannerService(database=database, analysis_objects=analysis_objects)
+    memory_coprocessor = MemoryCoprocessorBridge()
+    conversation_reliability = ConversationReliabilityService()
+    conversation_reliability_harness = ConversationReliabilityHarness(database=database)
+    conversation_brain = ConversationBrainService(
+        thread_ledgers=thread_ledgers,
+        working_sets=working_sets,
+        coprocessor=memory_coprocessor,
+        reliability=conversation_reliability,
+    )
     deep_research = DeepResearchService(
         paths=paths,
         path_policy=path_policy,
@@ -203,6 +237,9 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         policy_path=config.runtime_policy_path,
         default_model=config.execution_policy.default_model,
         default_reasoning_effort=config.execution_policy.default_reasoning_effort,
+        research_model=config.execution_policy.deep_research_model,
+        scout_model=config.execution_policy.deep_research_scout_model,
+        translation_model=config.execution_policy.deep_research_translation_model,
         extreme_debug_enabled=config.execution_policy.deep_research_extreme_debug_enabled,
         extreme_debug_provider=config.execution_policy.deep_research_extreme_debug_provider,
         extreme_debug_model=config.execution_policy.deep_research_extreme_debug_model,
@@ -213,12 +250,22 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         journal=journal,
         router=router,
         memory=memory,
+        memory_os=memory_os,
         session_state=session_state,
         paths=paths,
         path_policy=path_policy,
         secret_resolver=secret_resolver,
         local_model_client=local_model_client,
         deep_research=deep_research,
+        thread_ledgers=thread_ledgers,
+        artifact_ledgers=artifact_ledgers,
+        analysis_objects=analysis_objects,
+        analysis_bundles=analysis_bundles,
+        working_sets=working_sets,
+        memory_coprocessor=memory_coprocessor,
+        conversation_reliability=conversation_reliability,
+        conversation_reliability_harness=conversation_reliability_harness,
+        conversation_brain=conversation_brain,
     )
     openclaw = OpenClawLiveService(
         config=config,
@@ -254,6 +301,15 @@ def build_app_services(config_path: str | None = None, policy_path: str | None =
         runtime=runtime,
         router=router,
         session_state=session_state,
+        thread_ledgers=thread_ledgers,
+        artifact_ledgers=artifact_ledgers,
+        analysis_objects=analysis_objects,
+        analysis_bundles=analysis_bundles,
+        working_sets=working_sets,
+        memory_coprocessor=memory_coprocessor,
+        conversation_reliability=conversation_reliability,
+        conversation_reliability_harness=conversation_reliability_harness,
+        conversation_brain=conversation_brain,
         gateway=gateway,
         deep_research=deep_research,
         openclaw=openclaw,

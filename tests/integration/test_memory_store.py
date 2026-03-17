@@ -614,7 +614,7 @@ class MemoryStoreTests(unittest.TestCase):
                     RetrievalContext(
                         query="stable retrieval pack",
                         user_id="founder",
-                        branch_name="project-os/roadmap-freeze",
+                        branch_name="codex/project-os-roadmap-freeze",
                         target_profile="core",
                         limit=3,
                     )
@@ -641,7 +641,7 @@ class MemoryStoreTests(unittest.TestCase):
                 )
                 _insert_recent_run_fixture(
                     services,
-                    branch_name="project-os/roadmap-freeze",
+                    branch_name="codex/project-os-roadmap-freeze",
                     target_profile="core",
                     objective="Audit retrieval sidecar behavior.",
                     updated_at=now,
@@ -654,7 +654,7 @@ class MemoryStoreTests(unittest.TestCase):
                         channel="discord",
                         conversation_key="channel:discord-general",
                         external_thread_id="channel:discord-general",
-                        branch_name="project-os/roadmap-freeze",
+                        branch_name="codex/project-os-roadmap-freeze",
                         target_profile="core",
                         limit=4,
                     )

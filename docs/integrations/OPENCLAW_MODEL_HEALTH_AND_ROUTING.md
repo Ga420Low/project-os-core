@@ -25,7 +25,7 @@ py D:/ProjectOS/project-os-core/scripts/project_os_entry.py --config-path D:/Pro
 Briefing recent borne:
 
 ```powershell
-py D:/ProjectOS/project-os-core/scripts/project_os_entry.py --config-path D:/ProjectOS/project-os-core/config/storage_roots.local.json --policy-path D:/ProjectOS/project-os-core/config/runtime_policy.local.json router proactive-briefing --branch-name project-os/ma-branche
+py D:/ProjectOS/project-os-core/scripts/project_os_entry.py --config-path D:/ProjectOS/project-os-core/config/storage_roots.local.json --policy-path D:/ProjectOS/project-os-core/config/runtime_policy.local.json router proactive-briefing --branch-name codex/project-os-ma-branche
 ```
 
 ## Tiers retenus

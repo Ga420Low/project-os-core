@@ -112,7 +112,7 @@ All intensities must:
 - child-worker mesh, not only scoped serial passes
 - full source reputation: seed trust, freshness, corroboration, ecosystem hints, and persistent local history
 - state continuity must survive planner, lanes, skeptic, and final synthesis
-- the current debug route may use `Anthropic Sonnet` for extreme research passes and keep `OpenAI` only for the reader PDF translation
+- the canonical route uses `OpenAI` for extreme research passes; any temporary `Anthropic Sonnet` debug route must be explicitly enabled in config
 - every extreme run should emit phase-level debug logs with counted tokens, actual usage, and per-phase estimated cost
 
 ### Current v2 implementation note
@@ -122,7 +122,7 @@ All intensities must:
 - `extreme` keeps one detached parent job but launches real child lane workers locally
 - `cheap scout swarm` seeds specialist lanes with briefs and candidate sources
 - `complex` reuses OpenAI Responses state through final synthesis
-- `extreme` currently supports a temporary `Anthropic Sonnet debug` route for research phases, with manual prompt-chain continuity plus counted-token debug logs
+- `extreme` supports an optional `Anthropic Sonnet debug` route for research phases, but it stays disabled by default and exists only for temporary diagnostics
 - translation remains stateless by design
 
 ### Explicit v2 constraints

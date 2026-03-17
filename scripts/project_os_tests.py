@@ -30,6 +30,37 @@ SUITE_COMMANDS = {
             ],
         )
     ],
+    "discord-facade-live": [
+        (
+            "discord facade smoke (live Haiku + protected gateway cases)",
+            [
+                sys.executable,
+                "scripts/discord_facade_smoke.py",
+            ],
+        )
+    ],
+    "discord-persona-live": [
+        (
+            "discord persona regression (live Haiku persona layer)",
+            [
+                sys.executable,
+                "scripts/discord_facade_smoke.py",
+                "--layer",
+                "persona",
+            ],
+        )
+    ],
+    "discord-full-live": [
+        (
+            "discord facade + persona regression (live Haiku full layers)",
+            [
+                sys.executable,
+                "scripts/discord_facade_smoke.py",
+                "--layer",
+                "all",
+            ],
+        )
+    ],
     "gateway": [
         (
             "pytest gateway surfaces",
@@ -102,6 +133,9 @@ SUITE_COMMANDS = {
 
 SUITE_ESTIMATES = {
     "smoke": "~ 2 min",
+    "discord-facade-live": "~ 2-5 min + low Anthropic cost",
+    "discord-persona-live": "~ 3-6 min + low Anthropic cost",
+    "discord-full-live": "~ 5-10 min + low Anthropic cost",
     "gateway": "~ 3 min",
     "full": "several minutes",
     "all": "long run",

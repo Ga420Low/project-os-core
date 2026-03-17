@@ -143,7 +143,7 @@ class ApiRunDashboardTests(unittest.TestCase):
                     "review_verdict": "needs_revision",
                     "status": "reviewed",
                     "mode": "patch_plan",
-                    "branch_name": "project-os/test-needs-revision",
+                    "branch_name": "codex/project-os-test-needs-revision",
                     "objective": "Revise the lot before integration.",
                 }
                 payload["snapshot"]["latest_runs"] = [dict(payload["snapshot"]["current_run"])]
@@ -238,7 +238,7 @@ class ApiRunDashboardTests(unittest.TestCase):
                 context_pack = services.api_runs.build_context_pack(
                     mode=ApiRunMode.PATCH_PLAN,
                     objective="Build the local dashboard for API runs.",
-                    branch_name="project-os/test-dashboard",
+                    branch_name="codex/project-os-test-dashboard",
                     skill_tags=["patch_plan", "dashboard"],
                 )
                 prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
@@ -303,6 +303,7 @@ class ApiRunDashboardTests(unittest.TestCase):
 
                 services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
                 services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
+                services.gateway._maybe_create_reasoning_escalation_approval = lambda *args, **kwargs: None  # type: ignore[method-assign]
 
                 services.gateway.dispatch_event(
                     ChannelEvent(
@@ -346,7 +347,7 @@ class ApiRunDashboardTests(unittest.TestCase):
                     "current_run": {
                         "run_id": "api_run_test",
                         "mode": "audit",
-                        "branch_name": "project-os/test-dashboard-html",
+                        "branch_name": "codex/project-os-test-dashboard-html",
                         "status": "running",
                         "contract_status": "approved",
                         "phase": "generation",
@@ -363,7 +364,7 @@ class ApiRunDashboardTests(unittest.TestCase):
                     "latest_runs": [
                         {
                             "mode": "audit",
-                            "branch_name": "project-os/test-dashboard-html",
+                            "branch_name": "codex/project-os-test-dashboard-html",
                             "status": "running",
                             "review_verdict": "pending",
                             "created_at": "2026-03-13T12:00:00+00:00",

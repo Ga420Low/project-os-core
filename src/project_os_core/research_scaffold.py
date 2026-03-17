@@ -194,6 +194,18 @@ def _contains_any(normalized: str, phrases: tuple[str, ...]) -> bool:
     return any(phrase in normalized for phrase in phrases)
 
 
+def _explicit_research_profile_matches(raw: str, *, normalized: str | None = None) -> list[str]:
+    normalized_text = normalized or _normalize_text(raw)
+    matches: list[str] = []
+    if _contains_any(normalized_text, _EXPLICIT_PROJECT_AUDIT_HINTS):
+        matches.append("project_audit")
+    if _contains_any(normalized_text, _EXPLICIT_COMPONENT_DISCOVERY_HINTS):
+        matches.append("component_discovery")
+    if _contains_any(normalized_text, _EXPLICIT_DOMAIN_AUDIT_HINTS):
+        matches.append("domain_audit")
+    return matches
+
+
 def infer_research_profile(*, raw: str, normalized: str | None = None, kind: str = "audit") -> str:
     normalized_text = normalized or _normalize_text(raw)
     normalized_kind = str(kind or "audit").strip().lower()
@@ -212,14 +224,10 @@ def infer_research_profile(*, raw: str, normalized: str | None = None, kind: str
 
 
 def detect_explicit_research_profile(raw: str, *, normalized: str | None = None) -> str | None:
-    normalized_text = normalized or _normalize_text(raw)
-    if _contains_any(normalized_text, _EXPLICIT_PROJECT_AUDIT_HINTS):
-        return "project_audit"
-    if _contains_any(normalized_text, _EXPLICIT_COMPONENT_DISCOVERY_HINTS):
-        return "component_discovery"
-    if _contains_any(normalized_text, _EXPLICIT_DOMAIN_AUDIT_HINTS):
-        return "domain_audit"
-    return None
+    matches = _explicit_research_profile_matches(raw, normalized=normalized)
+    if len(matches) != 1:
+        return None
+    return matches[0]
 
 
 def detect_explicit_research_intensity(raw: str, *, normalized: str | None = None) -> str | None:
@@ -263,9 +271,11 @@ def parse_research_mode_selection(
 ) -> dict[str, str | None]:
     raw = str(text or "").strip()
     normalized = _normalize_text(raw)
-    explicit_profile = detect_explicit_research_profile(raw, normalized=normalized)
+    explicit_profile_matches = _explicit_research_profile_matches(raw, normalized=normalized)
+    explicit_profile = explicit_profile_matches[0] if len(explicit_profile_matches) == 1 else None
+    ambiguous_profile_selection = len(explicit_profile_matches) > 1
     explicit_intensity = detect_explicit_research_intensity(raw, normalized=normalized)
-    selected_profile = explicit_profile or (
+    selected_profile = None if ambiguous_profile_selection else explicit_profile or (
         fallback_profile if str(fallback_profile or "").strip().lower() in _VALID_RESEARCH_PROFILES else None
     )
     selected_intensity = explicit_intensity or (
@@ -283,6 +293,7 @@ def parse_research_mode_selection(
         "selected_intensity": selected_intensity,
         "recommended_profile": recommended_profile,
         "recommended_intensity": recommended_intensity,
+        "ambiguous_profile_selection": ambiguous_profile_selection,
     }
 
 

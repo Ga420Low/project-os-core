@@ -35,7 +35,7 @@ It also lets the product build itself progressively:
 ### Accepted
 
 - `api_runs` is now a first-class subsystem in the core
-- large runs must target `project-os/*` branches
+- large runs must target `codex/project-os-*` branches
 - outputs are structured and schema-bound
 - raw prompts/results live in runtime storage, not in the repo
 - validated decisions and review outcomes feed the learning layer

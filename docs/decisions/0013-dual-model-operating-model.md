@@ -71,7 +71,7 @@ Personnalite: critique, humain, protecteur.
 {
   "type": "question_for_founder",
   "run_id": "api_run_xxx",
-  "branch": "project-os/refactor-memory",
+  "branch": "codex/project-os-refactor-memory",
   "context": "description courte du probleme",
   "impact": "consequence si pas de reponse",
   "options": [
@@ -113,7 +113,7 @@ Personnalite: critique, humain, protecteur.
 {
   "type": "run_summary",
   "run_id": "api_run_xxx",
-  "branch": "project-os/refactor-memory",
+  "branch": "codex/project-os-refactor-memory",
   "status": "completed | failed | clarification_required",
   "decision_summary": "ce qui a ete decide",
   "files_changed": 5,

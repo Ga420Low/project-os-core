@@ -79,7 +79,7 @@ Une mission est une sequence de runs lies par un objectif commun.
 class Mission:
     mission_id: str
     objective: str              # "Refactorer le module memory"
-    branch: str                 # "project-os/refactor-memory"
+    branch: str                 # "codex/project-os-refactor-memory"
     steps: list[MissionStep]
     max_steps: int = 8          # guard: pas plus de 8 etapes
     status: str                 # "active", "completed", "paused", "failed"

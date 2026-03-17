@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 
 from pypdf import PdfReader
 
@@ -13,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 from project_os_core.models import (
     ChannelEvent,
     ConversationThreadRef,
+    DecisionStatus,
     OperatorAttachment,
     OperatorMessage,
     RuntimeState,
@@ -144,6 +146,105 @@ class GatewayContextBuilderTests(unittest.TestCase):
             finally:
                 services.close()
 
+    def test_context_builder_includes_bounded_project_continuity_summary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                services.memory_blocks.upsert_block(
+                    block_name="profiles/founder_stable_profile.md",
+                    content="# Founder Stable Profile\n\n- garder une facade Discord naturelle\n",
+                    owner_role="guardian",
+                    updated_by_role="system",
+                    reason="unit_test",
+                    provenance=["test:gateway_project_continuity"],
+                )
+                services.memory_blocks.upsert_block(
+                    block_name="profiles/recent_operating_context.md",
+                    content="# Recent Operating Context\n\n- pack 4 ferme, pack 5 en cours\n",
+                    owner_role="memory_curator",
+                    updated_by_role="system",
+                    reason="unit_test",
+                    provenance=["test:gateway_project_continuity"],
+                )
+                decision = services.learning.record_decision(
+                    status=DecisionStatus.CONFIRMED,
+                    scope="gateway:discord_facade",
+                    summary="Keep the Discord facade natural and readable.",
+                    metadata={"branch_name": "codex/discord-facade"},
+                )
+                services.learning.record_deferred_decision(
+                    scope="gateway:pack5",
+                    summary="Brancher la suite d evals conversationnelles.",
+                    next_trigger="quand le seam de continuite projet est stable",
+                    metadata={"branch_name": "codex/discord-facade"},
+                )
+                services.thoughts.create_thought(
+                    kind="continuity",
+                    summary="Discord continuity stays anchored on recent decisions.",
+                    content="Use bounded project continuity for Discord continuity and recent decisions.",
+                    source_ids=[decision.decision_record_id],
+                    confidence=0.92,
+                    metadata={"privacy_view": "clean"},
+                )
+                services.thoughts.create_thought(
+                    kind="continuity",
+                    summary="Founder-only private continuity detail.",
+                    content="This private continuity note must stay hidden by default.",
+                    source_ids=["private_note"],
+                    confidence=0.95,
+                    metadata={"privacy_view": "full"},
+                )
+
+                captured: list[str] = []
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    captured.append(
+                        services.gateway._simple_chat_user_message(
+                            message,
+                            provider="anthropic",
+                            model=model,
+                            route_reason=route_reason,
+                            context_bundle=context_bundle,
+                        )
+                    )
+                    return "ok"
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
+
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="Ou en est-on sur la facade Discord aujourd hui ?",
+                        thread_ref=ConversationThreadRef(thread_id="thread_ctx_project_continuity", channel="discord"),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertEqual(dispatch.operator_reply.reply_kind, "chat_response")
+                rendered = captured[-1]
+                self.assertIn("Continuite projet recente:", rendered)
+                self.assertIn("garder une facade Discord naturelle", rendered)
+                self.assertIn("Keep the Discord facade natural and readable.", rendered)
+                self.assertIn("Brancher la suite d evals conversationnelles.", rendered)
+                self.assertIn("Discord continuity stays anchored on recent decisions.", rendered)
+                self.assertNotIn("Founder-only private continuity detail.", rendered)
+            finally:
+                services.close()
+
     def test_recent_operator_reply_text_mentions_pdf_artifact(self):
         reply = {
             "summary": "Inspirations architecturales pour la gestion memoire",
@@ -163,6 +264,27 @@ class GatewayContextBuilderTests(unittest.TestCase):
         self.assertIn("Inspirations architecturales", rendered)
         self.assertIn("PDF joint", rendered)
         self.assertIn("project-os-review-reply_test.pdf", rendered)
+
+    def test_thread_ledger_summary_mentions_subject_decisions_and_next_step(self):
+        candidate = SimpleNamespace(
+            metadata={
+                "thread_active_subject": "Patch de la facade Discord",
+                "thread_last_reply_summary": "Je garde les reponses moyennes dans Discord.",
+                "thread_recent_decisions": ["Je garde le fallback PDF pour les cas vraiment longs."],
+                "thread_next_step": "Verifier le chunking avant merge.",
+                "thread_last_pdf_artifact_id": "artifact_pdf_1",
+                "thread_last_artifact_id": "artifact_reply_1",
+                "thread_mode": "avance",
+            }
+        )
+
+        rendered = GatewayContextBuilder._render_thread_ledger_summary(candidate)
+
+        self.assertIn("sujet actif: Patch de la facade Discord", rendered)
+        self.assertIn("decision recente: Je garde le fallback PDF pour les cas vraiment longs.", rendered)
+        self.assertIn("prochain pas proche: Verifier le chunking avant merge.", rendered)
+        self.assertIn("dernier pdf connu: artifact_pdf_1", rendered)
+        self.assertIn("dernier artefact connu: artifact_reply_1", rendered)
 
     def test_identity_prompt_does_not_leak_pending_clarifications_or_thread_backlog(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -481,5 +603,66 @@ class GatewayContextBuilderTests(unittest.TestCase):
                 self.assertEqual(dispatch.operator_reply.summary, manifest.discord_summary)
                 self.assertEqual(manifest.attachments, [])
                 self.assertFalse(dispatch.metadata.get("response_review_artifact_id"))
+            finally:
+                services.close()
+
+    def test_thread_chunked_response_stays_in_chat_without_pdf_fallback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    del message, model, route_reason, context_bundle
+                    lines = [
+                        "Je garde la reponse dans Discord et je la decoupe proprement si elle grossit.",
+                        "",
+                    ]
+                    for index in range(1, 15):
+                        lines.append(
+                            f"{index}. Je verifie le point {index}, je garde le fil, et je te donne un prochain pas exploitable."
+                        )
+                    return "\n".join(lines)
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                services.gateway._call_local_chat = lambda **kwargs: _stub_simple_chat(  # type: ignore[method-assign]
+                    kwargs.get("message", "")
+                )
+                services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
+
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="Explique-moi ce point clairement et garde la reponse dans le chat.",
+                        thread_ref=ConversationThreadRef(
+                            thread_id="thread_chunked_output",
+                            channel="discord",
+                            external_thread_id="channel:thread_chunked_output",
+                        ),
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                manifest = dispatch.operator_reply.response_manifest
+                self.assertIsNotNone(manifest)
+                assert manifest is not None
+                self.assertEqual(manifest.delivery_mode, "thread_chunked_text")
+                self.assertEqual(dispatch.metadata["response_delivery_mode"], "thread_chunked_text")
+                self.assertEqual(dispatch.operator_reply.summary, manifest.discord_summary)
+                self.assertEqual(manifest.attachments, [])
+                self.assertFalse(dispatch.metadata.get("response_review_artifact_id"))
+                self.assertNotIn("PDF joint", dispatch.operator_reply.summary)
             finally:
                 services.close()

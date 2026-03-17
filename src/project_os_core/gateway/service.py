@@ -9,8 +9,10 @@ import sqlite3
 from types import SimpleNamespace
 import unicodedata
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
+from urllib.request import urlopen
 
 from ..artifacts import write_binary_artifact, write_json_artifact, write_text_artifact
 from ..costing import estimate_discussion_usage, estimate_text_tokens, estimate_usage_cost_eur
@@ -18,6 +20,7 @@ from ..database import CanonicalDatabase, dump_json
 from ..deep_research import DeepResearchService
 from .reply_pdf import render_operator_reply_pdf
 from ..local_model import LocalModelClient
+from ..memory.os_service import MemoryOSService
 from ..memory.store import MemoryStore
 from ..models import (
     ActionContract,
@@ -26,6 +29,9 @@ from ..models import (
     ArtifactPointer,
     ChannelEvent,
     CommunicationMode,
+    ConversationBrainBackend,
+    ConversationBrainDecision,
+    ConversationMemoryCandidate,
     ConversationThreadRef,
     CostClass,
     MissionIntent,
@@ -40,6 +46,7 @@ from ..models import (
     OperatorAttachment,
     OperatorAudience,
     OperatorMessage,
+    OperatorMessageKind,
     OperatorEnvelope,
     OperatorReply,
     OperatorReplyArtifact,
@@ -48,11 +55,16 @@ from ..models import (
     RoutingDecision,
     RoutingDecisionTrace,
     SensitivityClass,
+    ThreadLedgerSnapshot,
+    TraceEntityKind,
+    TraceRelationKind,
+    WorkingSetPlan,
     new_id,
     to_jsonable,
 )
 from ..paths import PathPolicy, ProjectPaths
 from ..privacy_guard import sanitize_sensitive_text
+from ..operator_visibility_policy import StandardReplyPolicy
 from ..research_scaffold import (
     ResearchScaffoldRequest,
     detect_deep_research_request,
@@ -65,14 +77,25 @@ from ..session.state import PersistentSessionState, ResolvedIntent
 from .context_builder import GatewayContextBuilder, GatewayContextBundle
 from .persona import PersonaSpec, load_persona_spec
 from .promotion import SelectiveSyncPromoter
+from .stateful import (
+    AnalysisObjectService,
+    ArtifactLedgerService,
+    BundleComposerService,
+    ConversationBrainService,
+    ConversationReliabilityHarness,
+    ConversationReliabilityService,
+    MemoryCoprocessorBridge,
+    ThreadLedgerService,
+    WorkingSetPlannerService,
+)
 
 _LONG_CONTEXT_SEGMENT_TARGET = 1200
 _LONG_CONTEXT_SEGMENT_HARD_LIMIT = 1500
 _LONG_CONTEXT_MAX_ITEMS = 6
-_ARTIFACT_SUMMARY_RESPONSE_LENGTH = 1800
-_ARTIFACT_SUMMARY_LINE_THRESHOLD = 20
-_THREAD_CHUNK_RESPONSE_LENGTH = 1800
-_THREAD_CHUNK_LINE_THRESHOLD = 20
+_ARTIFACT_SUMMARY_RESPONSE_LENGTH = 3200
+_ARTIFACT_SUMMARY_LINE_THRESHOLD = 28
+_THREAD_CHUNK_RESPONSE_LENGTH = 1100
+_THREAD_CHUNK_LINE_THRESHOLD = 12
 _DISCORD_ARTIFACT_SUMMARY_LIMIT = 900
 _RESPONSE_REVIEW_OVERVIEW_LIMIT = 320
 _RESPONSE_REVIEW_ITEM_LIMIT = 3
@@ -156,8 +179,18 @@ class GatewayService:
         path_policy: PathPolicy | None = None,
         secret_resolver=None,
         local_model_client: LocalModelClient | None = None,
+        memory_os: MemoryOSService | None = None,
         selective_sync: SelectiveSyncPromoter | None = None,
         deep_research: DeepResearchService | None = None,
+        thread_ledgers: ThreadLedgerService | None = None,
+        artifact_ledgers: ArtifactLedgerService | None = None,
+        analysis_objects: AnalysisObjectService | None = None,
+        analysis_bundles: BundleComposerService | None = None,
+        working_sets: WorkingSetPlannerService | None = None,
+        memory_coprocessor: MemoryCoprocessorBridge | None = None,
+        conversation_reliability: ConversationReliabilityService | None = None,
+        conversation_reliability_harness: ConversationReliabilityHarness | None = None,
+        conversation_brain: ConversationBrainService | None = None,
     ) -> None:
         self.database = database
         self.journal = journal
@@ -170,8 +203,37 @@ class GatewayService:
         self.local_model_client = local_model_client or getattr(router, "local_model_client", None)
         self.selective_sync = selective_sync or SelectiveSyncPromoter()
         self.deep_research = deep_research
+        self.thread_ledgers = thread_ledgers or ThreadLedgerService(database=database)
+        self.artifact_ledgers = artifact_ledgers or ArtifactLedgerService(
+            database=database,
+            paths=paths,
+            path_policy=path_policy,
+        )
+        self.analysis_objects = analysis_objects or AnalysisObjectService(database=database)
+        self.analysis_bundles = analysis_bundles or BundleComposerService(database=database)
+        self.working_sets = working_sets or WorkingSetPlannerService(
+            database=database,
+            analysis_objects=self.analysis_objects,
+        )
+        self.memory_coprocessor = memory_coprocessor or MemoryCoprocessorBridge()
+        self.conversation_reliability = conversation_reliability or ConversationReliabilityService()
+        self.conversation_reliability_harness = conversation_reliability_harness or ConversationReliabilityHarness(
+            database=database
+        )
+        self.conversation_brain = conversation_brain or ConversationBrainService(
+            thread_ledgers=self.thread_ledgers,
+            working_sets=self.working_sets,
+            coprocessor=self.memory_coprocessor,
+            reliability=self.conversation_reliability,
+        )
+        self.conversation_brain.local_backend = self._call_local_brain_decision
+        self.conversation_brain.provider_backend = self._call_provider_brain_decision
         self.persona: PersonaSpec = load_persona_spec()
-        self.context_builder = GatewayContextBuilder(database=database, session_state=session_state)
+        self.context_builder = GatewayContextBuilder(
+            database=database,
+            session_state=session_state,
+            memory_os=memory_os,
+        )
 
     def dispatch_event(
         self,
@@ -230,6 +292,40 @@ class GatewayService:
             candidate.metadata["research_scaffold_kind"] = research_scaffold.get("kind")
             candidate.metadata["research_scaffold_title"] = research_scaffold.get("title")
             candidate.metadata["research_scaffold_created"] = research_scaffold.get("created")
+        message_object = self.analysis_objects.register_message_object(event=normalized_event, candidate=candidate)
+        candidate.metadata["message_object_id"] = message_object.object_id
+        thread_bundle = self.analysis_bundles.ensure_thread_bundle(
+            surface=normalized_event.surface,
+            channel=normalized_event.message.channel,
+            thread_ref=normalized_event.message.thread_ref,
+            title=candidate.summary or f"Thread bundle {normalized_event.message.thread_ref.thread_id}",
+        )
+        self.analysis_bundles.add_member(
+            bundle_id=thread_bundle.bundle_id,
+            object_id=message_object.object_id,
+            member_role="message",
+            metadata={"channel_event_id": normalized_event.event_id},
+        )
+        candidate.metadata["thread_bundle_id"] = thread_bundle.bundle_id
+        self.thread_ledgers.record_inbound_message(
+            event=normalized_event,
+            candidate=candidate,
+            message_object_id=message_object.object_id,
+        )
+        snapshot = self.session_state.load()
+        self._sync_thread_ledger_from_snapshot(
+            event=normalized_event,
+            snapshot=snapshot,
+            mode=str(candidate.metadata.get("discussion_mode") or "").strip() or None,
+            approval_state="pending" if snapshot.pending_approvals else None,
+        )
+        self._run_pending_artifact_ingestion_tasks(limit=8)
+        _, brain_resolution = self.conversation_brain.analyze(
+            event=normalized_event,
+            candidate=candidate,
+        )
+        self.conversation_brain.apply_to_candidate(candidate=candidate, resolution=brain_resolution)
+        self.conversation_reliability_harness.record_reference_resolution(brain_resolution.reference_resolution)
         action_contract = self._build_action_contract(
             event=normalized_event,
             candidate=candidate,
@@ -286,6 +382,9 @@ class GatewayService:
                 "long_context_workflow_id": candidate.metadata.get("long_context_workflow_id"),
                 "long_context_summary": candidate.metadata.get("long_context_summary"),
                 "long_context_artifact_ids": candidate.metadata.get("long_context_artifact_ids", []),
+                "brain_resolution_kind": candidate.metadata.get("brain_resolution_kind"),
+                "brain_resolution_confidence": candidate.metadata.get("brain_resolution_confidence"),
+                "brain_clarification_question": candidate.metadata.get("brain_clarification_question"),
                 "research_scaffold": candidate.metadata.get("research_scaffold"),
                 "research_scaffold_path": candidate.metadata.get("research_scaffold_path"),
                 "research_scaffold_kind": candidate.metadata.get("research_scaffold_kind"),
@@ -301,11 +400,17 @@ class GatewayService:
                 **(metadata or {}),
             },
         )
-        snapshot = self.session_state.load()
         resolved = self.session_state.resolve_intent(normalized_event.message.text, snapshot=snapshot)
         if resolved is not None:
             self._persist_promotion(candidate, promotion)
             action_result = self._execute_resolved_intent(resolved)
+            post_snapshot = self.session_state.load()
+            self._sync_thread_ledger_from_snapshot(
+                event=normalized_event,
+                snapshot=post_snapshot,
+                mode=str(action_result.get("selected_mode") or candidate.metadata.get("discussion_mode") or "").strip() or None,
+                approval_state=str(action_result.get("status") or "").strip() or None,
+            )
             promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
             reply = self._build_session_reply(normalized_event, envelope.envelope_id, resolved, action_result)
             self._finalize_session_resolved_reply_output(
@@ -382,6 +487,45 @@ class GatewayService:
                     "channel_event_id": normalized_event.event_id,
                     "candidate_id": candidate.candidate_id,
                     "contract_id": action_contract.contract_id,
+                },
+            )
+            return dispatch
+        brain_clarification_question = self._brain_clarification_question(candidate)
+        if brain_clarification_question:
+            self._persist_promotion(candidate, promotion)
+            promoted_memory_ids = self._apply_selective_sync(candidate, promotion)
+            reply = self._build_brain_clarification_reply(
+                event=normalized_event,
+                envelope_id=envelope.envelope_id,
+                question=brain_clarification_question,
+            )
+            dispatch = self._build_brain_clarification_dispatch(
+                event=normalized_event,
+                envelope=envelope,
+                reply=reply,
+                channel_class=channel_class,
+                candidate_id=candidate.candidate_id,
+                promotion_decision_id=promotion.promotion_decision_id,
+                promoted_memory_ids=promoted_memory_ids,
+                human_artifacts=human_artifacts,
+            )
+            thread_binding = self._upsert_discord_thread_binding(
+                event=normalized_event,
+                dispatch=dispatch,
+                channel_class=channel_class,
+            )
+            if thread_binding is not None:
+                dispatch.metadata["thread_binding_id"] = thread_binding.binding_id
+                dispatch.metadata["thread_binding_kind"] = thread_binding.binding_kind
+            self._persist_dispatch(dispatch)
+            self.journal.append(
+                "gateway_brain_clarification_required",
+                "gateway",
+                {
+                    "dispatch_id": dispatch.dispatch_id,
+                    "channel_event_id": normalized_event.event_id,
+                    "candidate_id": candidate.candidate_id,
+                    "brain_resolution_kind": candidate.metadata.get("brain_resolution_kind"),
                 },
             )
             return dispatch
@@ -688,6 +832,18 @@ class GatewayService:
                 mission_run.mission_run_id if mission_run else None,
                 envelope=envelope,
             )
+        if reply.reply_kind in {"chat_response", "ack", "clarification_required", "approval_required"} and reply.response_manifest is None:
+            self.thread_ledgers.record_reply(
+                event=normalized_event,
+                reply_id=reply.reply_id,
+                summary=reply.summary,
+                artifact_ids=[],
+                pdf_artifact_id=None,
+                object_ids=[str(candidate.metadata.get("message_object_id") or "").strip()] if candidate.metadata.get("message_object_id") else [],
+                bundle_ids=[str(candidate.metadata.get("thread_bundle_id") or "").strip()] if candidate.metadata.get("thread_bundle_id") else [],
+                mode=str(envelope.metadata.get("discussion_mode") or "").strip() or None,
+                created_at=reply.created_at,
+            )
         run_card = self._build_run_card(
             decision=decision,
             channel_class=channel_class,
@@ -735,6 +891,13 @@ class GatewayService:
                 if reply.response_manifest
                 else None,
                 "response_review_artifact_id": reply.response_manifest.review_artifact_id if reply.response_manifest else None,
+                "thread_ledger_id": candidate.metadata.get("thread_ledger_id"),
+                "thread_last_artifact_id": candidate.metadata.get("thread_last_artifact_id"),
+                "thread_last_pdf_artifact_id": candidate.metadata.get("thread_last_pdf_artifact_id"),
+                "working_set_id": candidate.metadata.get("working_set_id"),
+                "working_set_object_ids": candidate.metadata.get("working_set_object_ids", []),
+                "brain_resolution_kind": candidate.metadata.get("brain_resolution_kind"),
+                "brain_resolution_confidence": candidate.metadata.get("brain_resolution_confidence"),
                 "model_provider": decision.model_route.provider,
                 "requested_provider": envelope.metadata.get("requested_provider"),
                 "requested_model": envelope.metadata.get("requested_model"),
@@ -1243,12 +1406,17 @@ class GatewayService:
             }
         scaffold = dict(metadata.get("research_scaffold") or {})
         selection = dict(selection or {})
+        ambiguous_profile_selection = bool(selection.get("ambiguous_profile_selection"))
         selected_profile = str(
-            selection.get("selected_profile")
-            or metadata.get("selected_profile")
-            or metadata.get("research_profile")
-            or scaffold.get("explicit_profile")
-            or ""
+            ""
+            if ambiguous_profile_selection
+            else (
+                selection.get("selected_profile")
+                or metadata.get("selected_profile")
+                or metadata.get("research_profile")
+                or scaffold.get("explicit_profile")
+                or ""
+            )
         ).strip().lower()
         selected_intensity = str(
             selection.get("selected_intensity")
@@ -1277,6 +1445,7 @@ class GatewayService:
             "recommended_intensity": recommended_intensity,
             "explicit_profile": selected_profile or None,
             "explicit_intensity": selected_intensity or None,
+            "ambiguous_profile_selection": ambiguous_profile_selection,
         }
         event = self._rebuild_deep_research_event(metadata.get("event_payload"))
         if selected_profile and selected_intensity:
@@ -1325,6 +1494,7 @@ class GatewayService:
                 "selected_intensity": selected_intensity or None,
                 "recommended_profile": recommended_profile,
                 "recommended_intensity": recommended_intensity,
+                "ambiguous_profile_selection": ambiguous_profile_selection,
             }
             self._update_runtime_approval_metadata(str(context["approval_id"]), updated_metadata)
             reply = self._build_deep_research_mode_selection_reply(
@@ -1913,6 +2083,42 @@ class GatewayService:
             },
         )
 
+    @staticmethod
+    def _brain_clarification_question(candidate) -> str | None:
+        kind = str(candidate.metadata.get("brain_resolution_kind") or "").strip().lower()
+        question = str(candidate.metadata.get("brain_clarification_question") or "").strip()
+        if kind != "clarification_needed":
+            return None
+        if question:
+            return question
+        return "Tu parles de ma derniere reponse, ou d'autre chose exactement ?"
+
+    def _build_brain_clarification_reply(
+        self,
+        *,
+        event: ChannelEvent,
+        envelope_id: str,
+        question: str,
+    ) -> OperatorReply:
+        return OperatorReply(
+            reply_id=new_id("reply"),
+            channel=event.message.channel,
+            envelope_id=envelope_id,
+            thread_ref=event.message.thread_ref,
+            summary=question,
+            mission_run_id=None,
+            decision_id=None,
+            reply_kind="clarification_required",
+            communication_mode=CommunicationMode.DISCUSSION,
+            operator_language="fr",
+            audience=OperatorAudience.NON_DEVELOPER,
+            metadata={
+                "surface": event.surface,
+                "clarification_gate": True,
+                "brain_clarification": True,
+            },
+        )
+
     def _build_action_contract_dispatch(
         self,
         *,
@@ -1955,6 +2161,54 @@ class GatewayService:
                 "directive_detection": envelope.metadata.get("directive_detection"),
                 "action_contract": envelope.metadata.get("action_contract"),
                 "clarification_gate": True,
+            },
+        )
+
+    def _build_brain_clarification_dispatch(
+        self,
+        *,
+        event: ChannelEvent,
+        envelope: OperatorEnvelope,
+        reply: OperatorReply,
+        channel_class: DiscordChannelClass,
+        candidate_id: str,
+        promotion_decision_id: str,
+        promoted_memory_ids: list[str],
+        human_artifacts: list,
+    ) -> GatewayDispatchResult:
+        return GatewayDispatchResult(
+            dispatch_id=new_id("dispatch"),
+            channel_event_id=event.event_id,
+            envelope_id=envelope.envelope_id,
+            intent_id=new_id("brain_clarification_intent"),
+            decision_id=None,
+            mission_run_id=None,
+            operator_reply=reply,
+            promoted_memory_ids=promoted_memory_ids,
+            memory_candidate_id=candidate_id,
+            promotion_decision_id=promotion_decision_id,
+            discord_run_card=None,
+            metadata={
+                "classification": envelope.metadata.get("message_kind"),
+                "reply_kind": reply.reply_kind,
+                "channel_class": channel_class.value,
+                "communication_mode": reply.communication_mode.value,
+                "human_artifact_ids": [item.artifact_id for item in human_artifacts],
+                "source_artifact_ids": list(envelope.metadata.get("source_artifact_ids") or []),
+                "input_profile": envelope.metadata.get("input_profile"),
+                "intent_kind": envelope.metadata.get("intent_kind"),
+                "delegation_level": envelope.metadata.get("delegation_level"),
+                "interaction_state": envelope.metadata.get("interaction_state"),
+                "suggested_next_state": InteractionState.DISCUSSION.value,
+                "intent_confidence": envelope.metadata.get("intent_confidence"),
+                "intent_signals": list(envelope.metadata.get("intent_signals") or []),
+                "state_transition": "discussion->clarification",
+                "directive_detection": envelope.metadata.get("directive_detection"),
+                "action_contract": envelope.metadata.get("action_contract"),
+                "clarification_gate": True,
+                "brain_clarification": True,
+                "brain_resolution_kind": envelope.metadata.get("brain_resolution_kind")
+                or reply.metadata.get("brain_resolution_kind"),
             },
         )
 
@@ -2117,6 +2371,19 @@ class GatewayService:
         promoted_memory_ids: list[str],
         human_artifacts: list,
     ) -> GatewayDispatchResult:
+        self.thread_ledgers.sync_pending_approvals(
+            surface=event.surface,
+            channel=event.message.channel,
+            thread_ref=event.message.thread_ref,
+            approvals=[
+                {
+                    "approval_id": approval.approval_id,
+                    "metadata": dict(approval.metadata or {}),
+                }
+            ],
+            approval_state="pending",
+            updated_at=getattr(reply, "created_at", None),
+        )
         return GatewayDispatchResult(
             dispatch_id=new_id("dispatch"),
             channel_event_id=event.event_id,
@@ -2295,6 +2562,8 @@ class GatewayService:
         decision: RoutingDecision,
         context_bundle: GatewayContextBundle,
     ) -> dict[str, Any] | None:
+        if self.conversation_reliability.should_suppress_reasoning_escalation(candidate):
+            return None
         if event.surface != "discord":
             return None
         if str(envelope.metadata.get("requested_provider") or "").strip():
@@ -2551,11 +2820,6 @@ class GatewayService:
                 f"Cout estime: ~{estimated_cost_eur:.2f} EUR.",
                 f"Temps estime: {estimated_time_band}.",
                 f"API utilisee: {api_label}.",
-                (
-                    "Mode debug temporaire: Sonnet pilote les passes de recherche extreme, et OpenAI garde seulement la traduction PDF FR."
-                    if intensity == "extreme" and str(target_provider).strip().lower() == "anthropic"
-                    else ""
-                ),
                 "Reponds go pour lancer ou stop pour annuler.",
             ]
         )
@@ -2623,6 +2887,7 @@ class GatewayService:
         relative_path = str(scaffold.get("relative_path") or "").strip()
         selected_profile = str(scaffold.get("explicit_profile") or "").strip().lower()
         selected_intensity = str(scaffold.get("explicit_intensity") or "").strip().lower()
+        ambiguous_profile_selection = bool(scaffold.get("ambiguous_profile_selection"))
         recommended_profile = str(scaffold.get("recommended_profile") or scaffold.get("research_profile") or "domain_audit").strip()
         recommended_intensity = str(scaffold.get("recommended_intensity") or scaffold.get("research_intensity") or "simple").strip()
         lines = [
@@ -2637,6 +2902,8 @@ class GatewayService:
             lines.append(f"Profil deja detecte: {self._display_research_profile(selected_profile)}")
         if selected_intensity:
             lines.append(f"Intensite deja detectee: {self._display_research_intensity(selected_intensity)}")
+        if ambiguous_profile_selection:
+            lines.append("Plusieurs profils ont ete mentionnes. Je peux en lancer un seul par run.")
         missing: list[str] = []
         if not selected_profile:
             missing.append("profil (`project audit`, `component discovery`, `domain audit`)")
@@ -2884,13 +3151,15 @@ class GatewayService:
     def _session_reply_summary(resolved: ResolvedIntent, action_result: dict) -> str:
         custom_summary = str(action_result.get("summary") or "").strip()
         if resolved.action == "approve_contract":
-            branch = str(action_result.get("branch_name") or "ce lot")
-            if action_result.get("run_launched"):
-                return f"{branch}: contrat approuve. Run lance."
-            return f"{branch}: contrat approuve. Lancement en attente."
+            return StandardReplyPolicy.summarize_standard_session_action(
+                action="approve_contract",
+                action_result=action_result,
+            )
         if resolved.action == "reject_contract":
-            branch = str(action_result.get("branch_name") or "ce lot")
-            return f"{branch}: contrat refuse. Rien n'est lance."
+            return StandardReplyPolicy.summarize_standard_session_action(
+                action="reject_contract",
+                action_result=action_result,
+            )
         if resolved.action == "approve_runtime_approval":
             if action_result.get("approval_type") == "reasoning_escalation" and custom_summary:
                 return custom_summary
@@ -2907,18 +3176,7 @@ class GatewayService:
                     return f"{summary} Le rapport final reviendra sur Discord avec le PDF et le fichier Markdown."
                 error = str(action_result.get("error") or "lancement reste bloque").strip()
                 return f"Recherche approfondie approuvee, mais le lancement reste bloque: {error}"
-            objective = str(action_result.get("objective") or "cette operation")
-            estimated_cost = float(action_result.get("estimated_cost_eur") or 0.0)
-            api_label = str(action_result.get("api_label") or "").strip()
-            if action_result.get("run_launched"):
-                summary = f"{objective}: validation enregistree. Operation lancee (~{estimated_cost:.2f} EUR)."
-                if api_label:
-                    summary = f"{summary} API: {api_label}."
-                return summary
-            error = str(action_result.get("error") or "").strip()
-            if error:
-                return f"{objective}: validation enregistree, mais le lancement reste bloque: {error}"
-            return f"{objective}: validation enregistree, mais le lancement reste bloque."
+            return StandardReplyPolicy.summarize_standard_runtime_approval(action_result)
         if resolved.action == "reject_runtime_approval":
             if action_result.get("approval_type") == "reasoning_escalation" and custom_summary:
                 return custom_summary
@@ -2926,31 +3184,33 @@ class GatewayService:
                 return "Choix du mode deep research annule. Rien n'est lance."
             if action_result.get("approval_type") == "deep_research_launch":
                 return "Recherche approfondie annulee. Rien n'est lance."
-            objective = str(action_result.get("objective") or "cette operation")
-            return f"{objective}: validation refusee. Rien n'est lance."
+            return StandardReplyPolicy.summarize_standard_runtime_rejection(action_result)
         if resolved.action == "update_runtime_approval_selection" and custom_summary:
             return custom_summary
         if resolved.action == "answer_clarification":
-            branch = str(action_result.get("branch_name") or "ce lot")
-            return f"{branch}: clarification enregistree. J'applique la decision."
-        if resolved.action == "reject_clarification":
-            branch = str(action_result.get("branch_name") or "ce lot")
-            return f"{branch}: clarification refusee. Le lot reste stoppe."
-        if resolved.action == "guardian_override":
-            branch = str(action_result.get("branch_name") or "ce lot")
-            return f"{branch}: override guardian applique. Run relance."
-        if resolved.action == "status_request":
-            snapshot = action_result.get("snapshot") or {}
-            active_runs = len(snapshot.get("active_runs") or [])
-            pending_clarifications = len(snapshot.get("pending_clarifications") or [])
-            pending_contracts = len(snapshot.get("pending_contracts") or [])
-            daily_spend = float(snapshot.get("daily_spend_eur") or 0.0)
-            daily_limit = float(snapshot.get("daily_budget_limit_eur") or 0.0)
-            return (
-                f"Status: {active_runs} run actif, {pending_clarifications} clarification, "
-                f"{pending_contracts} contrat. Budget {daily_spend:.2f}/{daily_limit:.2f} EUR."
+            return StandardReplyPolicy.summarize_standard_session_action(
+                action="answer_clarification",
+                action_result=action_result,
             )
-        return f"Action {resolved.action}: {action_result.get('status', 'ok')}"
+        if resolved.action == "reject_clarification":
+            return StandardReplyPolicy.summarize_standard_session_action(
+                action="reject_clarification",
+                action_result=action_result,
+            )
+        if resolved.action == "guardian_override":
+            return StandardReplyPolicy.summarize_standard_session_action(
+                action="guardian_override",
+                action_result=action_result,
+            )
+        if resolved.action == "status_request":
+            return StandardReplyPolicy.summarize_standard_session_action(
+                action="status_request",
+                action_result=action_result,
+            )
+        return StandardReplyPolicy.summarize_standard_session_action(
+            action=str(resolved.action or ""),
+            action_result=action_result,
+        )
 
     def _build_action_contract(
         self,
@@ -3323,9 +3583,17 @@ class GatewayService:
         if context_bundle is not None:
             if context_bundle.session_brief.strip():
                 sections.append(f"Contexte session recent:\n{context_bundle.session_brief}")
+            if context_bundle.project_continuity_summary.strip():
+                sections.append(f"Continuite projet recente:\n{context_bundle.project_continuity_summary}")
             thread_history = self._render_recent_thread_history(context_bundle)
             if thread_history:
                 sections.append(f"Historique recent du thread:\n{thread_history}")
+            if context_bundle.thread_ledger_summary.strip():
+                sections.append(f"Ledger canonique du thread:\n{context_bundle.thread_ledger_summary}")
+            if context_bundle.pending_approvals_summary.strip():
+                sections.append(f"Pending approvals du thread:\n{context_bundle.pending_approvals_summary}")
+            if context_bundle.working_set_summary.strip():
+                sections.append(f"Working set charge:\n{context_bundle.working_set_summary}")
             if context_bundle.long_context_brief.strip():
                 sections.append(f"Workflow long-context:\n{context_bundle.long_context_brief}")
             prompt_handoff = replace(context_bundle.handoff_contract, raw_user_intent=message)
@@ -3335,6 +3603,141 @@ class GatewayService:
             )
         sections.append(f"Message fondateur pour ce tour:\n{message}")
         return "\n\n".join(sections)
+
+    def _brain_prompt(
+        self,
+        *,
+        event: ChannelEvent,
+        candidate,
+        thread_ledger: ThreadLedgerSnapshot | None,
+        working_set: WorkingSetPlan,
+    ) -> str:
+        payload = {
+            "message_text": event.message.text,
+            "thread_id": event.message.thread_ref.thread_id,
+            "conversation_key": str(event.message.thread_ref.external_thread_id or event.message.thread_ref.thread_id or "").strip(),
+            "thread_ledger": {
+                "active_subject": thread_ledger.active_subject if thread_ledger else None,
+                "last_reply_summary": thread_ledger.last_authoritative_reply_summary if thread_ledger else None,
+                "last_artifact_id": thread_ledger.last_artifact_id if thread_ledger else None,
+                "last_pdf_artifact_id": thread_ledger.last_pdf_artifact_id if thread_ledger else None,
+                "last_bundle_id": thread_ledger.last_bundle_id if thread_ledger else None,
+                "pending_approval_ids": thread_ledger.pending_approval_ids if thread_ledger else [],
+                "mode": thread_ledger.mode if thread_ledger else None,
+            },
+            "working_set": {
+                "selected_object_ids": working_set.selected_object_ids,
+                "selected_artifact_ids": working_set.selected_artifact_ids,
+                "selected_bundle_ids": working_set.selected_bundle_ids,
+                "selected_object_digests": [to_jsonable(item) for item in working_set.selected_object_digests],
+            },
+            "candidate_summary": candidate.summary,
+        }
+        return (
+            "Tu es le Conversation Brain de Project OS. "
+            "Renvoie uniquement un JSON valide sans texte autour.\n"
+            "Schema:\n"
+            "{"
+            '"resolution_kind":"continue_previous_answer|answer_about_last_pdf|answer_about_last_artifact|answer_about_active_bundle|compare_documents|approval_response|mode_switch|new_topic|true_directive|clarification_needed|blocked",'
+            '"confidence":0.0,'
+            '"target_type":"artifact|analysis_object|bundle|null",'
+            '"target_id":"string|null",'
+            '"reason":"string",'
+            '"selected_object_ids":["..."],'
+            '"selected_artifact_ids":["..."],'
+            '"needs_provider_fallback":false'
+            "}\n"
+            "Regles:\n"
+            "- Si tu n'es pas sur, choisis new_topic avec confidence basse.\n"
+            "- Si le thread ledger dit qu'un PDF a ete envoye et que le message y fait reference implicitement, choisis answer_about_last_pdf.\n"
+            "- N'invente jamais un artefact absent du ledger.\n\n"
+            f"Contexte:\n{json.dumps(payload, ensure_ascii=True, sort_keys=True, indent=2)}"
+        )
+
+    @staticmethod
+    def _parse_brain_decision_payload(payload: str, *, backend: ConversationBrainBackend) -> ConversationBrainDecision | None:
+        raw = str(payload or "").strip()
+        if not raw:
+            return None
+        match = re.search(r"\{.*\}", raw, re.DOTALL)
+        if match is None:
+            return None
+        try:
+            parsed = json.loads(match.group(0))
+        except Exception:
+            return None
+        if not isinstance(parsed, dict):
+            return None
+        resolution_kind = str(parsed.get("resolution_kind") or "").strip()
+        if not resolution_kind:
+            return None
+        try:
+            confidence = float(parsed.get("confidence") or 0.0)
+        except Exception:
+            confidence = 0.0
+        selected_object_ids = [str(item).strip() for item in parsed.get("selected_object_ids") or [] if str(item).strip()]
+        selected_artifact_ids = [str(item).strip() for item in parsed.get("selected_artifact_ids") or [] if str(item).strip()]
+        return ConversationBrainDecision(
+            backend=backend,
+            resolution_kind=resolution_kind,
+            confidence=max(0.0, min(confidence, 1.0)),
+            target_type=str(parsed.get("target_type") or "").strip() or None,
+            target_id=str(parsed.get("target_id") or "").strip() or None,
+            reason=str(parsed.get("reason") or "").strip() or None,
+            selected_object_ids=selected_object_ids,
+            selected_artifact_ids=selected_artifact_ids,
+            needs_provider_fallback=bool(parsed.get("needs_provider_fallback")),
+        )
+
+    def _call_local_brain_decision(
+        self,
+        *,
+        event: ChannelEvent,
+        candidate,
+        thread_ledger: ThreadLedgerSnapshot | None,
+        working_set: WorkingSetPlan,
+    ) -> ConversationBrainDecision | None:
+        if str(event.message.metadata.get("requested_provider") or "").strip().lower() == "local":
+            return None
+        if str(candidate.metadata.get("sensitivity_class") or "").strip().lower() == SensitivityClass.S3.value:
+            return None
+        if self.local_model_client is None:
+            return None
+        try:
+            response = self.local_model_client.chat(
+                message=self._brain_prompt(
+                    event=event,
+                    candidate=candidate,
+                    thread_ledger=thread_ledger,
+                    working_set=working_set,
+                ),
+                system="Return only strict JSON.",
+                model=None,
+            )
+        except Exception:
+            return None
+        return self._parse_brain_decision_payload(str(getattr(response, "content", "") or ""), backend=ConversationBrainBackend.LOCAL)
+
+    def _call_provider_brain_decision(
+        self,
+        *,
+        event: ChannelEvent,
+        candidate,
+        thread_ledger: ThreadLedgerSnapshot | None,
+        working_set: WorkingSetPlan,
+    ) -> ConversationBrainDecision | None:
+        prompt = self._brain_prompt(
+            event=event,
+            candidate=candidate,
+            thread_ledger=thread_ledger,
+            working_set=working_set,
+        )
+        rendered: str | None = None
+        if self.secret_resolver.get_optional("ANTHROPIC_API_KEY"):
+            rendered = self._call_simple_chat(prompt, model=self.router.execution_policy.discord_simple_model, route_reason="brain_provider_fallback")
+        elif self.secret_resolver.get_optional("OPENAI_API_KEY"):
+            rendered = self._call_openai_chat(prompt, model="gpt-5.4", reasoning_effort="low", route_reason="brain_provider_fallback")
+        return self._parse_brain_decision_payload(rendered or "", backend=ConversationBrainBackend.PROVIDER)
 
     def _call_local_chat(
         self,
@@ -3410,13 +3813,7 @@ class GatewayService:
 
     @staticmethod
     def _decorate_inline_reply_summary(summary: str, decision: RoutingDecision) -> str:
-        rendered = summary.strip()
-        if decision.model_route.provider == "local":
-            label = "[Local S3 / Ollama]" if decision.route_reason == "s3_local_route" else "[Local / Ollama]"
-            if rendered.lower().startswith(label.lower()):
-                return rendered
-            return f"{label} {rendered}"
-        return rendered
+        return StandardReplyPolicy.decorate_inline_summary(summary, decision)
 
     @staticmethod
     def _candidate_sensitivity(candidate) -> SensitivityClass:
@@ -3504,7 +3901,7 @@ class GatewayService:
             channel=event.message.channel,
             envelope_id=new_id("envelope"),
             thread_ref=event.message.thread_ref,
-            summary="Doublon OpenClaw ignore. Rien n'est relance.",
+            summary=StandardReplyPolicy.render_duplicate_ingress_reply(),
             reply_kind="ack",
             communication_mode=CommunicationMode.DISCUSSION,
             operator_language="fr",
@@ -3550,16 +3947,18 @@ class GatewayService:
     ) -> OperatorReply:
         research_note = self._research_reply_suffix(envelope)
         if decision.allowed:
-            worker = self._worker_label(decision.chosen_worker)
-            summary = f"Mission lancee sur {worker}. Mode: {decision.execution_class.value}."
-            if research_note:
-                summary = f"{summary} {research_note}"
+            summary = StandardReplyPolicy.render_standard_route_reply(
+                allowed=True,
+                worker_label=self._worker_label(decision.chosen_worker),
+                research_note=research_note,
+            )
             reply_kind = "ack"
         else:
-            reason = self._translate_block_reason(decision.blocked_reasons or [decision.route_reason])
-            summary = f"Mission bloquee: {reason}"
-            if research_note:
-                summary = f"{summary} {research_note}"
+            summary = StandardReplyPolicy.render_standard_route_reply(
+                allowed=False,
+                blocked_reason=self._translate_block_reason(decision.blocked_reasons or [decision.route_reason]),
+                research_note=research_note,
+            )
             reply_kind = "blocked"
         return OperatorReply(
             reply_id=new_id("reply"),
@@ -4002,51 +4401,180 @@ class GatewayService:
             ),
         )
 
+    def _sync_thread_ledger_from_snapshot(
+        self,
+        *,
+        event: ChannelEvent,
+        snapshot,
+        mode: str | None = None,
+        approval_state: str | None = None,
+    ) -> None:
+        try:
+            self.thread_ledgers.sync_pending_approvals(
+                surface=event.surface,
+                channel=event.message.channel,
+                thread_ref=event.message.thread_ref,
+                approvals=list(snapshot.pending_approvals),
+                mode=mode,
+                approval_state=approval_state,
+                updated_at=event.created_at,
+            )
+        except Exception as exc:
+            logging.getLogger("project_os.gateway").debug("thread ledger approval sync failed: %s", exc)
+
+    @staticmethod
+    def _attachment_artifact_kind(attachment: OperatorAttachment) -> str:
+        mime = str(attachment.mime_type or "").strip().lower()
+        name = str(attachment.name or "").strip().lower()
+        if mime == "application/pdf" or name.endswith(".pdf"):
+            return "ingress_attachment_pdf"
+        if mime in {"text/markdown", "text/plain"} or name.endswith((".md", ".txt")):
+            return "ingress_attachment_markdown"
+        return "ingress_attachment_blob"
+
+    @staticmethod
+    def _attachment_object_type(attachment: OperatorAttachment, *, remote_only: bool = False) -> str:
+        mime = str(attachment.mime_type or "").strip().lower()
+        name = str(attachment.name or "").strip().lower()
+        if remote_only:
+            return "source_attachment_remote"
+        if mime == "application/pdf" or name.endswith(".pdf"):
+            return "source_pdf"
+        if mime in {"text/markdown", "text/plain"} or name.endswith(".md"):
+            return "source_markdown"
+        if "transcript" in name:
+            return "source_transcript"
+        return "source_document"
+
+    def _safe_attachment_bytes(self, attachment: OperatorAttachment) -> tuple[bytes | None, str | None]:
+        attachment_path = str(attachment.path or "").strip()
+        if attachment_path:
+            path = Path(attachment_path)
+            if path.exists() and path.is_file():
+                return path.read_bytes(), str(path)
+        attachment_url = str(attachment.url or "").strip()
+        if attachment_url:
+            parsed = urlparse(attachment_url)
+            if parsed.scheme in {"http", "https"}:
+                try:
+                    with urlopen(attachment_url, timeout=10) as response:
+                        return response.read(), attachment_url
+                except Exception:
+                    return None, attachment_url
+        return None, attachment_path or (str(attachment.url or "").strip() or None)
+
+    def _enqueue_artifact_ingestion_task(
+        self,
+        *,
+        artifact_id: str,
+        conversation_key: str,
+        payload: dict[str, Any],
+        status: str = "pending",
+        last_error: str | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        self.database.upsert(
+            "artifact_ingestion_tasks",
+            {
+                "task_id": new_id("artifact_ingestion_task"),
+                "artifact_id": artifact_id,
+                "conversation_key": conversation_key,
+                "status": status,
+                "attempt_count": 0,
+                "payload_json": dump_json(payload),
+                "last_error": last_error,
+                "created_at": now,
+                "updated_at": now,
+            },
+            conflict_columns="task_id",
+            immutable_columns=["created_at"],
+        )
+
+    def _run_pending_artifact_ingestion_tasks(self, *, limit: int = 8) -> None:
+        rows = self.database.fetchall(
+            """
+            SELECT task_id, payload_json
+            FROM artifact_ingestion_tasks
+            WHERE status IN ('pending', 'retry')
+            ORDER BY updated_at ASC, created_at ASC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        for row in rows:
+            task_id = str(row["task_id"])
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except Exception:
+                payload = {}
+            attachment_url = str(payload.get("attachment_url") or "").strip()
+            if not attachment_url:
+                self.database.execute(
+                    "UPDATE artifact_ingestion_tasks SET status = ?, last_error = ?, updated_at = ? WHERE task_id = ?",
+                    ("failed", "missing_attachment_url", datetime.now(timezone.utc).isoformat(), task_id),
+                )
+                continue
+            try:
+                with urlopen(attachment_url, timeout=10) as response:
+                    response.read(1)
+                self.database.execute(
+                    "UPDATE artifact_ingestion_tasks SET status = ?, attempt_count = attempt_count + 1, updated_at = ? WHERE task_id = ?",
+                    ("ready", datetime.now(timezone.utc).isoformat(), task_id),
+                )
+            except Exception as exc:
+                self.database.execute(
+                    """
+                    UPDATE artifact_ingestion_tasks
+                    SET status = ?, attempt_count = attempt_count + 1, last_error = ?, updated_at = ?
+                    WHERE task_id = ?
+                    """,
+                    ("retry", str(exc), datetime.now(timezone.utc).isoformat(), task_id),
+                )
+
     def _persist_ingress_artifacts(self, event: ChannelEvent, candidate) -> list[ArtifactPointer]:
         if not self.paths or not self.path_policy:
             return []
         if not candidate.metadata.get("requires_ingress_artifact"):
             return []
         artifacts: list[ArtifactPointer] = []
-        artifacts.append(
-            self._write_gateway_artifact(
+        ingress_pointer = self._write_gateway_artifact(
+            owner_type="channel_event",
+            owner_id=event.event_id,
+            artifact_kind="ingress_input",
+            payload={
+                "version": "v1",
+                "channel_event_id": event.event_id,
+                "message_id": event.message.message_id,
+                "surface": event.surface,
+                "event_type": event.event_type,
+                "actor_id": event.message.actor_id,
+                "channel": event.message.channel,
+                "thread_ref": to_jsonable(event.message.thread_ref),
+                "input_profile": candidate.metadata.get("input_profile"),
+                "text": event.message.text,
+                "text_char_count": candidate.metadata.get("input_char_count"),
+                "attachments": [to_jsonable(item) for item in event.message.attachments],
+                "raw_payload": event.raw_payload,
+                "captured_at": event.created_at,
+            },
+        )
+        artifacts.append(ingress_pointer)
+        manifest_pointer: ArtifactPointer | None = None
+        if event.message.attachments:
+            manifest_pointer = self._write_gateway_artifact(
                 owner_type="channel_event",
                 owner_id=event.event_id,
-                artifact_kind="ingress_input",
+                artifact_kind="ingress_attachment_manifest",
                 payload={
-                    "version": "v1",
+                    "version": "v2",
                     "channel_event_id": event.event_id,
-                    "message_id": event.message.message_id,
-                    "surface": event.surface,
-                    "event_type": event.event_type,
-                    "actor_id": event.message.actor_id,
-                    "channel": event.message.channel,
-                    "thread_ref": to_jsonable(event.message.thread_ref),
                     "input_profile": candidate.metadata.get("input_profile"),
-                    "text": event.message.text,
-                    "text_char_count": candidate.metadata.get("input_char_count"),
+                    "attachment_count": len(event.message.attachments),
                     "attachments": [to_jsonable(item) for item in event.message.attachments],
-                    "raw_payload": event.raw_payload,
                     "captured_at": event.created_at,
                 },
             )
-        )
-        if event.message.attachments:
-            artifacts.append(
-                self._write_gateway_artifact(
-                    owner_type="channel_event",
-                    owner_id=event.event_id,
-                    artifact_kind="ingress_attachment_manifest",
-                    payload={
-                        "version": "v1",
-                        "channel_event_id": event.event_id,
-                        "input_profile": candidate.metadata.get("input_profile"),
-                        "attachment_count": len(event.message.attachments),
-                        "attachments": [to_jsonable(item) for item in event.message.attachments],
-                        "captured_at": event.created_at,
-                    },
-                )
-            )
+            artifacts.append(manifest_pointer)
         self.journal.append(
             "gateway_ingress_artifacts_persisted",
             "gateway",
@@ -4056,6 +4584,128 @@ class GatewayService:
                 "input_profile": candidate.metadata.get("input_profile"),
             },
         )
+        source_object_id = str(candidate.metadata.get("message_object_id") or "").strip() or None
+        thread_bundle_id = str(candidate.metadata.get("thread_bundle_id") or "").strip() or None
+        self._register_stateful_artifact(
+            event=event,
+            pointer=ingress_pointer,
+            owner_type="channel_event",
+            owner_id=event.event_id,
+            bundle_id=thread_bundle_id,
+            source_object_id=source_object_id,
+            source_ids=[event.event_id],
+            object_type="source_document" if candidate.metadata.get("input_profile") == "document" else "source_message",
+            title=candidate.summary,
+            summary_short=candidate.summary or "Entree de conversation",
+            summary_full=event.message.text.strip() or candidate.content,
+            tags=[str(candidate.metadata.get("input_profile") or "message"), "ingress"],
+            metadata={"message_id": event.message.message_id, "input_profile": candidate.metadata.get("input_profile")},
+        )
+        if manifest_pointer is not None:
+            attachment_names = ", ".join(item.name for item in event.message.attachments[:4])
+            self._register_stateful_artifact(
+                event=event,
+                pointer=manifest_pointer,
+                owner_type="channel_event",
+                owner_id=event.event_id,
+                bundle_id=thread_bundle_id,
+                source_object_id=source_object_id,
+                source_ids=[event.event_id],
+                object_type="source_document",
+                title="Manifest des pieces jointes",
+                summary_short="Catalogue des pieces jointes de ce tour",
+                summary_full=attachment_names or "Manifest des pieces jointes",
+                tags=["attachments", "catalog", "ingress"],
+                metadata={"attachment_count": len(event.message.attachments)},
+            )
+        for attachment in event.message.attachments:
+            payload, locator = self._safe_attachment_bytes(attachment)
+            attachment_metadata = {
+                "attachment_id": attachment.attachment_id,
+                "name": attachment.name,
+                "kind": attachment.kind,
+                "mime_type": attachment.mime_type,
+                "path": attachment.path,
+                "url": attachment.url,
+                "size_bytes": attachment.size_bytes,
+                "message_id": event.message.message_id,
+            }
+            if payload is not None:
+                suffix = Path(str(attachment.name or "")).suffix or ".bin"
+                pointer = self._write_gateway_binary_artifact(
+                    owner_type="channel_event",
+                    owner_id=f"{event.event_id}_{attachment.attachment_id}",
+                    artifact_kind=self._attachment_artifact_kind(attachment),
+                    payload=payload,
+                    suffix=suffix,
+                )
+                artifacts.append(pointer)
+                summary_full = attachment.name
+                if str(attachment.mime_type or "").strip().lower() in {"text/markdown", "text/plain"}:
+                    try:
+                        summary_full = payload.decode("utf-8", errors="ignore")[:4000] or attachment.name
+                    except Exception:
+                        summary_full = attachment.name
+                self._register_stateful_artifact(
+                    event=event,
+                    pointer=pointer,
+                    owner_type="channel_event",
+                    owner_id=event.event_id,
+                    bundle_id=thread_bundle_id,
+                    source_object_id=source_object_id,
+                    source_ids=[event.event_id, ingress_pointer.artifact_id],
+                    object_type=self._attachment_object_type(attachment),
+                    title=attachment.name,
+                    summary_short=f"Piece jointe: {attachment.name}",
+                    summary_full=summary_full,
+                    tags=["attachment", "ingress", attachment.kind or "file"],
+                    metadata={**attachment_metadata, "source_locator": locator},
+                    content_status="ready",
+                    source_mime_type=attachment.mime_type,
+                )
+            else:
+                catalog_pointer = self._write_gateway_artifact(
+                    owner_type="channel_event",
+                    owner_id=f"{event.event_id}_{attachment.attachment_id}",
+                    artifact_kind="ingress_attachment_catalog",
+                    payload={
+                        "version": "v1",
+                        "channel_event_id": event.event_id,
+                        "attachment": attachment_metadata,
+                        "content_status": "pending_fetch" if attachment.url else "unavailable",
+                        "captured_at": event.created_at,
+                    },
+                )
+                artifacts.append(catalog_pointer)
+                if attachment.url:
+                    self._enqueue_artifact_ingestion_task(
+                        artifact_id=catalog_pointer.artifact_id,
+                        conversation_key=str(event.message.thread_ref.external_thread_id or event.message.thread_ref.thread_id or "").strip(),
+                        payload={
+                            "attachment_url": attachment.url,
+                            "attachment_id": attachment.attachment_id,
+                            "channel_event_id": event.event_id,
+                        },
+                    )
+                self._register_stateful_artifact(
+                    event=event,
+                    pointer=catalog_pointer,
+                    owner_type="channel_event",
+                    owner_id=event.event_id,
+                    bundle_id=thread_bundle_id,
+                    source_object_id=source_object_id,
+                    source_ids=[event.event_id, ingress_pointer.artifact_id],
+                    object_type=self._attachment_object_type(attachment, remote_only=True),
+                    title=attachment.name,
+                    summary_short=f"Piece jointe distante: {attachment.name}",
+                    summary_full=attachment.name,
+                    tags=["attachment", "catalog", "ingress"],
+                    metadata={**attachment_metadata, "source_locator": locator},
+                    content_status="pending_fetch" if attachment.url else "unavailable",
+                    source_mime_type=attachment.mime_type,
+                    ingestion_status="pending_fetch" if attachment.url else "unavailable",
+                    source_locator=locator,
+                )
         return artifacts
 
     def _persist_long_context_workflow(
@@ -4109,7 +4759,327 @@ class GatewayService:
                 "input_profile": candidate.metadata.get("input_profile"),
             },
         )
+        self._register_stateful_artifact(
+            event=event,
+            pointer=workflow_pointer,
+            owner_type="channel_event",
+            owner_id=event.event_id,
+            bundle_id=str(candidate.metadata.get("thread_bundle_id") or "").strip() or None,
+            source_object_id=str(candidate.metadata.get("message_object_id") or "").strip() or None,
+            source_ids=[event.event_id, *[item.artifact_id for item in ingress_artifacts]],
+            object_type="analysis_object",
+            title="Workflow long context",
+            summary_short=str(workflow["summary"] or "Workflow long context"),
+            summary_full=dump_json(workflow),
+            decisions=list(digest.get("decisions") or []),
+            questions=list(digest.get("questions") or []),
+            tags=["long_context", str(candidate.metadata.get("input_profile") or "long_text")],
+            metadata={"workflow_id": workflow["workflow_id"], "segment_count": workflow["segment_count"]},
+        )
+        self._register_stateful_artifact(
+            event=event,
+            pointer=segments_pointer,
+            owner_type="channel_event",
+            owner_id=event.event_id,
+            bundle_id=str(candidate.metadata.get("thread_bundle_id") or "").strip() or None,
+            source_object_id=str(candidate.metadata.get("message_object_id") or "").strip() or None,
+            source_ids=[event.event_id, workflow_pointer.artifact_id],
+            object_type="analysis_object",
+            title="Segments long context",
+            summary_short=f"{workflow['segment_count']} segments analyses",
+            summary_full=dump_json(segments_payload),
+            questions=list(digest.get("questions") or []),
+            tags=["long_context_segments", str(candidate.metadata.get("input_profile") or "long_text")],
+            metadata={"workflow_id": workflow["workflow_id"]},
+        )
         return [workflow_pointer, segments_pointer]
+
+    def backfill_stateful_recent(self, *, since_hours: int = 24 * 7) -> dict[str, Any]:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=max(1, int(since_hours)))).isoformat()
+        event_rows = self.database.fetchall(
+            """
+            SELECT event_id, surface, event_type, message_json, raw_payload_json, created_at
+            FROM channel_events
+            WHERE surface = 'discord'
+              AND created_at >= ?
+            ORDER BY created_at ASC
+            """,
+            (cutoff,),
+        )
+        snapshot = self.session_state.load()
+        event_count = 0
+        artifact_count = 0
+        reply_count = 0
+        for row in event_rows:
+            event = self._channel_event_from_row(row)
+            if event is None:
+                continue
+            candidate = self._candidate_for_backfill(event)
+            message_object = self.analysis_objects.register_message_object(event=event, candidate=candidate)
+            thread_bundle = self.analysis_bundles.ensure_thread_bundle(
+                surface=event.surface,
+                channel=event.message.channel,
+                thread_ref=event.message.thread_ref,
+                title=candidate.summary or f"Thread bundle {event.message.thread_ref.thread_id}",
+            )
+            self.analysis_bundles.add_member(
+                bundle_id=thread_bundle.bundle_id,
+                object_id=message_object.object_id,
+                member_role="message",
+                metadata={"channel_event_id": event.event_id, "backfill": True},
+            )
+            self.thread_ledgers.record_inbound_message(event=event, candidate=candidate, message_object_id=message_object.object_id)
+            self._sync_thread_ledger_from_snapshot(event=event, snapshot=snapshot, approval_state="backfill")
+            event_count += 1
+
+            inbound_artifact_rows = self.database.fetchall(
+                """
+                SELECT artifact_id, artifact_kind, storage_tier, path, checksum_sha256, size_bytes, created_at
+                FROM artifact_pointers
+                WHERE owner_type = 'channel_event'
+                  AND (owner_id = ? OR owner_id LIKE ?)
+                ORDER BY created_at ASC
+                """,
+                (event.event_id, f"{event.event_id}_%"),
+            )
+            for artifact_row in inbound_artifact_rows:
+                pointer = self._artifact_pointer_from_row(artifact_row)
+                descriptor = self._backfill_artifact_descriptor(pointer=pointer, fallback_title=candidate.summary)
+                self._register_stateful_artifact(
+                    event=event,
+                    pointer=pointer,
+                    owner_type="channel_event",
+                    owner_id=event.event_id,
+                    bundle_id=thread_bundle.bundle_id,
+                    source_object_id=message_object.object_id,
+                    source_ids=[event.event_id],
+                    object_type=descriptor["object_type"],
+                    title=descriptor["title"],
+                    summary_short=descriptor["summary_short"],
+                    summary_full=descriptor["summary_full"],
+                    tags=descriptor["tags"],
+                    metadata={"backfill": True},
+                    content_status=descriptor["content_status"],
+                )
+                artifact_count += 1
+
+            dispatch_rows = self.database.fetchall(
+                """
+                SELECT reply_json, created_at
+                FROM gateway_dispatch_results
+                WHERE channel_event_id = ?
+                ORDER BY created_at ASC
+                """,
+                (event.event_id,),
+            )
+            for dispatch_row in dispatch_rows:
+                try:
+                    reply_payload = json.loads(str(dispatch_row["reply_json"] or "{}"))
+                except Exception:
+                    reply_payload = {}
+                reply_id = str(reply_payload.get("reply_id") or "").strip()
+                if not reply_id:
+                    continue
+                reply_summary = str(reply_payload.get("summary") or "").strip()
+                manifest = reply_payload.get("response_manifest") if isinstance(reply_payload.get("response_manifest"), dict) else {}
+                artifact_ids: list[str] = []
+                pdf_artifact_id = str(manifest.get("review_artifact_id") or "").strip() or None
+                attachments = manifest.get("attachments") if isinstance(manifest.get("attachments"), list) else []
+                for item in attachments:
+                    if not isinstance(item, dict):
+                        continue
+                    artifact_id = str(item.get("artifact_id") or "").strip()
+                    if artifact_id:
+                        artifact_ids.append(artifact_id)
+                if manifest.get("metadata") and isinstance(manifest.get("metadata"), dict):
+                    manifest_artifact_id = str(manifest["metadata"].get("manifest_artifact_id") or "").strip()
+                    if manifest_artifact_id:
+                        artifact_ids.append(manifest_artifact_id)
+                reply_artifact_rows = self.database.fetchall(
+                    """
+                    SELECT artifact_id, artifact_kind, storage_tier, path, checksum_sha256, size_bytes, created_at
+                    FROM artifact_pointers
+                    WHERE owner_type = 'gateway_reply'
+                      AND (owner_id = ? OR owner_id LIKE ?)
+                    ORDER BY created_at ASC
+                    """,
+                    (reply_id, f"{reply_id}_%"),
+                )
+                for artifact_row in reply_artifact_rows:
+                    pointer = self._artifact_pointer_from_row(artifact_row)
+                    descriptor = self._backfill_artifact_descriptor(pointer=pointer, fallback_title=reply_summary or reply_id)
+                    self._register_stateful_artifact(
+                        event=event,
+                        pointer=pointer,
+                        owner_type="gateway_reply",
+                        owner_id=reply_id,
+                        reply_id=reply_id,
+                        bundle_id=thread_bundle.bundle_id,
+                        source_object_id=message_object.object_id,
+                        source_ids=[event.event_id],
+                        object_type=descriptor["object_type"],
+                        title=descriptor["title"],
+                        summary_short=descriptor["summary_short"],
+                        summary_full=descriptor["summary_full"],
+                        tags=descriptor["tags"],
+                        metadata={"backfill": True},
+                        content_status=descriptor["content_status"],
+                        cold_backup=True if descriptor["object_type"] == "source_pdf" else None,
+                    )
+                    artifact_count += 1
+                self.thread_ledgers.record_reply(
+                    event=event,
+                    reply_id=reply_id,
+                    summary=reply_summary,
+                    artifact_ids=list(dict.fromkeys(artifact_ids)),
+                    pdf_artifact_id=pdf_artifact_id,
+                    object_ids=[message_object.object_id],
+                    bundle_ids=[thread_bundle.bundle_id],
+                    created_at=str(dispatch_row["created_at"]),
+                )
+                reply_count += 1
+        return {
+            "status": "ok",
+            "since_hours": since_hours,
+            "events_backfilled": event_count,
+            "artifacts_backfilled": artifact_count,
+            "replies_backfilled": reply_count,
+        }
+
+    def _channel_event_from_row(self, row) -> ChannelEvent | None:
+        try:
+            message_payload = json.loads(str(row["message_json"] or "{}"))
+        except Exception:
+            return None
+        thread_payload = message_payload.get("thread_ref") if isinstance(message_payload.get("thread_ref"), dict) else {}
+        attachments_payload = message_payload.get("attachments") if isinstance(message_payload.get("attachments"), list) else []
+        attachments: list[OperatorAttachment] = []
+        for item in attachments_payload:
+            if not isinstance(item, dict):
+                continue
+            attachments.append(
+                OperatorAttachment(
+                    attachment_id=str(item.get("attachment_id") or new_id("attachment")),
+                    name=str(item.get("name") or "attachment"),
+                    kind=str(item.get("kind") or "document"),
+                    mime_type=str(item.get("mime_type")) if item.get("mime_type") else None,
+                    path=str(item.get("path")) if item.get("path") else None,
+                    url=str(item.get("url")) if item.get("url") else None,
+                    size_bytes=int(item.get("size_bytes")) if item.get("size_bytes") not in (None, "") else None,
+                    metadata=item.get("metadata") if isinstance(item.get("metadata"), dict) else {},
+                )
+            )
+        return ChannelEvent(
+            event_id=str(row["event_id"]),
+            surface=str(row["surface"]),
+            event_type=str(row["event_type"]),
+            message=OperatorMessage(
+                message_id=str(message_payload.get("message_id") or new_id("message")),
+                actor_id=str(message_payload.get("actor_id") or "unknown"),
+                channel=str(message_payload.get("channel") or "discord"),
+                text=str(message_payload.get("text") or ""),
+                thread_ref=ConversationThreadRef(
+                    thread_id=str(thread_payload.get("thread_id") or "thread_backfill"),
+                    channel=str(thread_payload.get("channel") or message_payload.get("channel") or "discord"),
+                    external_thread_id=str(thread_payload.get("external_thread_id")) if thread_payload.get("external_thread_id") else None,
+                    parent_thread_id=str(thread_payload.get("parent_thread_id")) if thread_payload.get("parent_thread_id") else None,
+                    title=str(thread_payload.get("title")) if thread_payload.get("title") else None,
+                    metadata=thread_payload.get("metadata") if isinstance(thread_payload.get("metadata"), dict) else {},
+                ),
+                kind=OperatorMessageKind(str(message_payload["kind"])) if message_payload.get("kind") else None,
+                attachments=attachments,
+                metadata=message_payload.get("metadata") if isinstance(message_payload.get("metadata"), dict) else {},
+                created_at=str(message_payload.get("created_at") or row["created_at"]),
+            ),
+            raw_payload=json.loads(str(row["raw_payload_json"] or "{}")) if row["raw_payload_json"] else {},
+            created_at=str(row["created_at"]),
+        )
+
+    def _candidate_for_backfill(self, event: ChannelEvent) -> ConversationMemoryCandidate:
+        row = self.database.fetchone(
+            """
+            SELECT classification, summary, content, tags_json, tier, should_promote, payload_json, created_at
+            FROM conversation_memory_candidates
+            WHERE source_event_id = ?
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (event.event_id,),
+        )
+        if row is not None:
+            try:
+                payload = json.loads(str(row["payload_json"] or "{}"))
+            except Exception:
+                payload = {}
+            return ConversationMemoryCandidate(
+                candidate_id=new_id("candidate_backfill"),
+                source_event_id=event.event_id,
+                thread_ref=event.message.thread_ref,
+                actor_id=event.message.actor_id,
+                classification=OperatorMessageKind(str(row["classification"])),
+                summary=str(row["summary"] or "").strip() or event.message.text[:120],
+                content=str(row["content"] or event.message.text),
+                tags=[str(item) for item in json.loads(str(row["tags_json"] or "[]"))] if row["tags_json"] else [],
+                metadata=payload if isinstance(payload, dict) else {},
+                created_at=str(row["created_at"]),
+            )
+        return ConversationMemoryCandidate(
+            candidate_id=new_id("candidate_backfill"),
+            source_event_id=event.event_id,
+            thread_ref=event.message.thread_ref,
+            actor_id=event.message.actor_id,
+            classification=OperatorMessageKind.CHAT,
+            summary=" ".join(event.message.text.split())[:120],
+            content=event.message.text,
+            metadata={},
+        )
+
+    @staticmethod
+    def _artifact_pointer_from_row(row) -> ArtifactPointer:
+        return ArtifactPointer(
+            artifact_id=str(row["artifact_id"]),
+            artifact_kind=str(row["artifact_kind"]),
+            storage_tier=MemoryTier(str(row["storage_tier"])),
+            path=str(row["path"]),
+            checksum_sha256=str(row["checksum_sha256"]) if row["checksum_sha256"] else None,
+            size_bytes=int(row["size_bytes"]) if row["size_bytes"] is not None else None,
+            created_at=str(row["created_at"]),
+        )
+
+    def _backfill_artifact_descriptor(self, *, pointer: ArtifactPointer, fallback_title: str | None = None) -> dict[str, Any]:
+        suffix = Path(pointer.path).suffix.lower()
+        title = fallback_title or pointer.artifact_kind
+        object_type = "analysis_object"
+        content_status = "ready"
+        tags = [pointer.artifact_kind, "backfill"]
+        if pointer.artifact_kind in {"response_review_pdf", "ingress_attachment_pdf"} or suffix == ".pdf":
+            object_type = "source_pdf"
+        elif pointer.artifact_kind in {"response_review_markdown", "ingress_attachment_markdown"} or suffix in {".md", ".txt"}:
+            object_type = "source_markdown"
+        elif pointer.artifact_kind in {"response_manifest"}:
+            object_type = "artifact_reply"
+        elif pointer.artifact_kind in {"ingress_attachment_catalog"}:
+            object_type = "source_attachment_remote"
+            content_status = "unavailable"
+        elif pointer.artifact_kind in {"ingress_input"}:
+            object_type = "source_message"
+        elif pointer.artifact_kind in {"ingress_attachment_manifest"}:
+            object_type = "source_document"
+        summary_full = Path(pointer.path).name
+        path = Path(pointer.path)
+        if path.exists() and path.suffix.lower() in {".md", ".txt", ".json"}:
+            try:
+                summary_full = path.read_text(encoding="utf-8", errors="ignore")[:4000] or summary_full
+            except Exception:
+                pass
+        return {
+            "object_type": object_type,
+            "title": title,
+            "summary_short": title,
+            "summary_full": summary_full,
+            "content_status": content_status,
+            "tags": tags,
+        }
 
     def _build_long_context_workflow(
         self,
@@ -4401,6 +5371,18 @@ class GatewayService:
             reply.metadata["response_manifest_id"] = manifest.metadata["manifest_artifact_id"]
         if manifest.review_artifact_id:
             reply.metadata["response_review_artifact_id"] = manifest.review_artifact_id
+        if manifest.delivery_mode != "artifact_summary":
+            self.thread_ledgers.record_reply(
+                event=event,
+                reply_id=reply.reply_id,
+                summary=manifest.discord_summary,
+                artifact_ids=[],
+                pdf_artifact_id=None,
+                object_ids=[str(candidate.metadata.get("message_object_id") or "").strip()] if candidate.metadata.get("message_object_id") else [],
+                bundle_ids=[str(candidate.metadata.get("thread_bundle_id") or "").strip()] if candidate.metadata.get("thread_bundle_id") else [],
+                mode=str(candidate.metadata.get("discussion_mode") or "").strip() or None,
+                created_at=reply.created_at,
+            )
         if manifest.delivery_mode == "artifact_summary":
             reply.summary = manifest.discord_summary
 
@@ -4526,6 +5508,82 @@ class GatewayService:
         )
         manifest.metadata["manifest_artifact_id"] = manifest_pointer.artifact_id
         manifest.metadata["manifest_artifact_path"] = manifest_pointer.path
+        self._rewrite_gateway_json_artifact(
+            pointer=manifest_pointer,
+            payload={
+                "version": "v1",
+                "reply_id": reply.reply_id,
+                "response_manifest": to_jsonable(manifest),
+                "questions": extracted["questions"],
+                "generated_at": reply.created_at,
+            },
+        )
+        _, review_markdown_object, review_bundle = self._register_stateful_artifact(
+            event=event,
+            pointer=review_pointer,
+            owner_type="gateway_reply",
+            owner_id=reply.reply_id,
+            reply_id=reply.reply_id,
+            bundle_id=str(candidate.metadata.get("thread_bundle_id") or "").strip() or None,
+            source_object_id=str(candidate.metadata.get("message_object_id") or "").strip() or None,
+            source_ids=[event.event_id, *list(candidate.metadata.get("source_artifact_ids", []))],
+            object_type="source_markdown",
+            title="Reponse review markdown",
+            summary_short=overview,
+            summary_full=review_markdown,
+            questions=extracted["questions"],
+            decisions=extracted["decisions"],
+            tags=["reply_markdown", str(candidate.metadata.get("input_profile") or "chat")],
+            metadata={"reply_id": reply.reply_id},
+        )
+        _, review_pdf_object, _ = self._register_stateful_artifact(
+            event=event,
+            pointer=review_pdf_pointer,
+            owner_type="gateway_reply",
+            owner_id=reply.reply_id,
+            reply_id=reply.reply_id,
+            bundle_id=review_bundle.bundle_id,
+            source_object_id=str(candidate.metadata.get("message_object_id") or "").strip() or None,
+            source_ids=[event.event_id, review_pointer.artifact_id],
+            object_type="source_pdf",
+            title="Reponse complete PDF",
+            summary_short=overview,
+            summary_full=response_text,
+            questions=extracted["questions"],
+            decisions=extracted["decisions"],
+            tags=["reply_pdf", str(candidate.metadata.get("input_profile") or "chat")],
+            metadata={"reply_id": reply.reply_id, "delivery_mode": delivery_mode},
+            cold_backup=True,
+        )
+        self._register_stateful_artifact(
+            event=event,
+            pointer=manifest_pointer,
+            owner_type="gateway_reply",
+            owner_id=reply.reply_id,
+            reply_id=reply.reply_id,
+            bundle_id=review_bundle.bundle_id,
+            source_object_id=str(candidate.metadata.get("message_object_id") or "").strip() or None,
+            source_ids=[event.event_id, review_pdf_pointer.artifact_id],
+            object_type="artifact_reply",
+            title="Manifest de reponse",
+            summary_short=manifest.discord_summary,
+            summary_full=dump_json(to_jsonable(manifest)),
+            questions=extracted["questions"],
+            decisions=extracted["decisions"],
+            tags=["response_manifest"],
+            metadata={"reply_id": reply.reply_id, "delivery_mode": delivery_mode},
+        )
+        self.thread_ledgers.record_reply(
+            event=event,
+            reply_id=reply.reply_id,
+            summary=manifest.discord_summary,
+            artifact_ids=[review_pdf_pointer.artifact_id, review_pointer.artifact_id, manifest_pointer.artifact_id],
+            pdf_artifact_id=review_pdf_pointer.artifact_id,
+            object_ids=[review_pdf_object.object_id, review_markdown_object.object_id],
+            bundle_ids=[review_bundle.bundle_id],
+            mode=str(candidate.metadata.get("discussion_mode") or "").strip() or None,
+            created_at=reply.created_at,
+        )
         self.journal.append(
             "gateway_response_manifest_ready",
             "gateway",
@@ -4553,6 +5611,8 @@ class GatewayService:
             or line_count >= _ARTIFACT_SUMMARY_LINE_THRESHOLD
         ):
             return "artifact_summary"
+        if len(normalized) >= _THREAD_CHUNK_RESPONSE_LENGTH or line_count >= _THREAD_CHUNK_LINE_THRESHOLD:
+            return "thread_chunked_text"
         return "inline_text"
 
     def _build_artifact_summary_message(self, *, full_response: str, overview: str, highlights: list[str]) -> str:
@@ -4837,6 +5897,100 @@ class GatewayService:
         )
         return pointer
 
+    def _rewrite_gateway_json_artifact(self, *, pointer: ArtifactPointer, payload: dict[str, Any]) -> None:
+        raw = dump_json(payload).encode("utf-8")
+        path = self.path_policy.ensure_allowed_write(Path(pointer.path))
+        path.write_bytes(raw)
+        self.database.execute(
+            """
+            UPDATE artifact_pointers
+            SET checksum_sha256 = ?, size_bytes = ?
+            WHERE artifact_id = ?
+            """,
+            (
+                hashlib.sha256(raw).hexdigest(),
+                len(raw),
+                pointer.artifact_id,
+            ),
+        )
+
+    def _register_stateful_artifact(
+        self,
+        *,
+        event: ChannelEvent,
+        pointer: ArtifactPointer,
+        owner_type: str,
+        owner_id: str,
+        reply_id: str | None = None,
+        bundle_id: str | None = None,
+        source_object_id: str | None = None,
+        source_ids: list[str] | None = None,
+        object_type: str = "analysis_object",
+        title: str | None = None,
+        summary_short: str = "",
+        summary_full: str = "",
+        questions: list[str] | None = None,
+        decisions: list[str] | None = None,
+        tags: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+        cold_backup: bool | None = None,
+        content_status: str = "ready",
+        source_mime_type: str | None = None,
+        extracted_text_artifact_id: str | None = None,
+        ingestion_status: str | None = None,
+        source_locator: str | None = None,
+    ) -> tuple[Any, Any, Any]:
+        entry = self.artifact_ledgers.register_artifact(
+            pointer=pointer,
+            owner_type=owner_type,
+            owner_id=owner_id,
+            event=event,
+            reply_id=reply_id,
+            bundle_id=bundle_id,
+            source_object_id=source_object_id,
+            source_ids=source_ids,
+            metadata=metadata,
+            cold_backup=cold_backup,
+            ingestion_status=ingestion_status,
+            source_locator=source_locator,
+        )
+        bundle = self.analysis_bundles.ensure_thread_bundle(
+            surface=event.surface,
+            channel=event.message.channel,
+            thread_ref=event.message.thread_ref,
+            title=title or summary_short or f"Thread bundle {event.message.thread_ref.thread_id}",
+        )
+        obj = self.analysis_objects.register_artifact_object(
+            entry=entry,
+            object_type=object_type,
+            title=title or summary_short or pointer.artifact_kind,
+            summary_short=summary_short or pointer.artifact_kind,
+            summary_full=summary_full or summary_short or pointer.artifact_kind,
+            questions=questions,
+            decisions=decisions,
+            tags=tags,
+            content_status=content_status,
+            source_mime_type=source_mime_type,
+            extracted_text_artifact_id=extracted_text_artifact_id,
+            bundle_ids=[bundle.bundle_id] if bundle.bundle_id else [],
+            metadata=metadata,
+        )
+        self.analysis_bundles.add_member(
+            bundle_id=bundle.bundle_id,
+            object_id=obj.object_id,
+            member_role="artifact",
+            metadata={"artifact_id": pointer.artifact_id},
+        )
+        self.thread_ledgers.mark_artifact(
+            event=event,
+            artifact_id=pointer.artifact_id,
+            object_id=obj.object_id,
+            bundle_id=bundle.bundle_id,
+            is_pdf=pointer.artifact_kind.endswith("_pdf") or Path(pointer.path).suffix.lower() == ".pdf",
+            created_at=pointer.created_at,
+        )
+        return entry, obj, bundle
+
     def _persist_promotion(self, candidate, promotion) -> None:
         self.database.upsert(
             "promotion_decisions",
@@ -4875,6 +6029,36 @@ class GatewayService:
             conflict_columns="dispatch_id",
             immutable_columns=["created_at"],
         )
+        self.database.record_trace_edge(
+            parent_id=dispatch.channel_event_id,
+            parent_kind=TraceEntityKind.CHANNEL_EVENT.value,
+            child_id=dispatch.dispatch_id,
+            child_kind=TraceEntityKind.GATEWAY_DISPATCH.value,
+            relation=TraceRelationKind.CAUSED.value,
+        )
+        self.database.record_trace_edge(
+            parent_id=dispatch.dispatch_id,
+            parent_kind=TraceEntityKind.GATEWAY_DISPATCH.value,
+            child_id=dispatch.intent_id,
+            child_kind=TraceEntityKind.MISSION_INTENT.value,
+            relation=TraceRelationKind.REFERENCES.value,
+        )
+        if dispatch.decision_id:
+            self.database.record_trace_edge(
+                parent_id=dispatch.dispatch_id,
+                parent_kind=TraceEntityKind.GATEWAY_DISPATCH.value,
+                child_id=dispatch.decision_id,
+                child_kind=TraceEntityKind.ROUTING_DECISION.value,
+                relation=TraceRelationKind.REFERENCES.value,
+            )
+        if dispatch.mission_run_id:
+            self.database.record_trace_edge(
+                parent_id=dispatch.dispatch_id,
+                parent_kind=TraceEntityKind.GATEWAY_DISPATCH.value,
+                child_id=dispatch.mission_run_id,
+                child_kind=TraceEntityKind.MISSION_RUN.value,
+                relation=TraceRelationKind.REFERENCES.value,
+            )
 
     def _upsert_discord_thread_binding(
         self,

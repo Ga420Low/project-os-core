@@ -45,6 +45,17 @@ def _json_arg(value: str | None) -> dict[str, Any]:
     return json.loads(value) if value else {}
 
 
+def _parse_since_hours(value: str) -> int:
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return 24 * 7
+    if raw.endswith("d"):
+        return max(1, int(raw[:-1] or "7")) * 24
+    if raw.endswith("h"):
+        return max(1, int(raw[:-1] or "1"))
+    return max(1, int(raw))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="project-os")
     parser.add_argument("--config-path", help=argparse.SUPPRESS)
@@ -240,6 +251,8 @@ def main(argv: list[str] | None = None) -> int:
     gateway_openclaw.add_argument("--requested-worker")
     gateway_openclaw.add_argument("--risk-class", choices=[item.value for item in ActionRiskClass])
     gateway_openclaw.add_argument("--metadata")
+    gateway_backfill = gateway_sub.add_parser("backfill-stateful")
+    gateway_backfill.add_argument("--since", default="7d")
 
     openclaw_parser = subparsers.add_parser("openclaw")
     openclaw_sub = openclaw_parser.add_subparsers(dest="openclaw_command", required=True)
@@ -745,6 +758,10 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(to_jsonable(dispatch), indent=2, ensure_ascii=True, sort_keys=True))
             return 0 if dispatch.operator_reply.reply_kind != "blocked" else 1
+        if args.command == "gateway" and args.gateway_command == "backfill-stateful":
+            payload = services.gateway.backfill_stateful_recent(since_hours=_parse_since_hours(args.since))
+            print(json.dumps(payload, indent=2, ensure_ascii=True, sort_keys=True))
+            return 0
 
         if args.command == "openclaw":
             if args.openclaw_command == "bootstrap":
@@ -1376,7 +1393,7 @@ def _execute_scheduler_task(services, command: str, args_dict: dict[str, Any]) -
     if command == "daily_audit":
         metadata = {"scheduled": True, "scheduled_task": "daily_audit"}
         previous_policy = services.api_runs.execution_policy.run_contract_required
-        branch_name = f"project-os/scheduled-audit-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
+        branch_name = f"codex/project-os-scheduled-audit-{datetime.now(timezone.utc).strftime('%Y%m%d')}"
         try:
             services.api_runs.execution_policy.run_contract_required = False
             payload = services.api_runs.execute_run(

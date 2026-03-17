@@ -94,7 +94,7 @@ class BootstrapTests(unittest.TestCase):
                 self.assertTrue(checks["anthropic_translator_probe"]["ok"])
                 self.assertEqual(
                     {payload["model"] for _, payload in calls},
-                    {"claude-sonnet-4-20250514", "claude-haiku-4-5-20251001"},
+                    {"claude-haiku-4-5-20251001"},
                 )
                 self.assertEqual({api_key for api_key, _ in calls}, {"anthropic-test-secret"})
             finally:

@@ -4,6 +4,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
@@ -392,7 +393,7 @@ class MemoryOSTests(unittest.TestCase):
                         query="mission state",
                         user_id="project_os",
                         project_id="proj_1",
-                        branch_name="project-os/test",
+                        branch_name="codex/project-os-test",
                         channel="discord",
                         surface="discord",
                     ),
@@ -406,6 +407,96 @@ class MemoryOSTests(unittest.TestCase):
                 self.assertIn("block_write", operations)
                 self.assertEqual(str(trace_rows[-1]["operation"]), "recall_plan_built")
                 self.assertEqual(plan.reason, "unit_test")
+            finally:
+                services.close()
+
+    def test_project_continuity_brief_is_bounded_and_hides_private_thoughts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = _build_services(Path(tmp))
+            try:
+                services.memory_blocks.upsert_block(
+                    block_name="profiles/founder_stable_profile.md",
+                    content="# Founder Stable Profile\n\n- garder une facade Discord naturelle\n",
+                    owner_role="guardian",
+                    updated_by_role="system",
+                    reason="unit_test",
+                    provenance=["test:project_continuity"],
+                )
+                services.memory_blocks.upsert_block(
+                    block_name="profiles/recent_operating_context.md",
+                    content="# Recent Operating Context\n\n- pack 4 ferme, pack 5 en cours\n",
+                    owner_role="memory_curator",
+                    updated_by_role="system",
+                    reason="unit_test",
+                    provenance=["test:project_continuity"],
+                )
+                current = services.learning.record_decision(
+                    status=DecisionStatus.CONFIRMED,
+                    scope="gateway:discord_facade",
+                    summary="Keep the Discord facade natural and readable.",
+                    metadata={"branch_name": "codex/discord-facade"},
+                )
+                old = services.learning.record_decision(
+                    status=DecisionStatus.CONFIRMED,
+                    scope="gateway:legacy",
+                    summary="Legacy noisy disclosure should stay visible everywhere.",
+                )
+                services.learning.record_deferred_decision(
+                    scope="gateway:pack5",
+                    summary="Brancher la suite d evals conversationnelles.",
+                    next_trigger="quand le seam de continuite projet est stable",
+                    metadata={"branch_name": "codex/discord-facade"},
+                )
+                services.thoughts.create_thought(
+                    kind="continuity",
+                    summary="Discord continuity stays anchored on recent decisions.",
+                    content="Use bounded project continuity for Discord continuity and recent decisions.",
+                    source_ids=[current.decision_record_id],
+                    confidence=0.92,
+                    metadata={"privacy_view": "clean"},
+                )
+                private_thought = services.thoughts.create_thought(
+                    kind="continuity",
+                    summary="Founder-only private continuity detail.",
+                    content="This private continuity note must stay hidden by default.",
+                    source_ids=["private_note"],
+                    confidence=0.95,
+                    metadata={"privacy_view": "full"},
+                )
+
+                old_ts = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+                services.database.execute(
+                    "UPDATE decision_records SET created_at = ?, updated_at = ? WHERE decision_record_id = ?",
+                    (old_ts, old_ts, old.decision_record_id),
+                )
+                services.database.execute(
+                    "UPDATE thought_memories SET created_at = ?, updated_at = ? WHERE thought_id = ?",
+                    (old_ts, old_ts, private_thought.thought_id),
+                )
+
+                brief = services.memory_os.build_project_continuity_brief(
+                    context=RetrievalContext(
+                        query="discord continuity recent decisions",
+                        user_id="founder",
+                        surface="discord",
+                        channel="discord",
+                        branch_name="codex/discord-facade",
+                        target_profile="core",
+                    )
+                )
+
+                self.assertIn("cap stable: garder une facade Discord naturelle", brief["summary"])
+                self.assertIn("Keep the Discord facade natural and readable.", brief["summary"])
+                self.assertIn("Brancher la suite d evals conversationnelles.", brief["summary"])
+                self.assertIn("Discord continuity stays anchored on recent decisions.", brief["summary"])
+                self.assertNotIn("Legacy noisy disclosure", brief["summary"])
+                self.assertNotIn("Founder-only private continuity detail.", brief["summary"])
+                self.assertEqual(brief["retention"]["lookback_days"], 5)
+                self.assertEqual(brief["retention"]["privacy_view"], "clean_only")
+                trace = services.database.fetchone(
+                    "SELECT operation FROM memory_operation_traces WHERE operation = 'project_continuity_built' ORDER BY created_at DESC LIMIT 1"
+                )
+                self.assertIsNotNone(trace)
             finally:
                 services.close()
 

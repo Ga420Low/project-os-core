@@ -42,15 +42,19 @@ from ..models import (
     OperatorDeliveryGuarantee,
     OperatorDeliveryStatus,
     OperatorAudience,
+    OutputQuarantineReason,
     RunContract,
     RunContractStatus,
     RunLifecycleEvent,
     RunLifecycleEventKind,
     RunSpeechPolicy,
+    TraceEntityKind,
+    TraceRelationKind,
     new_id,
     to_jsonable,
 )
 from ..observability import StructuredLogger
+from ..operator_visibility_policy import StandardReplyPolicy
 from ..paths import PathPolicy, ProjectPaths
 from ..runtime.journal import LocalJournal
 from ..secrets import SecretResolver
@@ -59,7 +63,7 @@ from ..router.service import MissionRouter
 
 DEFAULT_CONTEXT_SOURCE_LIMIT = 12_000
 DEFAULT_CONTEXT_FILE_COUNT = 10
-REVIEWER_MODEL = "claude-sonnet-4-20250514"
+REVIEWER_MODEL = "claude-haiku-4-5-20251001"
 TRANSLATOR_MODEL = "claude-haiku-4-5-20251001"
 
 _DELIVERY_GUARANTEE_RANK: dict[OperatorDeliveryGuarantee, int] = {
@@ -697,7 +701,12 @@ class ApiRunService:
                 human_summary=None,
                 payload={"run_request_id": request.run_request_id},
             )
-            structured_output, raw_payload, usage = self._normalize_response_payload(response_payload)
+            structured_output, raw_payload, usage = self._normalize_response_payload(
+                response_payload,
+                run_id=run_id,
+                run_request_id=request.run_request_id,
+                model=prompt_template.model,
+            )
             raw_output_path = self._write_runtime_json(self.paths.api_runs_root / "raw_results", run_id, raw_payload)
             structured_output_path = self._write_runtime_json(self.paths.api_runs_root / "structured_results", run_id, structured_output)
             estimated_cost = self._estimate_cost_eur(model=str(raw_payload.get("model") or prompt_template.model), usage=usage)
@@ -2268,7 +2277,7 @@ class ApiRunService:
         normalized = str(branch_name or "").strip()
         if not normalized:
             return False
-        return not normalized.startswith("project-os/")
+        return not normalized.startswith("codex/project-os-")
 
     def _sanitize_monitor_snapshot(self, snapshot: dict[str, Any]) -> dict[str, Any]:
         latest_runs = snapshot.get("latest_runs") or []
@@ -2914,7 +2923,87 @@ class ApiRunService:
         )
         return True, None
 
-    def _normalize_response_payload(self, response_payload: Any) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    @staticmethod
+    def _preview_text(value: Any, *, max_chars: int = 16_000) -> str | None:
+        text = str(value or "")
+        if not text:
+            return None
+        if len(text) <= max_chars:
+            return text
+        return f"{text[:max_chars].rstrip()}...[truncated]"
+
+    @staticmethod
+    def _infer_provider_from_model(model_name: str | None) -> str | None:
+        candidate = str(model_name or "").strip().lower()
+        if not candidate:
+            return None
+        if candidate.startswith("claude"):
+            return "anthropic"
+        if candidate.startswith(("gpt", "o1", "o3", "o4")):
+            return "openai"
+        return None
+
+    def _quarantine_api_run_output(
+        self,
+        *,
+        reason_code: str,
+        run_id: str | None,
+        run_request_id: str | None,
+        model: str | None,
+        raw_payload: dict[str, Any],
+        output_text: str | None,
+        error: str,
+    ) -> str:
+        provider = str(raw_payload.get("provider") or raw_payload.get("model_provider") or "").strip() or self._infer_provider_from_model(
+            str(raw_payload.get("model") or model or "").strip() or None
+        )
+        source_entity_id = str(run_id or run_request_id or "unknown_api_run").strip()
+        quarantine_id = self.database.record_output_quarantine(
+            source_system="api_runs",
+            source_entity_kind=TraceEntityKind.API_RUN.value,
+            source_entity_id=source_entity_id,
+            reason_code=reason_code,
+            provider=provider,
+            model=str(raw_payload.get("model") or model or "").strip() or None,
+            run_id=str(run_id or "").strip() or None,
+            record_locator=str(run_request_id or run_id or "").strip() or None,
+            payload={
+                "raw_payload": raw_payload,
+                "output_text_preview": self._preview_text(output_text),
+            },
+            metadata={
+                "error": error,
+                "run_request_id": str(run_request_id or "").strip() or None,
+            },
+        )
+        self.database.record_trace_edge(
+            parent_id=source_entity_id,
+            parent_kind=TraceEntityKind.API_RUN.value,
+            child_id=quarantine_id,
+            child_kind=TraceEntityKind.OUTPUT_QUARANTINE.value,
+            relation=TraceRelationKind.QUARANTINED_AS.value,
+            metadata={"reason_code": reason_code},
+        )
+        self.logger.log(
+            "WARNING",
+            "api_run_output_quarantined",
+            quarantine_id=quarantine_id,
+            reason_code=reason_code,
+            run_id=run_id,
+            run_request_id=run_request_id,
+            provider=provider,
+            model=str(raw_payload.get("model") or model or "").strip() or None,
+        )
+        return quarantine_id
+
+    def _normalize_response_payload(
+        self,
+        response_payload: Any,
+        *,
+        run_id: str | None = None,
+        run_request_id: str | None = None,
+        model: str | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
         if isinstance(response_payload, dict):
             raw_payload = dict(response_payload)
             output_text = raw_payload.get("output_text")
@@ -2922,8 +3011,34 @@ class ApiRunService:
             raw_payload = response_payload.model_dump() if hasattr(response_payload, "model_dump") else {"repr": repr(response_payload)}
             output_text = getattr(response_payload, "output_text", None)
         if not output_text:
+            self._quarantine_api_run_output(
+                reason_code=OutputQuarantineReason.MISSING_OUTPUT_TEXT.value,
+                run_id=run_id,
+                run_request_id=run_request_id,
+                model=model,
+                raw_payload=raw_payload,
+                output_text=None,
+                error="Responses API returned no output_text",
+            )
             raise RuntimeError("Responses API returned no output_text")
-        structured_output = self._parse_structured_output_text(str(output_text))
+        try:
+            structured_output = self._parse_structured_output_text(str(output_text))
+        except RuntimeError as exc:
+            reason_code = OutputQuarantineReason.INVALID_STRUCTURED_PAYLOAD.value
+            if "invalid JSON" in str(exc):
+                reason_code = OutputQuarantineReason.INVALID_JSON.value
+            elif "non-object" in str(exc):
+                reason_code = OutputQuarantineReason.NON_OBJECT_PAYLOAD.value
+            self._quarantine_api_run_output(
+                reason_code=reason_code,
+                run_id=run_id,
+                run_request_id=run_request_id,
+                model=model,
+                raw_payload=raw_payload,
+                output_text=str(output_text),
+                error=str(exc),
+            )
+            raise
         usage = raw_payload.get("usage")
         if usage is None and hasattr(response_payload, "usage") and getattr(response_payload, "usage") is not None:
             usage_obj = getattr(response_payload, "usage")
@@ -2945,7 +3060,10 @@ class ApiRunService:
             end = text.find("```", start)
             if end > start:
                 fenced = text[start:end].strip()
-                parsed, _ = decoder.raw_decode(fenced)
+                try:
+                    parsed, _ = decoder.raw_decode(fenced)
+                except json.JSONDecodeError:
+                    parsed = None
                 if isinstance(parsed, dict):
                     return parsed
 
@@ -2959,7 +3077,9 @@ class ApiRunService:
                 if isinstance(parsed, dict):
                     return parsed
 
-        raise RuntimeError("Responses API returned an invalid structured payload")
+        if text.find("{") >= 0 or text.find("[") >= 0 or "```json" in text:
+            raise RuntimeError("Responses API returned invalid JSON in structured output")
+        raise RuntimeError("Responses API returned a non-object structured payload")
 
     def _reviewer_system_prompt(self) -> str:
         return textwrap.dedent(
@@ -3995,19 +4115,7 @@ class ApiRunService:
         }
 
     def _render_operator_delivery_text(self, event: RunLifecycleEvent) -> str:
-        lines = [
-            f"[Project OS] {event.title}",
-            f"Mode: {event.mode.value if event.mode else 'n/a'} | Branche: {event.branch_name or 'n/a'}",
-            f"Statut: {event.status.value if event.status else 'n/a'} | Phase: {event.phase or 'n/a'}",
-            f"Resume: {event.summary}",
-        ]
-        if event.blocking_question:
-            lines.append(f"Question: {event.blocking_question}")
-        if event.recommended_action:
-            lines.append(f"Action recommandee: {event.recommended_action}")
-        if event.requires_reapproval:
-            lines.append("Re-go requis: oui")
-        return "\n".join(lines)
+        return StandardReplyPolicy.render_operator_delivery_text(event)
 
     def _pending_operator_delivery_count(self, *, connection: sqlite3.Connection | None = None) -> int:
         row = self.database.fetchone(
@@ -4235,8 +4343,8 @@ class ApiRunService:
 
     def _normalize_branch_name(self, branch_name: str | None) -> str:
         candidate = branch_name or self._current_branch()
-        if not candidate.startswith("project-os/"):
-            raise ValueError("API runs must target a project-os/* branch")
+        if not candidate.startswith("codex/project-os-"):
+            raise ValueError("API runs must target a codex/project-os-* branch")
         return candidate
 
     def _normalize_skill_tags(self, skill_tags: list[str]) -> list[str]:
@@ -4483,7 +4591,7 @@ class ApiRunService:
     def _default_constraints(self) -> list[str]:
         return [
             "Travaille d'abord sur le repo et la CLI. Pas de computer use Windows pour la lane code v1.",
-            "Ne modifie jamais main. Travaille sur une branche project-os/*.",
+            "Ne modifie jamais main. Travaille sur une branche codex/project-os-*.",
             "Ne contourne jamais le Mission Router, la verite runtime, ni la policy d'approbation.",
             "Reste silencieux pendant le run. Les messages naturels n'arrivent qu'en cas de blocage reel ou en fin de run.",
             "Retourne du JSON structure uniquement et signale explicitement les faits manquants.",

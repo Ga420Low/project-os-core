@@ -23,7 +23,7 @@ from project_os_core.models import (
 )
 from project_os_core.services import build_app_services
 
-TEST_BRANCH = "project-os/test-mission-chain"
+TEST_BRANCH = "codex/project-os-test-mission-chain"
 
 
 def _install_stub_reviewer(services) -> None:

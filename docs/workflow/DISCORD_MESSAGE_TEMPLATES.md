@@ -68,7 +68,7 @@ Regles:
 Exemple:
 
 ```
-project-os/refactor-memory termine - Memory separe en bridge, store et curator.
+codex/project-os-refactor-memory termine - Memory separe en bridge, store et curator.
 5 fichiers, 0.28EUR. Review dispo au retour.
 ```
 
@@ -84,7 +84,7 @@ A) [option A] B) [option B]
 Exemple:
 
 ```
-Question sur project-os/refactor-memory -
+Question sur codex/project-os-refactor-memory -
 Deux modules se bloquent mutuellement.
 A) Separer proprement (recommande) B) Fusionner
 Pas urgent, j'ai 4h. Si tu reponds pas je fais A.
@@ -100,7 +100,7 @@ Pas urgent, j'ai 4h. Si tu reponds pas je fais A.
 Exemple:
 
 ```
-project-os/add-guardian echoue - erreur de connexion a l'API OpenAI.
+codex/project-os-add-guardian echoue - erreur de connexion a l'API OpenAI.
 Je reessaie dans 30 min, aucune action requise.
 ```
 
@@ -143,14 +143,14 @@ Review de [branche] - [verdict en 1 phrase].
 Exemple accepte:
 
 ```
-Review de project-os/refactor-memory - Code propre, tout est bon.
+Review de codex/project-os-refactor-memory - Code propre, tout est bon.
 Pret a merger. Dis "merge" pour valider.
 ```
 
 Exemple avec reserves:
 
 ```
-Review de project-os/refactor-memory - 1 probleme a corriger.
+Review de codex/project-os-refactor-memory - 1 probleme a corriger.
 Fuite de connexion detectee, GPT va corriger automatiquement.
 ```
 

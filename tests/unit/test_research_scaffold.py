@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from project_os_core.research_scaffold import ResearchScaffoldRequest, detect_deep_research_request, scaffold_research
+from project_os_core.research_scaffold import (
+    ResearchScaffoldRequest,
+    detect_deep_research_request,
+    parse_research_mode_selection,
+    scaffold_research,
+)
 
 
 def _write(path: Path, content: str) -> None:
@@ -118,3 +123,16 @@ def test_detect_deep_research_request_infers_component_profile_inside_audit_kind
     assert detected.kind == "audit"
     assert detected.research_profile == "component_discovery"
     assert detected.title == "Discord Operations"
+
+
+def test_parse_research_mode_selection_keeps_multi_profile_reply_ambiguous() -> None:
+    selection = parse_research_mode_selection(
+        "project audit, component discovery, domain audit",
+        kind="system",
+        fallback_profile="component_discovery",
+        fallback_intensity="extreme",
+    )
+
+    assert selection["ambiguous_profile_selection"] is True
+    assert selection["selected_profile"] is None
+    assert selection["selected_intensity"] == "extreme"

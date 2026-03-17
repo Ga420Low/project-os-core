@@ -14,6 +14,7 @@ const DISCORD_SAFE_CHUNK_LENGTH = 1850;
 const DISCORD_FAILURE_NOTICE_MAX_LENGTH = 320;
 const DISCORD_MAX_LINES_PER_MESSAGE = 17;
 const DISCORD_TYPING_REFRESH_MS = 5000;
+const PROJECT_OS_GATEWAY_STATE_KEY = "__projectOsGatewayAdapterState";
 const SAFE_ENV_KEYS = new Set([
   "APPDATA",
   "COMSPEC",
@@ -61,6 +62,23 @@ function detachTimer(handle) {
   if (handle && typeof handle.unref === "function") {
     handle.unref();
   }
+}
+
+function sharedState() {
+  const root = globalThis;
+  if (!root[PROJECT_OS_GATEWAY_STATE_KEY]) {
+    root[PROJECT_OS_GATEWAY_STATE_KEY] = {
+      pendingDiscordReplies: new Map(),
+      ingressDedupCache: new Map(),
+      operatorDeliveryInflight: new Set(),
+      operatorDeliveryPollingStarted: false,
+      schedulerPollingStarted: false,
+      operatorDeliveryBusy: false,
+      schedulerBusy: false,
+      intervals: [],
+    };
+  }
+  return root[PROJECT_OS_GATEWAY_STATE_KEY];
 }
 
 function resolveConfig(api) {
@@ -420,11 +438,20 @@ function summarizeDiscordDeliveryError(error) {
   if (!raw) {
     return "erreur inconnue";
   }
+  if (raw.includes("429") || raw.toLowerCase().includes("rate limit")) {
+    return "Discord demande d'attendre un peu avant le prochain envoi";
+  }
   if (raw.includes("BASE_TYPE_MAX_LENGTH")) {
     return "reponse trop longue pour Discord";
   }
   if (raw.includes("DISCORD_BOT_TOKEN")) {
-    return "token Discord indisponible";
+    return "connexion Discord indisponible";
+  }
+  if (raw.includes("Missing Access") || raw.includes("Missing Permissions")) {
+    return "je n'ai pas les droits pour ecrire ici";
+  }
+  if (raw.includes("Unknown Channel")) {
+    return "le salon Discord cible est introuvable";
   }
   if (raw.includes("unsupported Discord target")) {
     return "cible Discord invalide";
@@ -577,7 +604,7 @@ async function sendDiscordMessageDirect(api, target, text, options = {}) {
 
 async function sendDiscordDeliveryFailureNotice(api, target, error, options = {}) {
   const reason = summarizeDiscordDeliveryError(error);
-  const notice = `[Project OS] Reponse calculee mais livraison Discord echouee: ${reason}. Regarde les logs gateway pour le detail.`;
+  const notice = `[Project OS] Je n'ai pas pu livrer toute la reponse ici: ${reason}. Je garde la trace et je retente si le canal le permet.`;
   try {
     await sendDiscordMessageDirect(api, target, notice, {
       replyTo: options.replyTo,
@@ -648,7 +675,7 @@ async function maybeSendDiscordImmediateReply(api, event, ctx, parsed, config) {
     forgetPendingDiscordReply(api, pendingKey);
   } catch (error) {
     api.logger.warn(`[project-os-gateway-adapter] direct Discord Project OS reply failed: ${String(error)}`);
-    const failureNotice = `[Project OS] Reponse calculee mais non livree completement. Cause: ${summarizeDiscordDeliveryError(error)}.`;
+    const failureNotice = `[Project OS] Je n'ai pas pu livrer toute la reponse ici: ${summarizeDiscordDeliveryError(error)}.`;
     overwritePendingDiscordReply(api, pendingKey, failureNotice, "error");
     const noticeSent = await sendDiscordDeliveryFailureNotice(api, target, error, { replyTo });
     if (noticeSent) {
@@ -658,10 +685,7 @@ async function maybeSendDiscordImmediateReply(api, event, ctx, parsed, config) {
 }
 
 function pendingDiscordReplyCache(api) {
-  if (!api._projectOsPendingDiscordReplies) {
-    api._projectOsPendingDiscordReplies = new Map();
-  }
-  return api._projectOsPendingDiscordReplies;
+  return sharedState(api).pendingDiscordReplies;
 }
 
 function prunePendingDiscordReplyCache(api, now = Date.now()) {
@@ -794,17 +818,11 @@ function resolveOperatorDeliveryTarget(config, payload, channelHint) {
 }
 
 function ingressDedupCache(api) {
-  if (!api._projectOsIngressDedupCache) {
-    api._projectOsIngressDedupCache = new Map();
-  }
-  return api._projectOsIngressDedupCache;
+  return sharedState(api).ingressDedupCache;
 }
 
 function operatorDeliveryInflightCache(api) {
-  if (!api._projectOsOperatorDeliveryInflight) {
-    api._projectOsOperatorDeliveryInflight = new Set();
-  }
-  return api._projectOsOperatorDeliveryInflight;
+  return sharedState(api).operatorDeliveryInflight;
 }
 
 function pruneIngressDedupCache(api, now = Date.now()) {
@@ -857,10 +875,10 @@ function rememberIngressKey(api, dedupKey) {
 }
 
 function forgetIngressKey(api, dedupKey) {
-  if (!dedupKey || !api._projectOsIngressDedupCache) {
+  if (!dedupKey) {
     return;
   }
-  api._projectOsIngressDedupCache.delete(dedupKey);
+  sharedState(api).ingressDedupCache.delete(dedupKey);
 }
 
 async function flushOperatorDeliveries(api, config) {
@@ -952,24 +970,24 @@ async function flushOperatorDeliveries(api, config) {
 }
 
 function startOperatorDeliveryPolling(api) {
-  if (api._projectOsOperatorDeliveryPollingStarted) {
+  const state = sharedState(api);
+  if (state.operatorDeliveryPollingStarted) {
     return;
   }
-  api._projectOsOperatorDeliveryPollingStarted = true;
-  let busy = false;
+  state.operatorDeliveryPollingStarted = true;
 
   const tick = async () => {
-    if (busy) {
+    if (state.operatorDeliveryBusy) {
       return;
     }
-    busy = true;
+    state.operatorDeliveryBusy = true;
     try {
       const config = resolveConfig(api);
       await flushOperatorDeliveries(api, config);
     } catch (error) {
       api.logger.warn(`[project-os-gateway-adapter] operator delivery polling failed: ${String(error)}`);
     } finally {
-      busy = false;
+      state.operatorDeliveryBusy = false;
     }
   };
 
@@ -986,27 +1004,24 @@ function startOperatorDeliveryPolling(api) {
     void tick();
   }, config.operatorPollingIntervalMs);
 
-  if (!api._projectOsIntervals) {
-    api._projectOsIntervals = [];
-  }
-  api._projectOsIntervals.push(initialTick, recurringTick);
+  state.intervals.push(initialTick, recurringTick);
 
   detachTimer(initialTick);
   detachTimer(recurringTick);
 }
 
 function startSchedulerPolling(api) {
-  if (api._projectOsSchedulerPollingStarted) {
+  const state = sharedState(api);
+  if (state.schedulerPollingStarted) {
     return;
   }
-  api._projectOsSchedulerPollingStarted = true;
-  let busy = false;
+  state.schedulerPollingStarted = true;
 
   const tick = async () => {
-    if (busy) {
+    if (state.schedulerBusy) {
       return;
     }
-    busy = true;
+    state.schedulerBusy = true;
     try {
       const config = resolveConfig(api);
       const { result } = await runProjectOsJsonCommand(api, config, ["scheduler", "tick"], undefined);
@@ -1016,7 +1031,7 @@ function startSchedulerPolling(api) {
     } catch (error) {
       api.logger.warn(`[project-os-gateway-adapter] scheduler tick error: ${String(error)}`);
     } finally {
-      busy = false;
+      state.schedulerBusy = false;
     }
   };
 
@@ -1027,10 +1042,7 @@ function startSchedulerPolling(api) {
     void tick();
   }, 60000);
 
-  if (!api._projectOsIntervals) {
-    api._projectOsIntervals = [];
-  }
-  api._projectOsIntervals.push(initialTick, recurringTick);
+  state.intervals.push(initialTick, recurringTick);
 
   detachTimer(initialTick);
   detachTimer(recurringTick);

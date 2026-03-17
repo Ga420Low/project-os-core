@@ -3,15 +3,25 @@ from __future__ import annotations
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
+from uuid import uuid4
 
 
-CURRENT_SCHEMA_VERSION = "15"
+CURRENT_SCHEMA_VERSION = "18"
 
 
 def _quote_identifier(name: str) -> str:
     return '"' + name.replace('"', '""') + '"'
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _new_prefixed_id(prefix: str) -> str:
+    return f"{prefix}_{uuid4().hex}"
 
 
 class CanonicalDatabase:
@@ -232,6 +242,41 @@ class CanonicalDatabase:
                     runtime_state_id TEXT,
                     inputs_json TEXT NOT NULL,
                     outputs_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS trace_edges (
+                    trace_edge_id TEXT PRIMARY KEY,
+                    parent_id TEXT NOT NULL,
+                    parent_kind TEXT NOT NULL,
+                    child_id TEXT NOT NULL,
+                    child_kind TEXT NOT NULL,
+                    relation TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS output_quarantine_records (
+                    quarantine_id TEXT PRIMARY KEY,
+                    source_system TEXT NOT NULL,
+                    source_entity_kind TEXT NOT NULL,
+                    source_entity_id TEXT NOT NULL,
+                    reason_code TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    provider TEXT,
+                    model TEXT,
+                    response_id TEXT,
+                    previous_response_id TEXT,
+                    run_id TEXT,
+                    mission_run_id TEXT,
+                    dispatch_id TEXT,
+                    decision_id TEXT,
+                    intent_id TEXT,
+                    channel_event_id TEXT,
+                    record_locator TEXT,
+                    markers_json TEXT NOT NULL DEFAULT '[]',
+                    payload_json TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL
                 );
 
@@ -864,6 +909,201 @@ class CanonicalDatabase:
                     last_trust_class TEXT NOT NULL DEFAULT 'weak_signal',
                     metadata_json TEXT NOT NULL DEFAULT '{}'
                 );
+
+                CREATE TABLE IF NOT EXISTS thread_ledgers (
+                    thread_ledger_id TEXT PRIMARY KEY,
+                    surface TEXT NOT NULL,
+                    channel TEXT NOT NULL,
+                    thread_id TEXT NOT NULL,
+                    external_thread_id TEXT,
+                    conversation_key TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    active_subject TEXT,
+                    subtopics_json TEXT NOT NULL DEFAULT '[]',
+                    last_operator_reply_id TEXT,
+                    last_authoritative_reply_summary TEXT,
+                    last_artifact_id TEXT,
+                    last_pdf_artifact_id TEXT,
+                    last_bundle_id TEXT,
+                    active_bundle_ids_json TEXT NOT NULL DEFAULT '[]',
+                    active_analysis_object_ids_json TEXT NOT NULL DEFAULT '[]',
+                    referenced_object_ids_json TEXT NOT NULL DEFAULT '[]',
+                    pending_approval_ids_json TEXT NOT NULL DEFAULT '[]',
+                    mode TEXT,
+                    claims_json TEXT NOT NULL DEFAULT '[]',
+                    questions_json TEXT NOT NULL DEFAULT '[]',
+                    decisions_json TEXT NOT NULL DEFAULT '[]',
+                    contradictions_json TEXT NOT NULL DEFAULT '[]',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS thread_ledger_events (
+                    thread_ledger_event_id TEXT PRIMARY KEY,
+                    thread_ledger_id TEXT NOT NULL,
+                    event_kind TEXT NOT NULL,
+                    related_id TEXT,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS artifact_ledger_entries (
+                    artifact_ledger_entry_id TEXT PRIMARY KEY,
+                    artifact_id TEXT NOT NULL,
+                    artifact_kind TEXT NOT NULL,
+                    owner_type TEXT NOT NULL,
+                    owner_id TEXT NOT NULL,
+                    surface TEXT,
+                    channel TEXT,
+                    thread_id TEXT,
+                    external_thread_id TEXT,
+                    conversation_key TEXT,
+                    reply_id TEXT,
+                    run_id TEXT,
+                    approval_id TEXT,
+                    bundle_id TEXT,
+                    source_object_id TEXT,
+                    source_ids_json TEXT NOT NULL DEFAULT '[]',
+                    cold_artifact_id TEXT,
+                    cold_path TEXT,
+                    ingestion_status TEXT NOT NULL DEFAULT 'ready',
+                    source_locator TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS analysis_objects (
+                    object_id TEXT PRIMARY KEY,
+                    object_type TEXT NOT NULL,
+                    surface TEXT,
+                    channel TEXT,
+                    thread_id TEXT,
+                    conversation_key TEXT,
+                    title TEXT,
+                    summary_short TEXT NOT NULL DEFAULT '',
+                    summary_full TEXT NOT NULL DEFAULT '',
+                    source_ids_json TEXT NOT NULL DEFAULT '[]',
+                    artifact_ids_json TEXT NOT NULL DEFAULT '[]',
+                    claims_json TEXT NOT NULL DEFAULT '[]',
+                    questions_json TEXT NOT NULL DEFAULT '[]',
+                    decisions_json TEXT NOT NULL DEFAULT '[]',
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    content_status TEXT NOT NULL DEFAULT 'ready',
+                    source_mime_type TEXT,
+                    extracted_text_artifact_id TEXT,
+                    bundle_ids_json TEXT NOT NULL DEFAULT '[]',
+                    supersedes_json TEXT NOT NULL DEFAULT '[]',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS analysis_bundles (
+                    bundle_id TEXT PRIMARY KEY,
+                    bundle_kind TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    surface TEXT,
+                    channel TEXT,
+                    thread_id TEXT,
+                    conversation_key TEXT,
+                    summary_short TEXT NOT NULL DEFAULT '',
+                    summary_full TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'active',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS bundle_members (
+                    bundle_id TEXT NOT NULL,
+                    object_id TEXT NOT NULL,
+                    member_role TEXT NOT NULL DEFAULT 'member',
+                    position INTEGER,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (bundle_id, object_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS working_set_snapshots (
+                    working_set_id TEXT PRIMARY KEY,
+                    surface TEXT,
+                    channel TEXT,
+                    thread_id TEXT,
+                    conversation_key TEXT,
+                    message_id TEXT,
+                    summary TEXT NOT NULL DEFAULT '',
+                    selected_object_ids_json TEXT NOT NULL DEFAULT '[]',
+                    selected_object_digests_json TEXT NOT NULL DEFAULT '[]',
+                    selected_artifact_ids_json TEXT NOT NULL DEFAULT '[]',
+                    selected_bundle_ids_json TEXT NOT NULL DEFAULT '[]',
+                    reasons_json TEXT NOT NULL DEFAULT '[]',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS artifact_ingestion_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    artifact_id TEXT NOT NULL,
+                    conversation_key TEXT,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    last_error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS reference_resolutions (
+                    resolution_id TEXT PRIMARY KEY,
+                    resolution_kind TEXT NOT NULL,
+                    confidence REAL NOT NULL,
+                    surface TEXT,
+                    channel TEXT,
+                    thread_id TEXT,
+                    conversation_key TEXT,
+                    message_id TEXT,
+                    target_type TEXT,
+                    target_id TEXT,
+                    reason TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS claim_records (
+                    claim_record_id TEXT PRIMARY KEY,
+                    conversation_key TEXT,
+                    thread_id TEXT,
+                    object_id TEXT,
+                    claim_text TEXT NOT NULL,
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS question_records (
+                    question_record_id TEXT PRIMARY KEY,
+                    conversation_key TEXT,
+                    thread_id TEXT,
+                    object_id TEXT,
+                    question_text TEXT NOT NULL,
+                    confidence REAL NOT NULL DEFAULT 0.0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS rating_records (
+                    rating_record_id TEXT PRIMARY KEY,
+                    conversation_key TEXT,
+                    thread_id TEXT,
+                    object_id TEXT,
+                    score REAL,
+                    rationale TEXT,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -888,6 +1128,13 @@ class CanonicalDatabase:
                 ("api_run_requests", "mission_step_index INTEGER"),
                 ("api_run_contracts", "founder_decision_at TEXT"),
                 ("api_run_operator_deliveries", "next_attempt_at TEXT"),
+                ("artifact_ledger_entries", "ingestion_status TEXT NOT NULL DEFAULT 'ready'"),
+                ("artifact_ledger_entries", "source_locator TEXT"),
+                ("analysis_objects", "content_status TEXT NOT NULL DEFAULT 'ready'"),
+                ("analysis_objects", "source_mime_type TEXT"),
+                ("analysis_objects", "extracted_text_artifact_id TEXT"),
+                ("analysis_objects", "bundle_ids_json TEXT NOT NULL DEFAULT '[]'"),
+                ("working_set_snapshots", "selected_object_digests_json TEXT NOT NULL DEFAULT '[]'"),
             ):
                 self._ensure_column(connection, table, column_sql)
 
@@ -930,6 +1177,20 @@ class CanonicalDatabase:
                 ON scheduled_tasks(enabled, next_run_at ASC);
             CREATE INDEX IF NOT EXISTS idx_routing_decisions_intent
                 ON routing_decisions(intent_id, created_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_trace_edges_relation
+                ON trace_edges(parent_id, parent_kind, child_id, child_kind, relation);
+            CREATE INDEX IF NOT EXISTS idx_trace_edges_parent_created
+                ON trace_edges(parent_id, parent_kind, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_trace_edges_child_created
+                ON trace_edges(child_id, child_kind, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_output_quarantine_source_created
+                ON output_quarantine_records(source_system, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_output_quarantine_status_created
+                ON output_quarantine_records(status, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_output_quarantine_entity_created
+                ON output_quarantine_records(source_entity_kind, source_entity_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_output_quarantine_run_created
+                ON output_quarantine_records(run_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_channel_events_channel_created
                 ON channel_events(channel, created_at DESC);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_channel_events_ingress_dedup
@@ -1041,6 +1302,36 @@ class CanonicalDatabase:
                 ON deep_research_source_reputation(domain, last_seen_at DESC);
             CREATE INDEX IF NOT EXISTS idx_deep_research_rep_score_updated
                 ON deep_research_source_reputation(last_score DESC, last_seen_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_thread_ledgers_conversation
+                ON thread_ledgers(surface, channel, conversation_key);
+            CREATE INDEX IF NOT EXISTS idx_thread_ledger_events_thread_created
+                ON thread_ledger_events(thread_ledger_id, created_at DESC);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_artifact_ledger_entries_artifact
+                ON artifact_ledger_entries(artifact_id);
+            CREATE INDEX IF NOT EXISTS idx_artifact_ledger_entries_conversation_created
+                ON artifact_ledger_entries(conversation_key, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_analysis_objects_conversation_updated
+                ON analysis_objects(conversation_key, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_analysis_objects_thread_updated
+                ON analysis_objects(thread_id, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_analysis_bundles_conversation_updated
+                ON analysis_bundles(conversation_key, updated_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_bundle_members_bundle_created
+                ON bundle_members(bundle_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_working_set_snapshots_conversation_created
+                ON working_set_snapshots(conversation_key, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_artifact_ingestion_tasks_status_updated
+                ON artifact_ingestion_tasks(status, updated_at ASC, created_at ASC);
+            CREATE INDEX IF NOT EXISTS idx_artifact_ingestion_tasks_artifact
+                ON artifact_ingestion_tasks(artifact_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_reference_resolutions_conversation_created
+                ON reference_resolutions(conversation_key, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_claim_records_conversation_created
+                ON claim_records(conversation_key, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_question_records_conversation_created
+                ON question_records(conversation_key, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_rating_records_conversation_created
+                ON rating_records(conversation_key, created_at DESC);
             """
         )
 
@@ -1153,6 +1444,129 @@ class CanonicalDatabase:
             "SELECT COALESCE(MAX(vector_rowid), 0) + 1 AS next_id FROM memory_embedding_map"
         ).fetchone()
         return int(row["next_id"]) if row else 1
+
+    def record_trace_edge(
+        self,
+        *,
+        parent_id: str,
+        parent_kind: str,
+        child_id: str,
+        child_kind: str,
+        relation: str,
+        metadata: dict[str, Any] | None = None,
+        trace_edge_id: str | None = None,
+        created_at: str | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> str:
+        existing = self.fetchone(
+            """
+            SELECT trace_edge_id
+            FROM trace_edges
+            WHERE parent_id = ?
+              AND parent_kind = ?
+              AND child_id = ?
+              AND child_kind = ?
+              AND relation = ?
+            """,
+            (parent_id, parent_kind, child_id, child_kind, relation),
+            connection=connection,
+        )
+        if existing is not None:
+            edge_id = str(existing["trace_edge_id"])
+            self.upsert(
+                "trace_edges",
+                {
+                    "trace_edge_id": edge_id,
+                    "parent_id": parent_id,
+                    "parent_kind": parent_kind,
+                    "child_id": child_id,
+                    "child_kind": child_kind,
+                    "relation": relation,
+                    "metadata_json": dump_json(metadata or {}),
+                    "created_at": created_at or _utc_now_iso(),
+                },
+                conflict_columns="trace_edge_id",
+                immutable_columns=["created_at"],
+                connection=connection,
+            )
+            return edge_id
+
+        edge_id = trace_edge_id or _new_prefixed_id("trace_edge")
+        self.upsert(
+            "trace_edges",
+            {
+                "trace_edge_id": edge_id,
+                "parent_id": parent_id,
+                "parent_kind": parent_kind,
+                "child_id": child_id,
+                "child_kind": child_kind,
+                "relation": relation,
+                "metadata_json": dump_json(metadata or {}),
+                "created_at": created_at or _utc_now_iso(),
+            },
+            conflict_columns="trace_edge_id",
+            immutable_columns=["created_at"],
+            connection=connection,
+        )
+        return edge_id
+
+    def record_output_quarantine(
+        self,
+        *,
+        source_system: str,
+        source_entity_kind: str,
+        source_entity_id: str,
+        reason_code: str,
+        status: str = "active",
+        provider: str | None = None,
+        model: str | None = None,
+        response_id: str | None = None,
+        previous_response_id: str | None = None,
+        run_id: str | None = None,
+        mission_run_id: str | None = None,
+        dispatch_id: str | None = None,
+        decision_id: str | None = None,
+        intent_id: str | None = None,
+        channel_event_id: str | None = None,
+        record_locator: str | None = None,
+        markers: list[str] | tuple[str, ...] | None = None,
+        payload: dict[str, Any] | None = None,
+        metadata: dict[str, Any] | None = None,
+        quarantine_id: str | None = None,
+        created_at: str | None = None,
+        connection: sqlite3.Connection | None = None,
+    ) -> str:
+        quarantine_record_id = quarantine_id or _new_prefixed_id("quarantine")
+        self.upsert(
+            "output_quarantine_records",
+            {
+                "quarantine_id": quarantine_record_id,
+                "source_system": source_system,
+                "source_entity_kind": source_entity_kind,
+                "source_entity_id": source_entity_id,
+                "reason_code": reason_code,
+                "status": status,
+                "provider": provider,
+                "model": model,
+                "response_id": response_id,
+                "previous_response_id": previous_response_id,
+                "run_id": run_id,
+                "mission_run_id": mission_run_id,
+                "dispatch_id": dispatch_id,
+                "decision_id": decision_id,
+                "intent_id": intent_id,
+                "channel_event_id": channel_event_id,
+                "record_locator": record_locator,
+                "markers_json": dump_json(list(markers or [])),
+                "payload_json": dump_json(payload or {}),
+                "metadata_json": dump_json(metadata or {}),
+                "created_at": created_at or _utc_now_iso(),
+            },
+            conflict_columns="quarantine_id",
+            immutable_columns=["created_at"],
+            connection=connection,
+        )
+        return quarantine_record_id
 
     def upsert_vector(
         self,

@@ -1543,7 +1543,7 @@ def test_source_reputation_persists_history_across_runs() -> None:
             services.close()
 
 
-def test_extreme_estimate_uses_anthropic_debug_route() -> None:
+def test_extreme_estimate_uses_openai_canonical_route_by_default() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         services = _build_services(Path(tmp))
         try:
@@ -1555,9 +1555,9 @@ def test_extreme_estimate_uses_anthropic_debug_route() -> None:
                     "research_intensity": "extreme",
                 }
             )
-            assert estimate["estimated_api_provider"] == "anthropic"
-            assert estimate["estimated_api_model"] == "claude-sonnet-4-20250514"
-            assert estimate["execution_plan"]["provider_route"]["research_provider"] == "anthropic"
+            assert estimate["estimated_api_provider"] == "openai"
+            assert estimate["estimated_api_model"] == "gpt-5"
+            assert estimate["execution_plan"]["provider_route"]["research_provider"] == "openai"
         finally:
             services.close()
 
@@ -1570,6 +1570,7 @@ def test_extreme_auxiliary_anthropic_debug_logs_include_counted_tokens() -> None
                 services.paths.runtime_root / "deep_research" / "debug_test"
             )
             debug_root.mkdir(parents=True, exist_ok=True)
+            services.deep_research.extreme_debug_enabled = True
 
             class _FakeCountTokens:
                 def model_dump(self):
@@ -1600,7 +1601,7 @@ def test_extreme_auxiliary_anthropic_debug_logs_include_counted_tokens() -> None
                     schema=services.deep_research._cheap_scout_swarm_schema(),
                     schema_name="project_os_deep_research_cheap_scout_swarm",
                     description="Cheap scout swarm for testing",
-                    attempts=[("gpt-5.4", {"type": "web_search_preview", "search_context_size": "high"}, "low")],
+                    attempts=[("gpt-5", {"type": "web_search_preview", "search_context_size": "high"}, "low")],
                     metadata={
                         "job_id": "deep_research_job_debug",
                         "kind": "audit",
@@ -1620,5 +1621,17 @@ def test_extreme_auxiliary_anthropic_debug_logs_include_counted_tokens() -> None
             assert entries[-1]["provider"] == "anthropic"
             assert entries[-1]["counted_input_tokens"] == 321
             assert entries[-1]["estimated_cost_eur"] > 0
+        finally:
+            services.close()
+
+
+def test_previous_response_id_is_sanitized_per_provider() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        services = _build_services(Path(tmp))
+        try:
+            assert services.deep_research._sanitize_previous_response_id_for_provider("openai", "resp_123") == "resp_123"
+            assert services.deep_research._sanitize_previous_response_id_for_provider("openai", "msg_123") is None
+            assert services.deep_research._sanitize_previous_response_id_for_provider("anthropic", "msg_123") == "msg_123"
+            assert services.deep_research._sanitize_previous_response_id_for_provider("anthropic", "resp_123") is None
         finally:
             services.close()

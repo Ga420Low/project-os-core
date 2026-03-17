@@ -287,6 +287,12 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self.assertEqual(dispatch.metadata["classification"], "chat")
                 self.assertEqual(dispatch.metadata["approval_metadata"]["approval_type"], "reasoning_escalation")
                 self.assertIn("mode extreme", dispatch.operator_reply.summary.lower())
+                ledger_row = services.database.fetchone(
+                    "SELECT pending_approval_ids_json FROM thread_ledgers WHERE conversation_key = ?",
+                    ("thread_inline_memory",),
+                )
+                self.assertIsNotNone(ledger_row)
+                self.assertIn(dispatch.metadata["approval_id"], json.loads(str(ledger_row["pending_approval_ids_json"])))
                 self.assertEqual(captured_messages, [])
             finally:
                 services.close()
@@ -479,7 +485,7 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self.assertEqual(go_dispatch.metadata["resolved_action"], "approve_runtime_approval")
                 self.assertEqual(go_dispatch.operator_reply.reply_kind, "ack")
                 self.assertIn("operation lancee", go_dispatch.operator_reply.summary.lower())
-                self.assertIn("api:", go_dispatch.operator_reply.summary.lower())
+                self.assertNotIn("api:", go_dispatch.operator_reply.summary.lower())
                 self.assertIsNotNone(go_dispatch.mission_run_id)
                 self.assertEqual(str(updated_approval["status"]), "approved")
             finally:
@@ -640,10 +646,72 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self.assertIn("profil confirme", dispatch.operator_reply.summary.lower())
                 self.assertIn("intensite confirmee", dispatch.operator_reply.summary.lower())
                 self.assertIn("extreme", dispatch.operator_reply.summary.lower())
-                self.assertIn("anthropic", dispatch.operator_reply.summary.lower())
-                self.assertEqual(dispatch.metadata["approval_metadata"]["estimated_api_provider"], "anthropic")
-                self.assertEqual(dispatch.metadata["approval_metadata"]["estimated_api_model"], "claude-sonnet-4-20250514")
+                self.assertIn("openai", dispatch.operator_reply.summary.lower())
+                self.assertEqual(dispatch.metadata["approval_metadata"]["estimated_api_provider"], "openai")
+                self.assertEqual(dispatch.metadata["approval_metadata"]["estimated_api_model"], "gpt-5")
                 self.assertEqual(dispatch.metadata["approval_metadata"]["approval_type"], "deep_research_launch")
+            finally:
+                services.close()
+
+    def test_gateway_deep_research_multi_profile_reply_stays_in_mode_selection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services, profile_name="browser")
+                launch_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="deep research extreme sur discord et openclaw",
+                        thread_ref=ConversationThreadRef(thread_id="thread_deep_research_multi_profile", channel="discord"),
+                    ),
+                )
+                scaffold_payload = {
+                    "path": "D:\\ProjectOS\\project-os-core\\docs\\systems\\OPENCLAW_UPSTREAM_DOSSIER.md",
+                    "relative_path": "docs/systems/OPENCLAW_UPSTREAM_DOSSIER.md",
+                    "doc_name": "OPENCLAW_UPSTREAM_DOSSIER.md",
+                    "kind": "system",
+                    "title": "OpenClaw Upstream",
+                    "keywords": ["deep research", "discord", "openclaw"],
+                    "recent_days": 30,
+                    "created": True,
+                    "research_profile": "component_discovery",
+                    "research_intensity": "extreme",
+                    "recommended_profile": "component_discovery",
+                    "recommended_intensity": "extreme",
+                    "explicit_intensity": "extreme",
+                }
+
+                with patch("project_os_core.gateway.service.scaffold_research", return_value=scaffold_payload):
+                    proposal_dispatch = services.gateway.dispatch_event(launch_event, target_profile="browser")
+
+                selection_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="project audit, component discovery, domain audit",
+                        thread_ref=ConversationThreadRef(thread_id="thread_deep_research_multi_profile", channel="discord"),
+                    ),
+                )
+                selection_dispatch = services.gateway.dispatch_event(selection_event, target_profile="browser")
+                approval_after_selection = services.database.fetchone(
+                    "SELECT payload_json FROM approval_records ORDER BY created_at DESC LIMIT 1"
+                )
+                approval_payload = json.loads(str(approval_after_selection["payload_json"]))
+
+                self.assertEqual(proposal_dispatch.operator_reply.reply_kind, "clarification_required")
+                self.assertEqual(selection_dispatch.operator_reply.reply_kind, "clarification_required")
+                self.assertIn("plusieurs profils", selection_dispatch.operator_reply.summary.lower())
+                self.assertEqual(approval_payload["approval_type"], "deep_research_mode_selection")
+                self.assertIsNone(approval_payload.get("selected_profile"))
             finally:
                 services.close()
 
@@ -1005,6 +1073,194 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self.assertEqual(len(manifest.attachments), 1)
                 self.assertEqual(manifest.attachments[0].mime_type, "application/pdf")
                 self.assertIn("PDF joint", go_dispatch.operator_reply.summary)
+                artifact_row = services.database.fetchone(
+                    """
+                    SELECT artifact_id, cold_artifact_id, cold_path
+                    FROM artifact_ledger_entries
+                    WHERE artifact_id = ?
+                    """,
+                    (manifest.review_artifact_id,),
+                )
+                self.assertIsNotNone(artifact_row)
+                self.assertEqual(str(artifact_row["artifact_id"]), manifest.review_artifact_id)
+                self.assertTrue(str(artifact_row["cold_artifact_id"] or "").strip())
+                self.assertTrue(Path(str(artifact_row["cold_path"])).exists())
+                thread_row = services.database.fetchone(
+                    """
+                    SELECT last_pdf_artifact_id
+                    FROM thread_ledgers
+                    WHERE conversation_key = ?
+                    """,
+                    ("thread_reasoning_pdf",),
+                )
+                self.assertIsNotNone(thread_row)
+                self.assertEqual(str(thread_row["last_pdf_artifact_id"]), manifest.review_artifact_id)
+                analysis_rows = services.database.fetchall(
+                    """
+                    SELECT object_type
+                    FROM analysis_objects
+                    WHERE conversation_key = ?
+                    ORDER BY updated_at DESC
+                    """,
+                    ("thread_reasoning_pdf",),
+                )
+                self.assertTrue(any(str(row["object_type"]) == "source_pdf" for row in analysis_rows))
+            finally:
+                services.close()
+
+    def test_gateway_followup_after_pdf_uses_stateful_brain_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                services.secret_resolver.write_local_fallback("ANTHROPIC_API_KEY", "sk-ant-test")
+                self._mark_runtime_ready(services, "core")
+                captured: list[dict[str, object]] = []
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    captured.append(
+                        {
+                            "message": message,
+                            "route_reason": route_reason,
+                            "rendered": services.gateway._simple_chat_user_message(
+                                message,
+                                provider="anthropic",
+                                model=model,
+                                route_reason=route_reason,
+                                context_bundle=context_bundle,
+                            ),
+                        }
+                    )
+                    if "mode extreme discord" in message.lower():
+                        return (
+                            "Si tu me demandes de regarder sur qui on s'inspire pour la gestion memoire, "
+                            "je commence par inspecter la doc, le code et les choix de persistance deja poses. "
+                        ) * 8
+                    return "Sans analyse profonde du code, je lui donnerais 6/10 pour l'intention et 4/10 en confiance factuelle."
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                serious_text = (
+                    "Et donc si je te dis de regarder sur qui on s'inspire pour la gestion memoire, "
+                    "tu reponds quoi et en combien de temps ? Reponse longue demandee + de 2000 caracteres."
+                )
+                launch_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text=serious_text,
+                        thread_ref=ConversationThreadRef(thread_id="thread_followup_pdf", channel="discord"),
+                    ),
+                )
+                go_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="go",
+                        thread_ref=ConversationThreadRef(thread_id="thread_followup_pdf", channel="discord"),
+                    ),
+                )
+                followup_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="et tu lui donnerais une note de combien ?",
+                        thread_ref=ConversationThreadRef(thread_id="thread_followup_pdf", channel="discord"),
+                    ),
+                )
+
+                proposal_dispatch = services.gateway.dispatch_event(launch_event, target_profile="core")
+                go_dispatch = services.gateway.dispatch_event(go_event, target_profile="core")
+                followup_dispatch = services.gateway.dispatch_event(followup_event, target_profile="core")
+
+                self.assertEqual(proposal_dispatch.operator_reply.reply_kind, "approval_required")
+                self.assertEqual(go_dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(followup_dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(followup_dispatch.metadata["classification"], "chat")
+                self.assertEqual(followup_dispatch.metadata["brain_resolution_kind"], "answer_about_last_pdf")
+                self.assertIn("Ledger canonique du thread:", str(captured[-1]["rendered"]))
+                self.assertIn("sujet actif:", str(captured[-1]["rendered"]).lower())
+                self.assertIn("decision recente:", str(captured[-1]["rendered"]).lower())
+                self.assertIn("Digests:", str(captured[-1]["rendered"]))
+                self.assertIn("dernier pdf connu", str(captured[-1]["rendered"]).lower())
+            finally:
+                services.close()
+
+    def test_gateway_ambiguous_short_followup_requests_clarification(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services, "core")
+                call_count = {"chat": 0}
+
+                def _stub_simple_chat(
+                    message: str,
+                    model: str = "claude-sonnet-4-20250514",
+                    *,
+                    route_reason: str | None = None,
+                    context_bundle=None,
+                ) -> str:
+                    del message, model, route_reason, context_bundle
+                    call_count["chat"] += 1
+                    return (
+                        "Je garde la facade Discord naturelle.\n"
+                        "Prochain pas: verifier que le fallback PDF ne se declenche pas trop tot."
+                    )
+
+                services.gateway._call_simple_chat = _stub_simple_chat  # type: ignore[method-assign]
+                services.gateway._call_local_chat = lambda **kwargs: _stub_simple_chat(kwargs.get("message", ""))  # type: ignore[method-assign]
+                services.gateway._should_inline_chat = lambda event, decision: True  # type: ignore[method-assign]
+
+                first_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="Explique-moi le nettoyage visible de la facade Discord.",
+                        thread_ref=ConversationThreadRef(thread_id="thread_followup_clarify", channel="discord"),
+                    ),
+                )
+                second_event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="et du coup ?",
+                        thread_ref=ConversationThreadRef(thread_id="thread_followup_clarify", channel="discord"),
+                    ),
+                )
+
+                first_dispatch = services.gateway.dispatch_event(first_event, target_profile="core")
+                second_dispatch = services.gateway.dispatch_event(second_event, target_profile="core")
+
+                self.assertEqual(first_dispatch.operator_reply.reply_kind, "chat_response")
+                self.assertEqual(second_dispatch.operator_reply.reply_kind, "clarification_required")
+                self.assertEqual(second_dispatch.metadata["brain_clarification"], True)
+                self.assertEqual(second_dispatch.metadata["brain_resolution_kind"], "clarification_needed")
+                self.assertIn("ma derniere reponse", second_dispatch.operator_reply.summary.lower())
+                self.assertEqual(call_count["chat"], 1)
             finally:
                 services.close()
 
@@ -1046,12 +1302,13 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                     "SELECT artifact_kind, owner_id, path FROM artifact_pointers WHERE owner_type = ? ORDER BY artifact_kind",
                     ("channel_event",),
                 )
-                self.assertEqual(len(artifact_rows), 4)
-                artifact_kinds = {str(row["artifact_kind"]) for row in artifact_rows}
-                self.assertEqual(
-                    artifact_kinds,
-                    {"ingress_attachment_manifest", "ingress_input", "long_context_segments", "long_context_workflow"},
-                )
+                self.assertEqual(len(artifact_rows), 6)
+                artifact_kinds = [str(row["artifact_kind"]) for row in artifact_rows]
+                self.assertIn("ingress_attachment_manifest", artifact_kinds)
+                self.assertEqual(artifact_kinds.count("ingress_attachment_catalog"), 2)
+                self.assertIn("ingress_input", artifact_kinds)
+                self.assertIn("long_context_segments", artifact_kinds)
+                self.assertIn("long_context_workflow", artifact_kinds)
                 for row in artifact_rows:
                     self.assertTrue(Path(str(row["path"])).exists())
 
@@ -1062,17 +1319,201 @@ class GatewayAndOrchestrationTests(unittest.TestCase):
                 self.assertIsNotNone(candidate_row)
                 payload = json.loads(str(candidate_row["payload_json"]))
                 self.assertEqual(payload["input_profile"], "transcript")
-                self.assertEqual(payload["source_artifact_count"], 2)
-                self.assertEqual(len(payload["source_artifact_ids"]), 2)
+                self.assertEqual(payload["source_artifact_count"], 4)
+                self.assertEqual(len(payload["source_artifact_ids"]), 4)
                 self.assertEqual(payload["long_context_phase_status"], "ready")
                 self.assertTrue(payload["long_context_summary"].startswith("Input transcript traite"))
                 self.assertEqual(len(payload["long_context_artifact_ids"]), 2)
                 self.assertIn("workflow_id", payload["long_context_digest"])
                 self.assertGreaterEqual(payload["long_context_digest"]["segment_count"], 2)
                 self.assertEqual(dispatch.metadata["input_profile"], "transcript")
-                self.assertEqual(len(dispatch.metadata["source_artifact_ids"]), 2)
+                self.assertEqual(len(dispatch.metadata["source_artifact_ids"]), 4)
                 self.assertEqual(len(dispatch.metadata["long_context_artifact_ids"]), 2)
                 self.assertEqual(dispatch.metadata["long_context_workflow_id"], payload["long_context_workflow_id"])
+            finally:
+                services.close()
+
+    def test_gateway_ingests_local_pdf_attachments_as_source_objects_with_cold_backup(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                tmp_path = Path(tmp)
+                pdf_a = tmp_path / "a.pdf"
+                pdf_b = tmp_path / "b.pdf"
+                pdf_payload = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
+                pdf_a.write_bytes(pdf_payload)
+                pdf_b.write_bytes(pdf_payload)
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="voici deux pdf a garder en memoire",
+                        thread_ref=ConversationThreadRef(thread_id="thread_local_pdfs", channel="discord"),
+                        attachments=[
+                            OperatorAttachment(
+                                attachment_id=new_id("attachment"),
+                                name="a.pdf",
+                                kind="document",
+                                mime_type="application/pdf",
+                                path=str(pdf_a),
+                            ),
+                            OperatorAttachment(
+                                attachment_id=new_id("attachment"),
+                                name="b.pdf",
+                                kind="document",
+                                mime_type="application/pdf",
+                                path=str(pdf_b),
+                            ),
+                        ],
+                    ),
+                )
+
+                dispatch = services.gateway.dispatch_event(event, target_profile="core")
+
+                self.assertGreaterEqual(len(dispatch.metadata["source_artifact_ids"]), 4)
+                ledger_rows = services.database.fetchall(
+                    """
+                    SELECT artifact_kind, cold_artifact_id, cold_path
+                    FROM artifact_ledger_entries
+                    WHERE conversation_key = ?
+                    ORDER BY created_at ASC
+                    """,
+                    ("thread_local_pdfs",),
+                )
+                pdf_rows = [row for row in ledger_rows if str(row["artifact_kind"]) == "ingress_attachment_pdf"]
+                self.assertEqual(len(pdf_rows), 2)
+                for row in pdf_rows:
+                    self.assertTrue(str(row["cold_artifact_id"] or "").strip())
+                    self.assertTrue(Path(str(row["cold_path"])).exists())
+                analysis_rows = services.database.fetchall(
+                    """
+                    SELECT object_type
+                    FROM analysis_objects
+                    WHERE conversation_key = ?
+                    ORDER BY updated_at DESC
+                    """,
+                    ("thread_local_pdfs",),
+                )
+                self.assertGreaterEqual(sum(1 for row in analysis_rows if str(row["object_type"]) == "source_pdf"), 2)
+            finally:
+                services.close()
+
+    def test_stateful_artifact_registration_is_idempotent_for_same_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                tmp_path = Path(tmp)
+                pdf_path = tmp_path / "single.pdf"
+                pdf_path.write_bytes(b"%PDF-1.4\n%%EOF\n")
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="pdf unique",
+                        thread_ref=ConversationThreadRef(thread_id="thread_idempotent_pdf", channel="discord"),
+                    ),
+                )
+                pointer = services.gateway._write_gateway_binary_artifact(
+                    owner_type="channel_event",
+                    owner_id=event.event_id,
+                    artifact_kind="ingress_attachment_pdf",
+                    payload=pdf_path.read_bytes(),
+                    suffix=".pdf",
+                )
+
+                services.gateway._register_stateful_artifact(
+                    event=event,
+                    pointer=pointer,
+                    owner_type="channel_event",
+                    owner_id=event.event_id,
+                    object_type="source_pdf",
+                    title="single.pdf",
+                    summary_short="single pdf",
+                    summary_full="single pdf",
+                )
+                services.gateway._register_stateful_artifact(
+                    event=event,
+                    pointer=pointer,
+                    owner_type="channel_event",
+                    owner_id=event.event_id,
+                    object_type="source_pdf",
+                    title="single.pdf",
+                    summary_short="single pdf",
+                    summary_full="single pdf",
+                )
+
+                artifact_rows = services.database.fetchall(
+                    "SELECT artifact_id FROM artifact_ledger_entries WHERE artifact_id = ?",
+                    (pointer.artifact_id,),
+                )
+                object_rows = services.database.fetchall(
+                    "SELECT object_id FROM analysis_objects WHERE artifact_ids_json LIKE ?",
+                    (f'%\"{pointer.artifact_id}\"%',),
+                )
+                self.assertEqual(len(artifact_rows), 1)
+                self.assertEqual(len(object_rows), 1)
+            finally:
+                services.close()
+
+    def test_gateway_backfill_stateful_recent_rebuilds_state_from_recent_discord_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            services = self._build_services(Path(tmp))
+            try:
+                self._mark_runtime_ready(services)
+                tmp_path = Path(tmp)
+                pdf_path = tmp_path / "backfill.pdf"
+                pdf_path.write_bytes(b"%PDF-1.4\n%%EOF\n")
+                event = ChannelEvent(
+                    event_id=new_id("channel_event"),
+                    surface="discord",
+                    event_type="message.created",
+                    message=OperatorMessage(
+                        message_id=new_id("message"),
+                        actor_id="founder",
+                        channel="discord",
+                        text="garde ce pdf pour le backfill",
+                        thread_ref=ConversationThreadRef(thread_id="thread_backfill_recent", channel="discord"),
+                        attachments=[
+                            OperatorAttachment(
+                                attachment_id=new_id("attachment"),
+                                name="backfill.pdf",
+                                kind="document",
+                                mime_type="application/pdf",
+                                path=str(pdf_path),
+                            )
+                        ],
+                    ),
+                )
+
+                services.gateway.dispatch_event(event, target_profile="core")
+                services.database.execute("DELETE FROM artifact_ledger_entries")
+                services.database.execute("DELETE FROM analysis_objects")
+                services.database.execute("DELETE FROM thread_ledgers WHERE conversation_key = ?", ("thread_backfill_recent",))
+
+                payload = services.gateway.backfill_stateful_recent(since_hours=24)
+
+                self.assertEqual(payload["status"], "ok")
+                self.assertGreaterEqual(payload["events_backfilled"], 1)
+                thread_row = services.database.fetchone(
+                    "SELECT thread_ledger_id FROM thread_ledgers WHERE conversation_key = ?",
+                    ("thread_backfill_recent",),
+                )
+                self.assertIsNotNone(thread_row)
+                analysis_rows = services.database.fetchall(
+                    "SELECT object_type FROM analysis_objects WHERE conversation_key = ?",
+                    ("thread_backfill_recent",),
+                )
+                self.assertTrue(any(str(row["object_type"]) == "source_pdf" for row in analysis_rows))
             finally:
                 services.close()
 

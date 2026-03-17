@@ -103,7 +103,7 @@ class ApiRunContractTests(unittest.TestCase):
                 context_pack = services.api_runs.build_context_pack(
                     mode=ApiRunMode.PATCH_PLAN,
                     objective="Construire le prochain lot de code en silence.",
-                    branch_name="project-os/test-contract-flow",
+                    branch_name="codex/project-os-test-contract-flow",
                     skill_tags=["patch_plan", "code"],
                 )
                 prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)
@@ -160,7 +160,7 @@ class ApiRunContractTests(unittest.TestCase):
                     services.api_runs.execute_run(
                         mode=ApiRunMode.AUDIT,
                         objective="Audit rapide",
-                        branch_name="project-os/test-contract-required",
+                        branch_name="codex/project-os-test-contract-required",
                         skill_tags=["audit"],
                         response_runner=lambda *_args: {},
                     )
@@ -174,7 +174,7 @@ class ApiRunContractTests(unittest.TestCase):
                 context_pack = services.api_runs.build_context_pack(
                     mode=ApiRunMode.AUDIT,
                     objective="Verifier le guard de concurrence du contrat.",
-                    branch_name="project-os/test-contract-concurrency",
+                    branch_name="codex/project-os-test-contract-concurrency",
                     skill_tags=["audit"],
                 )
                 prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)

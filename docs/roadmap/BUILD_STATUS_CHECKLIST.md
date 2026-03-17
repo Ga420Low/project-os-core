@@ -199,6 +199,13 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
   - [x] Extension `Escalade cout-aware + go fondateur` integree au runtime
   - [x] Extension `Deep research -> cout + temps + go` harmonisee
   - [x] Extension `Discussion Sonnet -> proposition Opus + go` harmonisee
+- [ ] Lot Discord Facade And Continuity Patch
+  - [x] Feuille de route canonique posee dans `docs/roadmap/DISCORD_FACADE_AND_CONTINUITY_PATCH_PLAN.md`
+  - [x] `Pack 1 - Visibility Contract And Protected Cases`
+  - [x] `Pack 2 - Standard Reply Cleanup Outside Deep Research`
+  - [x] `Pack 3 - Discord Medium Format And Human Delivery`
+  - [x] `Pack 4 - Immediate And Thread Continuity`
+  - [x] `Pack 5 - Project Continuity, Retention And Regression Rails`
 - [ ] Lot Discord Meeting OS
   - [x] Feuille de route canonique posee dans `docs/roadmap/DISCORD_MEETING_OS_PLAN.md`
   - [ ] `Pack 1 - Voice Session Contract`
@@ -208,6 +215,16 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
   - [ ] `Pack 5 - Background Worker Mesh`
   - [ ] `Pack 6 - Guest Agent Protocol`
   - [ ] `Pack 7 - Cost Accounting, Safety And Live Evals`
+- [ ] Lot Debug System v1
+  - [x] Feuille de route canonique posee dans `docs/roadmap/DEBUG_SYSTEM_V1_PLAN.md`
+  - [ ] `Pack 0 - Taxonomie des IDs, filiation causale, invariants DB, quarantine des sorties invalides`
+  - [ ] `Pack 1 - Correlation spine locale, debug trace, couverture via SQLite/logs/CLI`
+  - [ ] `Pack 2 - Replay canonique, reprise background, idempotence et dead letters multi-domaines`
+  - [ ] `Pack 3 - Incident engine, substrat evals unique et provenance`
+  - [ ] `Pack 4 - Dashboard, Discord debug, privacy TTL, gates progressifs`
+  - [ ] `Pack 5 - Resilience systeme`
+  - [ ] `Pack 6 - Audit final du debug live Discord`
+  - [ ] `Pack supplementaire - Corrections du debug live Discord (si l'audit final l'exige)`
 - [ ] Sanctuary Security Layer v1
   - [ ] Approval Truth Hardening
   - [ ] Destructive Boundary Hardening
@@ -217,9 +234,19 @@ On coche uniquement ce qui est effectivement fini dans le repo ou valide sur la 
 - [ ] Lot 5 - Orchestration durable `LangGraph` live
 - [ ] Lot 6 - Windows worker + perception
 - [ ] Lot 7 - Browser worker `Stagehand`
-- [ ] Lot 8 - Ops distantes `Langfuse` + `OpenTelemetry`
 - [ ] Lot 9 - Profile `UEFN`
 - [ ] Lot 10 - Audit ancien repo `keep / migrate / rewrite / delete`
+
+## Extensions optionnelles
+
+- [ ] Extension A - Remote export et triage heberge
+  - [ ] Frontiere OTLP propre vers `Sentry`, `Tempo`, `Jaeger`, `Langfuse` ou `LangSmith`
+  - [ ] Export desactive par defaut
+  - [ ] Aucune plateforme externe ne devient la verite canonique
+- [ ] Extension B - Auto-learning de correction
+  - [ ] Regroupement d'incidents similaires
+  - [ ] Suggestion de replay ou d'eval manquants
+  - [ ] Proposition de `fix patterns` a partir des incidents clos
 
 ## Documentation systeme complete
 

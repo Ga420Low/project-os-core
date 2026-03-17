@@ -187,7 +187,8 @@ Summary:
 - `simple` = one strong worker
 - `complex` = light committee with in-process parallel scouts, source reputation, and stateful synthesis
 - `extreme` = War Room with child-worker mesh, source safety gate, persistent reputation, and stateful synthesis
-- current debug note: `extreme` may temporarily route research passes through `Anthropic Sonnet` for lower-risk system testing, while keeping the reader PDF translation on `OpenAI`
+- current route note: `extreme` uses the canonical `OpenAI` research path by default, and any `Anthropic Sonnet` debug route must be explicitly re-enabled in config for temporary diagnostics only
+- default deep-research model split: `gpt-5` for planner, expert lanes, and final synthesis; `gpt-5-mini` for the cheap scout swarm; `gpt-5` for the reader translation fallback chain
 
 ## Quality and Safety
 

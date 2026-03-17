@@ -25,8 +25,8 @@ Ce même pattern peut servir pour les scheduled runs.
 
 Le CLI a déjà toutes les commandes pour lancer des runs :
 ```
-api-runs execute --mode audit --objective "..." --branch-name project-os/audit
-api-runs execute --mode design --objective "..." --branch-name project-os/design
+api-runs execute --mode audit --objective "..." --branch-name codex/project-os-audit
+api-runs execute --mode design --objective "..." --branch-name codex/project-os-design
 memory compact-tiers --trigger scheduled
 ```
 
@@ -307,7 +307,7 @@ if args.command == "scheduler":
                 context_pack = services.api_runs.build_context_pack(
                     mode=ApiRunMode.AUDIT,
                     objective=args_dict.get("objective", "Audit quotidien"),
-                    branch_name=f"project-os/scheduled-audit-{datetime.now().strftime('%Y%m%d')}",
+                    branch_name=f"codex/project-os-scheduled-audit-{datetime.now().strftime('%Y%m%d')}",
                     skill_tags=["audit", "scheduled"],
                 )
                 prompt = services.api_runs.render_prompt(context_pack_id=context_pack.context_pack_id)

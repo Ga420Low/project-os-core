@@ -26,7 +26,15 @@ from openai import OpenAI
 from .api_runs.service import ApiRunService
 from .costing import estimate_text_tokens, estimate_usage_cost_eur
 from .deep_research_pdf import build_archive_stem, build_seo_slug, render_deep_research_pdf
-from .models import ApiRunStatus, OperatorChannelHint, RunLifecycleEventKind, new_id
+from .models import (
+    ApiRunStatus,
+    OperatorChannelHint,
+    OutputQuarantineReason,
+    RunLifecycleEventKind,
+    TraceEntityKind,
+    TraceRelationKind,
+    new_id,
+)
 from .observability import StructuredLogger
 from .paths import PathPolicy, ProjectPaths
 from .research_scaffold import (
@@ -64,6 +72,9 @@ class DeepResearchService:
         policy_path: Path,
         default_model: str,
         default_reasoning_effort: str,
+        research_model: str,
+        scout_model: str,
+        translation_model: str,
         extreme_debug_enabled: bool,
         extreme_debug_provider: str,
         extreme_debug_model: str,
@@ -80,9 +91,12 @@ class DeepResearchService:
         self.policy_path = Path(policy_path).resolve(strict=False)
         self.default_model = str(default_model).strip() or "gpt-5"
         self.default_reasoning_effort = str(default_reasoning_effort).strip() or "high"
+        self.research_model = str(research_model).strip() or "gpt-5"
+        self.scout_model = str(scout_model).strip() or self.research_model
+        self.translation_model = str(translation_model).strip() or self.research_model
         self.extreme_debug_enabled = bool(extreme_debug_enabled)
         self.extreme_debug_provider = str(extreme_debug_provider).strip().lower() or "anthropic"
-        self.extreme_debug_model = str(extreme_debug_model).strip() or "claude-sonnet-4-20250514"
+        self.extreme_debug_model = str(extreme_debug_model).strip() or "claude-haiku-4-5-20251001"
         self.extreme_debug_log_enabled = bool(extreme_debug_log_enabled)
 
     def launch_job_from_gateway(self, *, event, scaffold: dict[str, Any]) -> dict[str, Any]:
@@ -579,12 +593,15 @@ class DeepResearchService:
                 "model": self.extreme_debug_model,
                 "label": f"anthropic/{self.extreme_debug_model}",
                 "debug": True,
+                "research_model": self.extreme_debug_model,
             }
+        target_model = self.translation_model if translation else self.research_model
         return {
             "provider": "openai",
-            "model": self.default_model,
-            "label": f"openai/{self.default_model}",
+            "model": target_model,
+            "label": f"openai/{target_model}",
             "debug": False,
+            "research_model": target_model,
         }
 
     def _research_route_for_request(self, request: dict[str, Any], *, translation: bool = False) -> dict[str, Any]:
@@ -601,6 +618,27 @@ class DeepResearchService:
             ),
             translation=translation,
         )
+
+    def _openai_planner_model(self) -> str:
+        return self.research_model
+
+    def _openai_scout_model(self, *, lane: str | None = None) -> str:
+        normalized_lane = str(lane or "").strip().lower()
+        if normalized_lane == "cheap_scout_swarm":
+            return self.scout_model
+        return self.research_model
+
+    def _openai_translation_candidates(self) -> list[str]:
+        candidates = [self.translation_model, self.research_model, "gpt-5"]
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            normalized = str(candidate or "").strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            ordered.append(normalized)
+        return ordered
 
     def _update_continuity_strategy_for_provider(
         self,
@@ -622,6 +660,18 @@ class DeepResearchService:
                 notes.append(note)
         elif normalized == "openai":
             response_continuity["strategy"] = "responses_previous_response_id"
+
+    @staticmethod
+    def _sanitize_previous_response_id_for_provider(provider: str, response_id: str | None) -> str | None:
+        candidate = str(response_id or "").strip()
+        if not candidate:
+            return None
+        normalized_provider = str(provider or "").strip().lower()
+        if normalized_provider == "openai":
+            return candidate if candidate.startswith("resp_") else None
+        if normalized_provider == "anthropic":
+            return candidate if candidate.startswith("msg_") else None
+        return candidate
 
     def _debug_root_from_path(self, raw_path: Any) -> Path | None:
         text = str(raw_path or "").strip()
@@ -1626,6 +1676,7 @@ class DeepResearchService:
             "provider_route": {
                 "research_provider": research_route["provider"],
                 "research_model": research_route["model"],
+                "scout_model": self.scout_model if research_route["provider"] == "openai" else research_route["model"],
                 "research_label": research_route["label"],
                 "translation_provider": "openai",
                 "translation_model": self._translation_attempts()[0],
@@ -1953,7 +2004,7 @@ class DeepResearchService:
             description="Planner brief for a Project OS deep research run",
             attempts=[
                 (
-                    self.default_model,
+                    self._openai_planner_model(),
                     None,
                     "high"
                     if str(request.get("research_intensity") or execution_plan.get("mode") or "").strip().lower() == "extreme"
@@ -2017,7 +2068,7 @@ class DeepResearchService:
             schema=self._cheap_scout_swarm_schema(),
             schema_name="project_os_deep_research_cheap_scout_swarm",
             description="Cheap scout swarm for a Project OS deep research war-room run",
-            attempts=[(self.default_model, {"type": "web_search_preview", "search_context_size": "high"}, "low")],
+            attempts=[(self._openai_scout_model(lane="cheap_scout_swarm"), {"type": "web_search_preview", "search_context_size": "high"}, "low")],
             metadata={
                 "job_id": str(request.get("job_id") or ""),
                 "kind": str(request.get("kind") or "audit"),
@@ -2079,7 +2130,7 @@ class DeepResearchService:
             description=f"{lane} scout findings for Project OS deep research",
             attempts=[
                 (
-                    self.default_model,
+                    self._openai_scout_model(lane=lane),
                     {"type": "web_search_preview", "search_context_size": "high"},
                     "high"
                     if str(execution_plan.get("mode") or "").strip().lower() == "extreme" and lane in {"official_docs", "github"}
@@ -2268,7 +2319,7 @@ class DeepResearchService:
             schema=self._skeptic_schema(),
             schema_name="project_os_deep_research_skeptic",
             description="Skeptic review for Project OS deep research",
-            attempts=[(self.default_model, None, "low")],
+            attempts=[(self._openai_planner_model(), None, "low")],
             metadata={
                 "job_id": str(request.get("job_id") or ""),
                 "kind": str(request.get("kind") or "audit"),
@@ -2333,7 +2384,7 @@ class DeepResearchService:
             response_continuity=response_continuity,
             anchor=anchor,
             phase=phase,
-            model=str(lane_result.get("_model") or lane_result.get("model") or self.default_model),
+            model=str(lane_result.get("_model") or lane_result.get("model") or self.research_model),
             response_id=response_id,
             previous_response_id=str(lane_result.get("_previous_response_id") or "").strip() or None,
             stored=bool(lane_result.get("_stored")),
@@ -2675,6 +2726,7 @@ class DeepResearchService:
             response_continuity=response_continuity,
             anchor_candidates=previous_anchor_candidates,
         )
+        previous_response_id = self._sanitize_previous_response_id_for_provider(str(route["provider"]), previous_response_id)
         should_store = bool(force_store) if force_store is not None else bool(response_continuity and response_continuity.get("enabled"))
         if str(route["provider"]) == "anthropic":
             anthropic_tools = (
@@ -2703,8 +2755,22 @@ class DeepResearchService:
                     messages=[{"role": "user", "content": prompt}],
                     tools=anthropic_tools,
                 )
+                raw_payload = response.model_dump() if hasattr(response, "model_dump") else {"repr": repr(response)}
                 output_text = self._extract_anthropic_text_blocks(response)
-                payload = self._parse_json_object(output_text)
+                payload = self._parse_json_object(
+                    output_text,
+                    quarantine_context={
+                        "request": metadata,
+                        "source_system": "deep_research",
+                        "source_entity_kind": TraceEntityKind.DEEP_RESEARCH_JOB.value,
+                        "source_entity_id": str(metadata.get("job_id") or ""),
+                        "provider": "anthropic",
+                        "model": str(route["model"]),
+                        "phase": phase,
+                        "schema_name": schema_name,
+                        "raw_payload": raw_payload,
+                    },
+                )
                 if not isinstance(payload, dict):
                     raise RuntimeError(f"{schema_name} returned a non-object payload.")
                 response_id = str(getattr(response, "id", None) or "").strip() or None
@@ -2792,10 +2858,40 @@ class DeepResearchService:
                 if previous_response_id:
                     kwargs["previous_response_id"] = previous_response_id
                 response = client.responses.create(**kwargs)
+                raw_payload = response.model_dump() if hasattr(response, "model_dump") else {"repr": repr(response)}
                 output_text = getattr(response, "output_text", None) or ""
                 if not output_text:
+                    self._record_output_quarantine(
+                        request=metadata,
+                        source_system="deep_research",
+                        source_entity_kind=TraceEntityKind.DEEP_RESEARCH_JOB.value,
+                        source_entity_id=str(metadata.get("job_id") or ""),
+                        reason_code=OutputQuarantineReason.MISSING_OUTPUT_TEXT.value,
+                        provider="openai",
+                        model=model_name,
+                        phase=phase,
+                        schema_name=schema_name,
+                        raw_payload=raw_payload,
+                        previous_response_id=previous_response_id,
+                        error=f"{schema_name} returned no output_text.",
+                    )
                     raise RuntimeError(f"{schema_name} returned no output_text.")
-                payload = self._parse_json_object(str(output_text))
+                payload = self._parse_json_object(
+                    str(output_text),
+                    quarantine_context={
+                        "request": metadata,
+                        "source_system": "deep_research",
+                        "source_entity_kind": TraceEntityKind.DEEP_RESEARCH_JOB.value,
+                        "source_entity_id": str(metadata.get("job_id") or ""),
+                        "provider": "openai",
+                        "model": model_name,
+                        "phase": phase,
+                        "schema_name": schema_name,
+                        "raw_payload": raw_payload,
+                        "previous_response_id": previous_response_id,
+                        "response_id": str(getattr(response, "id", None) or "").strip() or None,
+                    },
+                )
                 if not isinstance(payload, dict):
                     raise RuntimeError(f"{schema_name} returned a non-object payload.")
                 self._record_response_continuity(
@@ -3043,6 +3139,7 @@ class DeepResearchService:
             response_continuity=response_continuity,
             anchor_candidates=previous_anchor_candidates,
         )
+        previous_response_id = self._sanitize_previous_response_id_for_provider(str(route["provider"]), previous_response_id)
         should_store = bool(response_continuity and response_continuity.get("enabled"))
         if str(route["provider"]) == "anthropic":
             anthropic_tools = [self._anthropic_web_search_tool(phase=str(continuity_anchor or "final_synthesis"))]
@@ -3070,7 +3167,20 @@ class DeepResearchService:
                 raw_payload = response.model_dump() if hasattr(response, "model_dump") else {"repr": repr(response)}
                 raw_payload["attempts"] = attempts
                 output_text = self._extract_anthropic_text_blocks(response)
-                structured = self._parse_json_object(str(output_text))
+                structured = self._parse_json_object(
+                    str(output_text),
+                    quarantine_context={
+                        "request": request,
+                        "source_system": "deep_research",
+                        "source_entity_kind": TraceEntityKind.DEEP_RESEARCH_JOB.value,
+                        "source_entity_id": str(request.get("job_id") or ""),
+                        "provider": "anthropic",
+                        "model": str(route["model"]),
+                        "phase": str(continuity_anchor or "final_synthesis"),
+                        "schema_name": "project_os_deep_research_result",
+                        "raw_payload": raw_payload,
+                    },
+                )
                 structured["metadata"] = {
                     **dict(structured.get("metadata") or {}),
                     "provider": "anthropic",
@@ -3162,8 +3272,37 @@ class DeepResearchService:
                 raw_payload["attempts"] = attempts
                 output_text = getattr(response, "output_text", None) or raw_payload.get("output_text")
                 if not output_text:
+                    self._record_output_quarantine(
+                        request=request,
+                        source_system="deep_research",
+                        source_entity_kind=TraceEntityKind.DEEP_RESEARCH_JOB.value,
+                        source_entity_id=str(request.get("job_id") or ""),
+                        reason_code=OutputQuarantineReason.MISSING_OUTPUT_TEXT.value,
+                        provider="openai",
+                        model=model_name,
+                        phase=str(continuity_anchor or "final_synthesis"),
+                        schema_name="project_os_deep_research_result",
+                        raw_payload=raw_payload,
+                        previous_response_id=previous_response_id,
+                        error="Deep research response returned no output_text.",
+                    )
                     raise RuntimeError("Deep research response returned no output_text.")
-                structured = self._parse_json_object(str(output_text))
+                structured = self._parse_json_object(
+                    str(output_text),
+                    quarantine_context={
+                        "request": request,
+                        "source_system": "deep_research",
+                        "source_entity_kind": TraceEntityKind.DEEP_RESEARCH_JOB.value,
+                        "source_entity_id": str(request.get("job_id") or ""),
+                        "provider": "openai",
+                        "model": model_name,
+                        "phase": str(continuity_anchor or "final_synthesis"),
+                        "schema_name": "project_os_deep_research_result",
+                        "raw_payload": raw_payload,
+                        "response_id": str(getattr(response, "id", None) or "").strip() or None,
+                        "previous_response_id": previous_response_id,
+                    },
+                )
                 structured["metadata"] = {
                     **dict(structured.get("metadata") or {}),
                     "provider": "openai",
@@ -3278,8 +3417,36 @@ class DeepResearchService:
                 )
                 output_text = getattr(response, "output_text", None) or ""
                 if not output_text:
+                    raw_payload = response.model_dump() if hasattr(response, "model_dump") else {"repr": repr(response)}
+                    self._record_output_quarantine(
+                        request=request,
+                        source_system="deep_research_translation",
+                        source_entity_kind=TraceEntityKind.DEEP_RESEARCH_JOB.value,
+                        source_entity_id=str(request.get("job_id") or ""),
+                        reason_code=OutputQuarantineReason.MISSING_OUTPUT_TEXT.value,
+                        provider="openai",
+                        model=model_name,
+                        phase="reader_translation",
+                        schema_name="project_os_deep_research_reader_fr",
+                        raw_payload=raw_payload,
+                        error="Reader translation returned no output_text.",
+                    )
                     raise RuntimeError("Reader translation returned no output_text.")
-                translated = self._parse_json_object(str(output_text))
+                translated = self._parse_json_object(
+                    str(output_text),
+                    quarantine_context={
+                        "request": request,
+                        "source_system": "deep_research_translation",
+                        "source_entity_kind": TraceEntityKind.DEEP_RESEARCH_JOB.value,
+                        "source_entity_id": str(request.get("job_id") or ""),
+                        "provider": "openai",
+                        "model": model_name,
+                        "phase": "reader_translation",
+                        "schema_name": "project_os_deep_research_reader_fr",
+                        "raw_payload": response.model_dump() if hasattr(response, "model_dump") else {"repr": repr(response)},
+                        "response_id": str(getattr(response, "id", None) or "").strip() or None,
+                    },
+                )
                 translated["metadata"] = dict(structured.get("metadata") or {})
                 return translated
             except Exception as exc:
@@ -3309,8 +3476,8 @@ class DeepResearchService:
 
     def _research_attempts(self) -> list[tuple[str, dict[str, Any]]]:
         candidates = [
-            (self.default_model, {"type": "web_search", "search_context_size": "high"}),
-            (self.default_model, {"type": "web_search_preview", "search_context_size": "high"}),
+            (self.research_model, {"type": "web_search", "search_context_size": "high"}),
+            (self.research_model, {"type": "web_search_preview", "search_context_size": "high"}),
             ("gpt-5", {"type": "web_search", "search_context_size": "high"}),
             ("gpt-5", {"type": "web_search_preview", "search_context_size": "high"}),
         ]
@@ -3325,16 +3492,7 @@ class DeepResearchService:
         return unique
 
     def _translation_attempts(self) -> list[str]:
-        candidates = [self.default_model, "gpt-5"]
-        ordered: list[str] = []
-        seen: set[str] = set()
-        for model_name in candidates:
-            key = str(model_name or "").strip()
-            if not key or key in seen:
-                continue
-            seen.add(key)
-            ordered.append(key)
-        return ordered
+        return self._openai_translation_candidates()
 
     def _extract_usage(self, raw_payload: dict[str, Any], response: Any) -> dict[str, Any]:
         usage = raw_payload.get("usage")
@@ -3343,16 +3501,157 @@ class DeepResearchService:
             usage = usage_obj.model_dump() if hasattr(usage_obj, "model_dump") else dict(usage_obj)
         return dict(usage or {})
 
-    def _parse_json_object(self, output_text: str) -> dict[str, Any]:
+    @staticmethod
+    def _preview_text(value: Any, *, max_chars: int = 16_000) -> str | None:
+        text = str(value or "")
+        if not text:
+            return None
+        if len(text) <= max_chars:
+            return text
+        return f"{text[:max_chars].rstrip()}...[truncated]"
+
+    def _record_output_quarantine(
+        self,
+        *,
+        request: dict[str, Any],
+        source_system: str,
+        source_entity_kind: str,
+        source_entity_id: str,
+        reason_code: str,
+        provider: str | None,
+        model: str | None,
+        phase: str | None,
+        schema_name: str | None,
+        raw_payload: dict[str, Any] | None = None,
+        output_text: str | None = None,
+        response_id: str | None = None,
+        previous_response_id: str | None = None,
+        error: str,
+    ) -> str:
+        resolved_entity_id = source_entity_id or "unknown_deep_research_job"
+        quarantine_id = self.journal.database.record_output_quarantine(
+            source_system=source_system,
+            source_entity_kind=source_entity_kind,
+            source_entity_id=resolved_entity_id,
+            reason_code=reason_code,
+            provider=provider,
+            model=model,
+            response_id=response_id,
+            previous_response_id=previous_response_id,
+            record_locator=str(request.get("job_id") or request.get("title") or "").strip() or None,
+            payload={
+                "raw_payload": raw_payload or {},
+                "output_text_preview": self._preview_text(output_text),
+            },
+            metadata={
+                "job_id": str(request.get("job_id") or "").strip() or None,
+                "phase": phase,
+                "schema_name": schema_name,
+                "error": error,
+            },
+        )
+        self.journal.database.record_trace_edge(
+            parent_id=resolved_entity_id,
+            parent_kind=source_entity_kind,
+            child_id=quarantine_id,
+            child_kind=TraceEntityKind.OUTPUT_QUARANTINE.value,
+            relation=TraceRelationKind.QUARANTINED_AS.value,
+            metadata={"reason_code": reason_code, "phase": phase},
+        )
+        self.logger.log(
+            "WARNING",
+            "deep_research_output_quarantined",
+            quarantine_id=quarantine_id,
+            source_system=source_system,
+            reason_code=reason_code,
+            job_id=str(request.get("job_id") or "").strip() or None,
+            provider=provider,
+            model=model,
+            phase=phase,
+        )
+        return quarantine_id
+
+    def _parse_json_object(self, output_text: str, *, quarantine_context: dict[str, Any] | None = None) -> dict[str, Any]:
         raw = output_text.strip()
         if not raw:
+            if quarantine_context:
+                self._record_output_quarantine(
+                    request=dict(quarantine_context.get("request") or {}),
+                    source_system=str(quarantine_context.get("source_system") or "deep_research"),
+                    source_entity_kind=str(quarantine_context.get("source_entity_kind") or TraceEntityKind.DEEP_RESEARCH_JOB.value),
+                    source_entity_id=str(quarantine_context.get("source_entity_id") or ""),
+                    reason_code=OutputQuarantineReason.MISSING_OUTPUT_TEXT.value,
+                    provider=str(quarantine_context.get("provider") or "").strip() or None,
+                    model=str(quarantine_context.get("model") or "").strip() or None,
+                    phase=str(quarantine_context.get("phase") or "").strip() or None,
+                    schema_name=str(quarantine_context.get("schema_name") or "").strip() or None,
+                    raw_payload=dict(quarantine_context.get("raw_payload") or {}),
+                    output_text=output_text,
+                    response_id=str(quarantine_context.get("response_id") or "").strip() or None,
+                    previous_response_id=str(quarantine_context.get("previous_response_id") or "").strip() or None,
+                    error="Deep research output is empty.",
+                )
             raise RuntimeError("Deep research output is empty.")
         start = raw.find("{")
         end = raw.rfind("}")
         if start < 0 or end < start:
+            if quarantine_context:
+                self._record_output_quarantine(
+                    request=dict(quarantine_context.get("request") or {}),
+                    source_system=str(quarantine_context.get("source_system") or "deep_research"),
+                    source_entity_kind=str(quarantine_context.get("source_entity_kind") or TraceEntityKind.DEEP_RESEARCH_JOB.value),
+                    source_entity_id=str(quarantine_context.get("source_entity_id") or ""),
+                    reason_code=OutputQuarantineReason.INVALID_JSON.value,
+                    provider=str(quarantine_context.get("provider") or "").strip() or None,
+                    model=str(quarantine_context.get("model") or "").strip() or None,
+                    phase=str(quarantine_context.get("phase") or "").strip() or None,
+                    schema_name=str(quarantine_context.get("schema_name") or "").strip() or None,
+                    raw_payload=dict(quarantine_context.get("raw_payload") or {}),
+                    output_text=output_text,
+                    response_id=str(quarantine_context.get("response_id") or "").strip() or None,
+                    previous_response_id=str(quarantine_context.get("previous_response_id") or "").strip() or None,
+                    error="Deep research output is not valid JSON.",
+                )
             raise RuntimeError("Deep research output is not valid JSON.")
-        payload = json.loads(raw[start : end + 1])
+        try:
+            payload = json.loads(raw[start : end + 1])
+        except json.JSONDecodeError as exc:
+            if quarantine_context:
+                self._record_output_quarantine(
+                    request=dict(quarantine_context.get("request") or {}),
+                    source_system=str(quarantine_context.get("source_system") or "deep_research"),
+                    source_entity_kind=str(quarantine_context.get("source_entity_kind") or TraceEntityKind.DEEP_RESEARCH_JOB.value),
+                    source_entity_id=str(quarantine_context.get("source_entity_id") or ""),
+                    reason_code=OutputQuarantineReason.INVALID_JSON.value,
+                    provider=str(quarantine_context.get("provider") or "").strip() or None,
+                    model=str(quarantine_context.get("model") or "").strip() or None,
+                    phase=str(quarantine_context.get("phase") or "").strip() or None,
+                    schema_name=str(quarantine_context.get("schema_name") or "").strip() or None,
+                    raw_payload=dict(quarantine_context.get("raw_payload") or {}),
+                    output_text=output_text,
+                    response_id=str(quarantine_context.get("response_id") or "").strip() or None,
+                    previous_response_id=str(quarantine_context.get("previous_response_id") or "").strip() or None,
+                    error=str(exc),
+                )
+            raise RuntimeError("Deep research output is not valid JSON.") from exc
         if not isinstance(payload, dict):
+            if quarantine_context:
+                self._record_output_quarantine(
+                    request=dict(quarantine_context.get("request") or {}),
+                    source_system=str(quarantine_context.get("source_system") or "deep_research"),
+                    source_entity_kind=str(quarantine_context.get("source_entity_kind") or TraceEntityKind.DEEP_RESEARCH_JOB.value),
+                    source_entity_id=str(quarantine_context.get("source_entity_id") or ""),
+                    reason_code=OutputQuarantineReason.NON_OBJECT_PAYLOAD.value,
+                    provider=str(quarantine_context.get("provider") or "").strip() or None,
+                    model=str(quarantine_context.get("model") or "").strip() or None,
+                    phase=str(quarantine_context.get("phase") or "").strip() or None,
+                    schema_name=str(quarantine_context.get("schema_name") or "").strip() or None,
+                    raw_payload=dict(quarantine_context.get("raw_payload") or {}),
+                    output_text=output_text,
+                    response_id=str(quarantine_context.get("response_id") or "").strip() or None,
+                    previous_response_id=str(quarantine_context.get("previous_response_id") or "").strip() or None,
+                    error="Deep research output root must be a JSON object.",
+                )
             raise RuntimeError("Deep research output root must be a JSON object.")
         return payload
 
@@ -3698,7 +3997,8 @@ class DeepResearchService:
                     "### Provider Route",
                     "",
                     f"- research_provider: `{str(provider_route.get('research_provider') or 'openai').strip()}`",
-                    f"- research_model: `{str(provider_route.get('research_model') or self.default_model).strip()}`",
+                    f"- research_model: `{str(provider_route.get('research_model') or self.research_model).strip()}`",
+                    f"- scout_model: `{str(provider_route.get('scout_model') or self.scout_model).strip()}`",
                     f"- translation_provider: `{str(provider_route.get('translation_provider') or 'openai').strip()}`",
                     f"- translation_model: `{str(provider_route.get('translation_model') or '').strip()}`",
                     "",

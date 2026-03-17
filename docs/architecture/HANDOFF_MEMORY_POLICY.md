@@ -196,6 +196,28 @@ alors il doit:
 - relire memoire + docs de reference
 - reprendre le flux avec contexte rafraichi
 
+## Budget de continuite projet en conversation standard
+
+La conversation standard peut lire une continuite projet durable, mais seulement avec un budget borne.
+
+Regles du budget de lecture:
+
+- vue `clean` par defaut
+- `full` seulement sur opt-in explicite
+- fenetre recente bornee a `5 jours` pour les rappels conversationnels
+- recap borne a quelques items seulement:
+  - decisions durables recentes
+  - thoughts utiles
+  - prochains jalons differes
+  - runs recents relies au contexte
+
+Regles du budget de rappel:
+
+- si le rappel est faible ou ambigu, clarification courte
+- ne jamais fabriquer une continuite
+- ne jamais transformer un signal prive en rappel visible par defaut
+- ne jamais utiliser la memoire longue pour casser les confirmations produit voulues
+
 ## Cible
 
 Le handoff ideal doit produire:

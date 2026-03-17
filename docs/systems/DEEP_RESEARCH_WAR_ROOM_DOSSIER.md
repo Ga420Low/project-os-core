@@ -24,7 +24,7 @@
 - un echec partiel d'une lane doit degrader le run et rester visible, pas effacer tout le travail valide des autres lanes
 - les passes auxiliaires et la synthese finale doivent reutiliser l'etat Responses quand c'est possible, pour eviter de repayer la meme remise en contexte
 - la reputation source doit persister localement d'un run a l'autre
-- pour le debug temporaire, les passes de recherche `extreme` peuvent etre routees sur `Anthropic Sonnet` avec logs de tokens et de cout par phase
+- par defaut, les passes de recherche `extreme` restent sur la route canonique `OpenAI`; une route `Anthropic Sonnet` n'est autorisee qu'en debug explicite avec logs de tokens et de cout par phase
 
 ## A faire
 

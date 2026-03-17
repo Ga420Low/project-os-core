@@ -313,7 +313,7 @@ Sur le poste cible actuel:
 Preuves retenues:
 
 - commande canonique `py D:/ProjectOS/project-os-core/scripts/project_os_entry.py --config-path D:/ProjectOS/project-os-core/config/storage_roots.local.json --policy-path D:/ProjectOS/project-os-core/config/runtime_policy.local.json router model-health`
-- commande canonique `py D:/ProjectOS/project-os-core/scripts/project_os_entry.py --config-path D:/ProjectOS/project-os-core/config/storage_roots.local.json --policy-path D:/ProjectOS/project-os-core/config/runtime_policy.local.json router proactive-briefing --branch-name project-os/<branche>`
+- commande canonique `py D:/ProjectOS/project-os-core/scripts/project_os_entry.py --config-path D:/ProjectOS/project-os-core/config/storage_roots.local.json --policy-path D:/ProjectOS/project-os-core/config/runtime_policy.local.json router proactive-briefing --branch-name codex/project-os-<branche>`
 - `doctor` et `health snapshot` exposent maintenant `model_stack_health`
 - `api-runs build-context` injecte `model_stack_health`
 - `api-runs build-context` injecte `recent_session_briefing` quand une branche ou un profil a un historique recent

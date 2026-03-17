@@ -129,6 +129,13 @@ class InteractionState(str, Enum):
     REPORTING = "reporting"
 
 
+class ConversationBrainBackend(str, Enum):
+    DETERMINISTIC = "deterministic"
+    LOCAL = "local"
+    PROVIDER = "provider"
+    FALLBACK = "fallback"
+
+
 class PromotionAction(str, Enum):
     PROMOTE = "promote"
     SKIP = "skip"
@@ -260,6 +267,50 @@ class OperatorDeliveryGuarantee(str, Enum):
     IMPORTANT = "important"
     MUST_NOTIFY = "must_notify"
     MUST_PERSIST = "must_persist"
+
+
+class TraceEntityKind(str, Enum):
+    CHANNEL_EVENT = "channel_event"
+    GATEWAY_DISPATCH = "gateway_dispatch"
+    MISSION_INTENT = "mission_intent"
+    ROUTING_DECISION = "routing_decision"
+    ROUTING_TRACE = "routing_trace"
+    MISSION_RUN = "mission_run"
+    API_RUN = "api_run"
+    DEEP_RESEARCH_JOB = "deep_research_job"
+    OUTPUT_QUARANTINE = "output_quarantine"
+
+
+class TraceRelationKind(str, Enum):
+    CAUSED = "caused"
+    ROUTED_TO = "routed_to"
+    PRODUCED = "produced"
+    REFERENCES = "references"
+    CONTINUES_FROM = "continues_from"
+    QUARANTINED_AS = "quarantined_as"
+
+
+class DataProvenanceMarker(str, Enum):
+    LEGACY = "legacy"
+    UNKNOWN = "unknown"
+    MISSING = "missing"
+    INCOMPLETE_PROVENANCE = "incomplete_provenance"
+
+
+class OutputQuarantineReason(str, Enum):
+    MISSING_OUTPUT_TEXT = "missing_output_text"
+    INVALID_JSON = "invalid_json"
+    NON_OBJECT_PAYLOAD = "non_object_payload"
+    INVALID_STRUCTURED_PAYLOAD = "invalid_structured_payload"
+    TRUNCATED_OUTPUT = "truncated_output"
+    UNLOADABLE_PROOF = "unloadable_proof"
+    INCOMPLETE_DEBUG_ARTIFACT = "incomplete_debug_artifact"
+
+
+class OutputQuarantineStatus(str, Enum):
+    ACTIVE = "active"
+    RELEASED = "released"
+    DISCARDED = "discarded"
 
 
 def to_jsonable(value: Any) -> Any:
@@ -625,6 +676,197 @@ class ConversationMemoryCandidate:
 
 
 @dataclass(slots=True)
+class ThreadLedgerSnapshot:
+    thread_ledger_id: str
+    surface: str
+    channel: str
+    thread_id: str
+    external_thread_id: str | None = None
+    conversation_key: str | None = None
+    status: str = "active"
+    active_subject: str | None = None
+    subtopics: list[str] = field(default_factory=list)
+    last_operator_reply_id: str | None = None
+    last_authoritative_reply_summary: str | None = None
+    last_artifact_id: str | None = None
+    last_pdf_artifact_id: str | None = None
+    last_bundle_id: str | None = None
+    active_bundle_ids: list[str] = field(default_factory=list)
+    active_analysis_object_ids: list[str] = field(default_factory=list)
+    referenced_object_ids: list[str] = field(default_factory=list)
+    pending_approval_ids: list[str] = field(default_factory=list)
+    mode: str | None = None
+    claims: list[str] = field(default_factory=list)
+    questions: list[str] = field(default_factory=list)
+    decisions: list[str] = field(default_factory=list)
+    contradictions: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ArtifactLedgerEntry:
+    artifact_ledger_entry_id: str
+    artifact_id: str
+    artifact_kind: str
+    owner_type: str
+    owner_id: str
+    surface: str | None = None
+    channel: str | None = None
+    thread_id: str | None = None
+    external_thread_id: str | None = None
+    conversation_key: str | None = None
+    reply_id: str | None = None
+    run_id: str | None = None
+    approval_id: str | None = None
+    bundle_id: str | None = None
+    source_object_id: str | None = None
+    source_ids: list[str] = field(default_factory=list)
+    cold_artifact_id: str | None = None
+    cold_path: str | None = None
+    ingestion_status: str = "ready"
+    source_locator: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ArtifactIngestionTask:
+    task_id: str
+    artifact_id: str
+    conversation_key: str | None = None
+    status: str = "pending"
+    attempt_count: int = 0
+    payload: dict[str, Any] = field(default_factory=dict)
+    last_error: str | None = None
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class AnalysisObject:
+    object_id: str
+    object_type: str
+    surface: str | None = None
+    channel: str | None = None
+    thread_id: str | None = None
+    conversation_key: str | None = None
+    title: str | None = None
+    summary_short: str = ""
+    summary_full: str = ""
+    source_ids: list[str] = field(default_factory=list)
+    artifact_ids: list[str] = field(default_factory=list)
+    claims: list[str] = field(default_factory=list)
+    questions: list[str] = field(default_factory=list)
+    decisions: list[str] = field(default_factory=list)
+    confidence: float = 0.0
+    status: str = "active"
+    content_status: str = "ready"
+    source_mime_type: str | None = None
+    extracted_text_artifact_id: str | None = None
+    bundle_ids: list[str] = field(default_factory=list)
+    supersedes: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class AnalysisObjectDigest:
+    object_id: str
+    object_type: str
+    title: str | None = None
+    summary_short: str = ""
+    claims: list[str] = field(default_factory=list)
+    questions: list[str] = field(default_factory=list)
+    decisions: list[str] = field(default_factory=list)
+    artifact_ids: list[str] = field(default_factory=list)
+    bundle_ids: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class AnalysisBundle:
+    bundle_id: str
+    bundle_kind: str
+    title: str
+    surface: str | None = None
+    channel: str | None = None
+    thread_id: str | None = None
+    conversation_key: str | None = None
+    summary_short: str = ""
+    summary_full: str = ""
+    status: str = "active"
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+    updated_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class WorkingSetPlan:
+    working_set_id: str
+    surface: str | None = None
+    channel: str | None = None
+    thread_id: str | None = None
+    conversation_key: str | None = None
+    message_id: str | None = None
+    summary: str = ""
+    selected_object_ids: list[str] = field(default_factory=list)
+    selected_object_digests: list[AnalysisObjectDigest] = field(default_factory=list)
+    selected_artifact_ids: list[str] = field(default_factory=list)
+    selected_bundle_ids: list[str] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ReferenceResolution:
+    resolution_id: str
+    resolution_kind: str
+    confidence: float
+    surface: str | None = None
+    channel: str | None = None
+    thread_id: str | None = None
+    conversation_key: str | None = None
+    message_id: str | None = None
+    target_type: str | None = None
+    target_id: str | None = None
+    reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ConversationBrainDecision:
+    backend: ConversationBrainBackend
+    resolution_kind: str
+    confidence: float
+    target_type: str | None = None
+    target_id: str | None = None
+    reason: str | None = None
+    selected_object_ids: list[str] = field(default_factory=list)
+    selected_artifact_ids: list[str] = field(default_factory=list)
+    needs_provider_fallback: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class ConversationResolution:
+    resolution_kind: str
+    confidence: float
+    fallback_discussion: bool = True
+    reasons: list[str] = field(default_factory=list)
+    working_set: WorkingSetPlan | None = None
+    reference_resolution: ReferenceResolution | None = None
+    brain_decision: ConversationBrainDecision | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
 class IntentTaxonomyResult:
     intent_kind: IntentKind
     delegation_level: DelegationLevel
@@ -840,9 +1082,12 @@ class ExecutionPolicy:
     discord_simple_model: str = "claude-sonnet-4-20250514"
     discord_opus_model: str = "claude-opus-4-1"
     discord_simple_reasoning_effort: str = "medium"
-    deep_research_extreme_debug_enabled: bool = True
+    deep_research_model: str = "gpt-5"
+    deep_research_scout_model: str = "gpt-5-mini"
+    deep_research_translation_model: str = "gpt-5"
+    deep_research_extreme_debug_enabled: bool = False
     deep_research_extreme_debug_provider: str = "anthropic"
-    deep_research_extreme_debug_model: str = "claude-sonnet-4-20250514"
+    deep_research_extreme_debug_model: str = "claude-haiku-4-5-20251001"
     deep_research_extreme_debug_log_enabled: bool = True
     operator_language: str = "fr"
     operator_audience: OperatorAudience = OperatorAudience.NON_DEVELOPER
@@ -939,6 +1184,43 @@ class RoutingDecisionTrace:
     runtime_state_id: str | None
     inputs: dict[str, Any]
     outputs: dict[str, Any]
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class TraceEdge:
+    trace_edge_id: str
+    parent_id: str
+    parent_kind: TraceEntityKind | str
+    child_id: str
+    child_kind: TraceEntityKind | str
+    relation: TraceRelationKind | str = TraceRelationKind.CAUSED
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: str = field(default_factory=utc_now_iso)
+
+
+@dataclass(slots=True)
+class OutputQuarantineRecord:
+    quarantine_id: str
+    source_system: str
+    source_entity_kind: TraceEntityKind | str
+    source_entity_id: str
+    reason_code: OutputQuarantineReason | str
+    status: OutputQuarantineStatus | str = OutputQuarantineStatus.ACTIVE
+    provider: str | None = None
+    model: str | None = None
+    response_id: str | None = None
+    previous_response_id: str | None = None
+    run_id: str | None = None
+    mission_run_id: str | None = None
+    dispatch_id: str | None = None
+    decision_id: str | None = None
+    intent_id: str | None = None
+    channel_event_id: str | None = None
+    record_locator: str | None = None
+    markers: list[DataProvenanceMarker | str] = field(default_factory=list)
+    payload: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now_iso)
 
 

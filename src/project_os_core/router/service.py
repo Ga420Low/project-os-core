@@ -30,6 +30,8 @@ from ..models import (
     RoutingDecisionTrace,
     RunSpeechPolicy,
     SensitivityClass,
+    TraceEntityKind,
+    TraceRelationKind,
     RuntimeState,
     RuntimeVerdict,
     new_id,
@@ -306,6 +308,29 @@ class MissionRouter:
             self._persist_mission_run(mission_run)
             self._persist_decision(decision)
             self._persist_trace(trace)
+            self.database.record_trace_edge(
+                parent_id=intent.intent_id,
+                parent_kind=TraceEntityKind.MISSION_INTENT.value,
+                child_id=decision.decision_id,
+                child_kind=TraceEntityKind.ROUTING_DECISION.value,
+                relation=TraceRelationKind.ROUTED_TO.value,
+                metadata={"route_reason": decision.route_reason},
+            )
+            self.database.record_trace_edge(
+                parent_id=decision.decision_id,
+                parent_kind=TraceEntityKind.ROUTING_DECISION.value,
+                child_id=trace.trace_id,
+                child_kind=TraceEntityKind.ROUTING_TRACE.value,
+                relation=TraceRelationKind.PRODUCED.value,
+            )
+            if mission_run is not None:
+                self.database.record_trace_edge(
+                    parent_id=decision.decision_id,
+                    parent_kind=TraceEntityKind.ROUTING_DECISION.value,
+                    child_id=mission_run.mission_run_id,
+                    child_kind=TraceEntityKind.MISSION_RUN.value,
+                    relation=TraceRelationKind.PRODUCED.value,
+                )
 
         return decision, trace, mission_run
 

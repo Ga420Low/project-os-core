@@ -485,7 +485,7 @@ Regles obligatoires:
 
 Regles:
 
-- travail sur `project-os/*`
+- travail sur `codex/project-os-*`
 - `push` = integrer dans `main` puis pousser `main`
 - la branche de travail doit etre realignee sur `main` apres livraison
 - aucun push `main` sans revue

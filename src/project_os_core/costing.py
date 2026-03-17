@@ -7,6 +7,8 @@ from dataclasses import dataclass
 USD_TO_EUR = 0.92
 
 PRICING_PER_MILLION_USD: dict[str, dict[str, float]] = {
+    "gpt-5": {"input": 1.25, "output": 10.0},
+    "gpt-5-mini": {"input": 0.25, "output": 2.0},
     "gpt-5.4": {"input": 2.5, "output": 15.0},
     "gpt-5.4-pro": {"input": 30.0, "output": 180.0},
     "claude-haiku-4-5-20251001": {"input": 0.8, "output": 4.0},
@@ -17,6 +19,8 @@ PRICING_PER_MILLION_USD: dict[str, dict[str, float]] = {
 _MODEL_PREFIX_ALIASES: tuple[tuple[str, str], ...] = (
     ("gpt-5.4-pro", "gpt-5.4-pro"),
     ("gpt-5.4", "gpt-5.4"),
+    ("gpt-5-mini", "gpt-5-mini"),
+    ("gpt-5", "gpt-5"),
     ("claude-opus-4-1", "claude-opus-4-1"),
     ("claude-sonnet-4", "claude-sonnet-4-20250514"),
     ("claude-haiku-4-5", "claude-haiku-4-5-20251001"),

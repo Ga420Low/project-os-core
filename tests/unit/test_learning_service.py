@@ -245,7 +245,7 @@ class LearningServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             services = _build_services(Path(tmp))
             try:
-                branch_name = "project-os/learning-branch"
+                branch_name = "codex/project-os-learning-branch"
                 services.learning.record_decision(
                     status=DecisionStatus.CONFIRMED,
                     scope=f"api_run:audit:{branch_name}",
@@ -320,7 +320,7 @@ class LearningServiceTests(unittest.TestCase):
 
                 learning_context = services.learning.gather_learning_context(
                     mode="audit",
-                    branch_name="project-os/no-learning",
+                    branch_name="codex/project-os-no-learning",
                     objective="Audit what remains intentionally deferred.",
                 )
 
@@ -338,7 +338,7 @@ class LearningServiceTests(unittest.TestCase):
             try:
                 learning_context = services.learning.gather_learning_context(
                     mode="audit",
-                    branch_name="project-os/no-learning",
+                    branch_name="codex/project-os-no-learning",
                     objective="Audit the branch.",
                 )
                 self.assertEqual(learning_context, {})

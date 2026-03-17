@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from ..config import MemoryConfig
@@ -25,6 +25,13 @@ from .temporal_graph import TemporalGraphService
 
 
 class MemoryOSService:
+    _PROJECT_CONTINUITY_LOOKBACK_DAYS = 5
+    _PROJECT_CONTINUITY_MAX_DECISIONS = 3
+    _PROJECT_CONTINUITY_MAX_THOUGHTS = 2
+    _PROJECT_CONTINUITY_MAX_DEFERRED = 2
+    _PROJECT_CONTINUITY_MAX_RUNS = 2
+    _PROJECT_CONTINUITY_BLOCK_EXCERPT_LIMIT = 220
+
     def __init__(
         self,
         *,
@@ -242,6 +249,96 @@ class MemoryOSService:
             "recent_version": recent.version,
         }
 
+    def build_project_continuity_brief(
+        self,
+        *,
+        context: RetrievalContext,
+        lookback_days: int | None = None,
+    ) -> dict[str, Any]:
+        bounded_days = max(1, min(int(lookback_days or self._PROJECT_CONTINUITY_LOOKBACK_DAYS), 14))
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=bounded_days)).isoformat()
+        terms = self._project_continuity_terms(context)
+        stable_excerpt = self._block_excerpt("profiles/founder_stable_profile.md")
+        recent_excerpt = self._block_excerpt("profiles/recent_operating_context.md")
+        recent_decisions = self._load_project_decisions(cutoff=cutoff, terms=terms, context=context)
+        deferred_gaps = self._load_project_deferred_gaps(cutoff=cutoff, terms=terms, context=context)
+        thought_recall = self._load_project_thoughts(cutoff=cutoff, terms=terms, context=context)
+        recent_runs = self._load_project_runs(cutoff=cutoff, terms=terms, context=context)
+
+        lines: list[str] = []
+        if stable_excerpt:
+            lines.append(f"- cap stable: {stable_excerpt}")
+        if recent_excerpt:
+            lines.append(f"- contexte recent: {recent_excerpt}")
+        if recent_decisions:
+            lines.append(
+                "Decisions durables recentes:\n- "
+                + "\n- ".join(
+                    f"[{item['status']}] {item['scope']}: {item['summary']}"
+                    for item in recent_decisions[: self._PROJECT_CONTINUITY_MAX_DECISIONS]
+                )
+            )
+        if thought_recall:
+            lines.append(
+                "Rappels utiles:\n- "
+                + "\n- ".join(item["summary"] for item in thought_recall[: self._PROJECT_CONTINUITY_MAX_THOUGHTS])
+            )
+        if deferred_gaps:
+            lines.append(
+                "Prochains jalons probables:\n- "
+                + "\n- ".join(
+                    (
+                        f"{item['summary']} | prochain declencheur: {item['next_trigger']}"
+                        if item["next_trigger"]
+                        else item["summary"]
+                    )
+                    for item in deferred_gaps[: self._PROJECT_CONTINUITY_MAX_DEFERRED]
+                )
+            )
+        if recent_runs:
+            lines.append(
+                "Runs recents relies:\n- "
+                + "\n- ".join(
+                    f"{item['status']} | {item['objective']}"
+                    for item in recent_runs[: self._PROJECT_CONTINUITY_MAX_RUNS]
+                )
+            )
+
+        summary = "\n".join(line for line in lines if line).strip()
+        payload = {
+            "summary": summary,
+            "stable_excerpt": stable_excerpt,
+            "recent_excerpt": recent_excerpt,
+            "recent_decisions": recent_decisions[: self._PROJECT_CONTINUITY_MAX_DECISIONS],
+            "thought_recall": thought_recall[: self._PROJECT_CONTINUITY_MAX_THOUGHTS],
+            "deferred_gaps": deferred_gaps[: self._PROJECT_CONTINUITY_MAX_DEFERRED],
+            "recent_runs": recent_runs[: self._PROJECT_CONTINUITY_MAX_RUNS],
+            "retention": {
+                "lookback_days": bounded_days,
+                "max_decisions": self._PROJECT_CONTINUITY_MAX_DECISIONS,
+                "max_thoughts": self._PROJECT_CONTINUITY_MAX_THOUGHTS,
+                "max_deferred": self._PROJECT_CONTINUITY_MAX_DEFERRED,
+                "max_runs": self._PROJECT_CONTINUITY_MAX_RUNS,
+                "privacy_view": "full_opt_in" if context.include_private_full else "clean_only",
+            },
+        }
+        self.trace_operation(
+            operation="project_continuity_built",
+            target_type="project_continuity",
+            target_id=new_id("project_continuity"),
+            detail={
+                "decision_count": len(payload["recent_decisions"]),
+                "thought_count": len(payload["thought_recall"]),
+                "deferred_count": len(payload["deferred_gaps"]),
+                "run_count": len(payload["recent_runs"]),
+                "lookback_days": bounded_days,
+                "privacy_view": payload["retention"]["privacy_view"],
+            },
+            channel_event_id=context.metadata.get("channel_event_id"),
+            run_id=context.metadata.get("run_id"),
+        )
+        return payload
+
     def record_supersession(
         self,
         *,
@@ -388,6 +485,238 @@ class MemoryOSService:
             if item not in seen:
                 seen.append(item)
         return seen[:5]
+
+    def _project_continuity_terms(self, context: RetrievalContext) -> list[str]:
+        terms = self._cube_search_terms(context)
+        for value in (context.branch_name, context.target_profile, context.requested_worker):
+            normalized = str(value or "").strip().lower()
+            if normalized and normalized not in terms:
+                terms.append(normalized)
+        return terms[:10]
+
+    def _load_project_decisions(
+        self,
+        *,
+        cutoff: str,
+        terms: list[str],
+        context: RetrievalContext,
+    ) -> list[dict[str, Any]]:
+        rows = self.database.fetchall(
+            """
+            SELECT decision_record_id, status, scope, summary, metadata_json, updated_at
+            FROM decision_records
+            WHERE status IN ('confirmed', 'changed')
+              AND updated_at >= ?
+            ORDER BY updated_at DESC
+            LIMIT 24
+            """,
+            (cutoff,),
+        )
+        matched: list[dict[str, Any]] = []
+        fallback: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            metadata = json.loads(str(row["metadata_json"])) if row["metadata_json"] else {}
+            if str(metadata.get("classification") or "").strip().lower() == "deferred":
+                continue
+            item = {
+                "decision_record_id": str(row["decision_record_id"]),
+                "status": str(row["status"]),
+                "scope": str(row["scope"]),
+                "summary": str(row["summary"]),
+                "updated_at": str(row["updated_at"]),
+                "metadata": metadata,
+            }
+            signature = f"{item['scope']}::{item['summary']}"
+            if signature in seen:
+                continue
+            seen.add(signature)
+            if self._matches_project_context(
+                f"{item['scope']} {item['summary']} {json.dumps(metadata, ensure_ascii=True, sort_keys=True)}",
+                terms=terms,
+                context=context,
+            ):
+                matched.append(item)
+            else:
+                fallback.append(item)
+        return (matched + fallback)[: self._PROJECT_CONTINUITY_MAX_DECISIONS]
+
+    def _load_project_deferred_gaps(
+        self,
+        *,
+        cutoff: str,
+        terms: list[str],
+        context: RetrievalContext,
+    ) -> list[dict[str, Any]]:
+        rows = self.database.fetchall(
+            """
+            SELECT decision_record_id, scope, summary, metadata_json, updated_at
+            FROM decision_records
+            WHERE updated_at >= ?
+            ORDER BY updated_at DESC
+            LIMIT 24
+            """,
+            (cutoff,),
+        )
+        matched: list[dict[str, Any]] = []
+        fallback: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            metadata = json.loads(str(row["metadata_json"])) if row["metadata_json"] else {}
+            if str(metadata.get("classification") or "").strip().lower() != "deferred":
+                continue
+            item = {
+                "decision_record_id": str(row["decision_record_id"]),
+                "scope": str(row["scope"]),
+                "summary": str(row["summary"]),
+                "next_trigger": str(metadata.get("next_trigger") or "").strip(),
+                "updated_at": str(row["updated_at"]),
+                "metadata": metadata,
+            }
+            signature = f"{item['scope']}::{item['summary']}::{item['next_trigger']}"
+            if signature in seen:
+                continue
+            seen.add(signature)
+            haystack = " ".join(
+                [
+                    item["scope"],
+                    item["summary"],
+                    item["next_trigger"],
+                    json.dumps(metadata, ensure_ascii=True, sort_keys=True),
+                ]
+            )
+            if self._matches_project_context(haystack, terms=terms, context=context):
+                matched.append(item)
+            else:
+                fallback.append(item)
+        return (matched + fallback)[: self._PROJECT_CONTINUITY_MAX_DEFERRED]
+
+    def _load_project_thoughts(
+        self,
+        *,
+        cutoff: str,
+        terms: list[str],
+        context: RetrievalContext,
+    ) -> list[dict[str, Any]]:
+        if self.thoughts is None or not self.config.thoughts.enabled:
+            return []
+        query = " ".join(terms[:6]).strip() or context.query.strip() or "project os continuity"
+        candidates = self.thoughts.search(
+            query=query,
+            limit=max(self._PROJECT_CONTINUITY_MAX_THOUGHTS, self.config.thoughts.max_results),
+            include_private_full=context.include_private_full,
+        )
+        if not candidates:
+            candidates = self.thoughts.list_thoughts(limit=max(6, self._PROJECT_CONTINUITY_MAX_THOUGHTS * 3))
+        matched: list[dict[str, Any]] = []
+        fallback: list[dict[str, Any]] = []
+        for thought in candidates:
+            privacy_view = str(thought.metadata.get("privacy_view") or "clean").strip().lower()
+            if privacy_view == "full" and not context.include_private_full:
+                continue
+            if thought.updated_at < cutoff:
+                continue
+            haystack = f"{thought.kind} {thought.summary} {thought.content}"
+            item = {
+                "thought_id": thought.thought_id,
+                "kind": thought.kind,
+                "summary": thought.summary,
+                "updated_at": thought.updated_at,
+                "privacy_view": privacy_view,
+            }
+            if self._matches_project_context(haystack, terms=terms, context=context):
+                matched.append(item)
+            else:
+                fallback.append(item)
+        return (matched + fallback)[: self._PROJECT_CONTINUITY_MAX_THOUGHTS]
+
+    def _load_project_runs(
+        self,
+        *,
+        cutoff: str,
+        terms: list[str],
+        context: RetrievalContext,
+    ) -> list[dict[str, Any]]:
+        if not context.branch_name and not context.target_profile:
+            return []
+        rows = self.database.fetchall(
+            """
+            SELECT
+                req.run_request_id,
+                req.objective,
+                req.branch_name,
+                req.target_profile,
+                COALESCE(res.status, req.status) AS run_status,
+                COALESCE(res.updated_at, req.updated_at) AS run_updated_at
+            FROM api_run_requests AS req
+            LEFT JOIN api_run_results AS res ON res.run_request_id = req.run_request_id
+            WHERE COALESCE(res.updated_at, req.updated_at) >= ?
+            ORDER BY COALESCE(res.updated_at, req.updated_at) DESC
+            LIMIT 16
+            """,
+            (cutoff,),
+        )
+        matched: list[dict[str, Any]] = []
+        fallback: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            item = {
+                "run_request_id": str(row["run_request_id"]),
+                "objective": str(row["objective"]),
+                "branch_name": str(row["branch_name"]),
+                "target_profile": str(row["target_profile"] or ""),
+                "status": str(row["run_status"]),
+                "updated_at": str(row["run_updated_at"]),
+            }
+            signature = f"{item['branch_name']}::{item['objective']}"
+            if signature in seen:
+                continue
+            seen.add(signature)
+            haystack = " ".join([item["objective"], item["branch_name"], item["target_profile"], item["status"]])
+            if self._matches_project_context(haystack, terms=terms, context=context):
+                matched.append(item)
+            else:
+                fallback.append(item)
+        return (matched + fallback)[: self._PROJECT_CONTINUITY_MAX_RUNS]
+
+    def _block_excerpt(self, block_name: str) -> str:
+        try:
+            block = self.blocks.get_block(block_name)
+        except KeyError:
+            return ""
+        content = str(block.content or "").strip()
+        if not content:
+            return ""
+        lines = [
+            line.strip(" -\t")
+            for line in content.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if not lines:
+            return ""
+        return " | ".join(lines[:2])[: self._PROJECT_CONTINUITY_BLOCK_EXCERPT_LIMIT]
+
+    @staticmethod
+    def _matches_project_context(blob: str, *, terms: list[str], context: RetrievalContext) -> bool:
+        lowered = str(blob or "").strip().lower()
+        if not lowered:
+            return False
+        tokens = set(lowered.replace("/", " ").replace(":", " ").replace("-", " ").split())
+        exact_values = [str(context.branch_name or "").strip().lower(), str(context.target_profile or "").strip().lower()]
+        for value in exact_values:
+            if value and value in lowered:
+                return True
+        for term in terms:
+            value = str(term or "").strip().lower()
+            if not value:
+                continue
+            if " " in value:
+                if value in lowered:
+                    return True
+                continue
+            if value in tokens:
+                return True
+        return False
 
     def _thought_to_hit(self, thought: ThoughtMemory, recall_plan: RecallPlan) -> dict[str, Any]:
         recency_boost = self._thought_recency_boost(thought.updated_at)
