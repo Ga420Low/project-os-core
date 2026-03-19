@@ -1,4 +1,4 @@
-# Project OS Master Machine
+﻿# Project OS Master Machine
 
 Ce fichier est la reference racine du projet.
 Il fixe le cap produit, les decisions structurantes et les regles a respecter par l'humain et par l'IA.
@@ -6,6 +6,60 @@ Il fixe le cap produit, les decisions structurantes et les regles a respecter pa
 Pour le comportement agent au quotidien, la porte d'entree prioritaire est maintenant:
 
 - [AGENTS.md](D:/ProjectOS/project-os-core/AGENTS.md)
+
+## Canonical V0.1 override
+
+Pour la doctrine active V0.1:
+
+- surface operateur primaire = PWA privee
+- runtime principal = VM Linux server canonique
+- socle executable actuel = `Windows host + Hyper-V`
+- meilleure cible long terme = `Proxmox VE bare metal`
+
+Les references ci-dessous a `Project OS.exe`, `Discord` ou `WSL2` restent utiles comme contexte et trajectoire, mais ne pilotent pas seules le cap V0.1.
+
+Les references prioritaires de cap sont:
+
+- `docs/architecture/PROJECT_OS_ARCHITECTURE_DECISION_MATRIX.md`
+- `docs/architecture/PROJECT_OS_CANONICAL_DATA_MODEL_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_MOTHER_CONTROL_PLANE_ARCHITECTURE.md`
+- `docs/roadmap/PROJECT_OS_AUTOPILOT_PACK_PLAN.md`
+- `docs/roadmap/PROJECT_OS_V1_BUDGET_OVH_PLAN.md`
+- `docs/roadmap/OVH_SERVICE_RUNWAY_MATRIX.md`
+- `docs/roadmap/PROJECT_OS_PWA_VM_V0_1_PLAN.md`
+- `docs/roadmap/BUILD_STATUS_CHECKLIST.md`
+
+## Canonical architecture override
+
+`DECISION CHANGED`
+
+Pour l'architecture cible "maison mere", les arbitrages branche par branche sont
+maintenant figes dans:
+
+- `docs/architecture/PROJECT_OS_ARCHITECTURE_DECISION_MATRIX.md`
+
+Lecture obligatoire:
+
+- `Project OS` = verite operateur, docs, runs, tasks, preferences, decisions
+- `GitHub` = verite du code
+- `Project OS DB` = verite canonique des metadata operateur et contrats
+- `Windows` = atelier humain protege
+- `V1` = noeud distant OVH unique portant `control plane + runner distant minimal`
+- `runner distant minimal always-on` = continuite utile du systeme
+- `runner Linux local` = execution autonome isolee
+- `home relay` = reprise locale et wake/restart, pas maison mere
+- `control plane Linux always-on` = maison mere distante
+
+Les passages plus anciens qui posent `runtime local` ou `SQLite locale` comme verite
+canonique complete doivent desormais etre lus comme:
+
+- verite locale d'execution
+- pas verite globale de la maison mere
+- index ou cache local utile dans certaines lanes
+
+Le contrat de donnees canonique a utiliser pour tous les nouveaux travaux est:
+
+- `docs/architecture/PROJECT_OS_CANONICAL_DATA_MODEL_CONTRACT.md`
 
 ## Identite
 
@@ -54,7 +108,7 @@ Le workflow officiel repose sur un duo de modeles complementaires (ADR 0013):
 - `GPT API` (gpt-5.4, 1M contexte) = Le Cerveau / Le Dev (code, planifie, brainstorme)
 - `Claude API` (opus/sonnet, 1M contexte) = L'Auditeur / Le Traducteur (review cross-model, traduit pour l'humain, filtre le bruit)
 - `Project OS` runtime = verite machine, memoire canonique, tests et evidence
-- `Project OS.exe` = future surface operateur locale prioritaire ; `Discord` = surface parallele distante ; terminal + dashboard = socle de supervision et de preuve
+- `PWA privee` = surface operateur prioritaire V0.1 ; `Discord` = surface historique/parallele distante ; terminal + dashboard = socle de supervision et de preuve
 
 Regles:
 
@@ -66,7 +120,7 @@ Regles:
 - les gros runs de code se font en silence operationnel
 - les sorties operateur doivent etre en francais clair, non developpeur
 - un gros run ne part pas sans contrat de run et validation humaine
-- le fondateur doit pouvoir interagir d'abord via l'app locale `Project OS.exe`, et aussi via `Discord` (PC + mobile) selon le contexte
+- le fondateur doit pouvoir interagir d'abord via la `PWA privee` sur acces `Tailscale`, et aussi via `Discord` (PC + mobile) selon le contexte
 
 Reference detaillee:
 
@@ -141,20 +195,55 @@ Rappels:
 
 Position produit:
 
-- le futur point d'entree local visible du projet doit etre `Project OS.exe`
-- ce `.exe` doit etre assume comme coeur pilotable local
+- le point d'entree visible et canonique de la V0.1 doit etre la `PWA privee`
+- un `.exe` local peut rester une piste future experimentale, mais pas la surface primaire active
 - `Discord` reste une branche de discussion, de remote work et d'arbitrage
 
 ## Vision produit
 
 Project OS doit devenir une `master machine`:
 
-- un cerveau d'execution pour le poste fondateur
+- une maison mere toujours on
 - un systeme de supervision a distance
 - un moteur multi-projets
 - un actif reutilisable pour une future entreprise
 
 Le systeme doit privilegier la robustesse, la reprise et l'auditabilite plutot que la demo fragile.
+
+Clarification canonique:
+
+- `Windows host` = atelier humain protege, jamais sandbox autonome directe
+- `control plane` = surface centrale always-on
+- `runner Linux` = execution autonome isolee
+- `GitHub + DB + object storage` = verite durable du projet
+
+## Base runtime retenue
+
+La base technique retenue du systeme est:
+
+- `OpenClaw` pour la boucle autonome, l'orchestration et le substrate agentique
+- `Codex CLI` pour l'execution forte: code, shell, patch, repo work, file ops
+- `Project OS` pour la couche produit: maison mere, memoire, docs, audit, policies, surfaces operateur
+
+La topologie cible retenue est maintenant:
+
+- `control plane distant always-on`
+- `runner distant minimal always-on`
+- `runner local Linux sur le PC`
+- `home relay` pour wake/restart/reprise locale
+
+Doctrine:
+
+- `OpenClaw` doit rester le plus upstream possible au debut
+- `Codex CLI` est l'executor officiel, pas un gadget secondaire
+- `Project OS` doit concentrer la vraie valeur proprietaire
+
+Ce qu'il faut eviter:
+
+- gros merge sale
+- fork massif trop tot
+- logique metier `Project OS` recopiee dans le coeur agent
+- confusion entre runtime, execution, memoire et UI
 
 ## Windows-first et WSL
 
@@ -167,7 +256,7 @@ Le poste Windows est la machine operatoire principale.
 
 Role retenu:
 
-- `Windows host` = verite machine, runtime, memoire, evidence, workers Windows, apps reelles, `UEFN`
+- `Windows host` = atelier humain, outils locaux, hyperviseur, apps reelles, `UEFN`
 - `WSL2` = cellules de travail optionnelles par projet ou par domaine
 
 Le futur peut inclure plusieurs cellules `WSL2` en parallele, mais elles restent supervisees par l'hote Windows.
@@ -209,6 +298,111 @@ Usage:
 
 Ces decisions doivent etre promues regulierement dans la memoire durable.
 L'humain n'a pas besoin de le redire a chaque fois.
+
+## Autorite finale humaine
+
+Le dernier mot reste humain.
+
+Doctrine:
+
+- l'IA peut proposer
+- l'IA peut implementer
+- l'IA peut tester
+- l'IA peut preparer une PR ou un patch
+- l'IA ne ferme pas seule une decision structurante sans confirmation finale explicite
+
+Regles:
+
+- pas de changement majeur d'architecture sans validation finale
+- pas de modification globale du style, des policies ou du comportement sans validation finale
+- pas d'auto-amelioration critique sans validation finale
+- la decision finale doit etre visible, horodatee et reliee a son contexte
+
+## Registre de preferences fondateur
+
+Le systeme doit retenir les petits details perso au fil des mois sans les perdre dans un prompt geant.
+
+Il faut donc une couche explicite de preferences fondateur:
+
+- style de reponse
+- ton
+- conventions de doc
+- conventions de code
+- habitudes de workflow
+- preferences UI
+- seuils d'approbation
+
+Exemples canoniques:
+
+- `jamais de smileys`
+- `plus d'humour sec si utile`
+- `commencer par la solution`
+- `limiter le bruit et la politesse creuse`
+
+Cycle de vie retenu:
+
+1. conversation
+2. extraction d'une preference
+3. statut `proposed`
+4. confirmation humaine
+5. statut `confirmed` puis `active`
+6. remplacement ou rollback si besoin
+
+Cette couche doit etre:
+
+- explicite
+- versionnee
+- reversible
+- visible dans la maison mere
+
+## Auto-amelioration sous garde-fous
+
+Le projet doit pouvoir s'ameliorer lui-meme, mais proprement.
+
+Ordre retenu:
+
+1. detection d'un probleme
+2. proposition de correction
+3. implementation preparee
+4. tests et preuves
+5. confirmation finale humaine
+6. application et journalisation
+
+Regle:
+
+- une auto-amelioration n'est jamais une excuse pour court-circuiter la validation finale
+
+## Ordre de sophistication retenu
+
+Pour faire grandir le systeme proprement:
+
+1. `RAG + repo grounding + docs grounding`
+2. `memory structuree`
+3. `evals`
+4. `dataset erreurs / reussites`
+5. `fine-tuning` seulement si les evals le justifient
+
+Le fine-tuning ne doit pas servir a masquer:
+
+- un mauvais retrieval
+- une mauvaise structuration de la memoire
+- une mauvaise separation des couches
+
+## Decomposition propre de l'autolearning
+
+Le projet ne doit pas appeler `autolearning` un simple append de logs.
+
+Les lanes retenues sont:
+
+- `memory learning`
+- `policy learning`
+- `execution learning`
+- `self-improvement`
+
+Regle:
+
+- la seule lane qui peut toucher la stack elle-meme est `self-improvement`
+- et elle reste sous `PR + review + tests + confirmation finale`
 
 ## Compensation cognitive et anti-boucle
 
@@ -537,7 +731,7 @@ Autres candidats surveilles:
 
 ## Discord selective sync
 
-`Discord` reste une surface humaine majeure, mais plus l'unique surface prioritaire des que `Project OS.exe` existe.
+`Discord` reste une surface humaine majeure, mais n'est plus la surface prioritaire en doctrine V0.1.
 
 Pipeline retenu:
 
@@ -545,6 +739,7 @@ Pipeline retenu:
 2. classification (`chat`, `tasking`, `idea`, `decision`, `note`, `artifact_ref`)
 3. decision explicite de promotion
 4. promotion selective vers la memoire canonique
+5. sinon conservation comme evenement tracable uniquement
 
 ## Standard attendu
 
@@ -560,7 +755,6 @@ Le projet doit rester:
 - haut niveau
 
 Le but assume est de construire `Jarvis`.
-5. sinon conservation comme evenement tracable uniquement
 
 On promeut les decisions, preferences stables, missions, incidents, artefacts et resumes valides.
 On ne promeut pas automatiquement le small talk ni le bruit.
@@ -775,3 +969,4 @@ Si un changement contredit ce document, il faut:
 1. mettre a jour l'architecture ou la decision explicitement
 2. documenter pourquoi
 3. seulement ensuite changer le code
+
