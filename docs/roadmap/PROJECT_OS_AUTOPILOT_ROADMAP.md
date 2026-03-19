@@ -112,6 +112,12 @@ A verrouiller:
 Reference racine pour la donnee canonique:
 
 - `docs/architecture/PROJECT_OS_CANONICAL_DATA_MODEL_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_CONTROL_PLANE_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_REMOTE_RUNNER_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_LOCAL_RUNNER_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_HOME_RELAY_CONTRACT.md`
+- `docs/workflow/PROJECT_OS_AGENTIC_GIT_WORKFLOW_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_FALLBACK_AND_INCIDENT_RECOVERY_CONTRACT.md`
 
 Definition of done:
 

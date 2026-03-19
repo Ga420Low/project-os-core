@@ -22,6 +22,12 @@ Les references prioritaires de cap sont:
 
 - `docs/architecture/PROJECT_OS_ARCHITECTURE_DECISION_MATRIX.md`
 - `docs/architecture/PROJECT_OS_CANONICAL_DATA_MODEL_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_STORAGE_AND_ROUTING_MATRIX.md`
+- `docs/architecture/PROJECT_OS_CONTROL_PLANE_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_REMOTE_RUNNER_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_LOCAL_RUNNER_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_HOME_RELAY_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_FALLBACK_AND_INCIDENT_RECOVERY_CONTRACT.md`
 - `docs/architecture/PROJECT_OS_MOTHER_CONTROL_PLANE_ARCHITECTURE.md`
 - `docs/roadmap/PROJECT_OS_AUTOPILOT_PACK_PLAN.md`
 - `docs/roadmap/PROJECT_OS_V1_BUDGET_OVH_PLAN.md`
@@ -60,6 +66,17 @@ canonique complete doivent desormais etre lus comme:
 Le contrat de donnees canonique a utiliser pour tous les nouveaux travaux est:
 
 - `docs/architecture/PROJECT_OS_CANONICAL_DATA_MODEL_CONTRACT.md`
+
+Le set de contrats `Pack 0` a utiliser avant implementation lourde est:
+
+- `docs/architecture/PROJECT_OS_CONTROL_PLANE_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_REMOTE_RUNNER_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_LOCAL_RUNNER_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_HOME_RELAY_CONTRACT.md`
+- `docs/workflow/PROJECT_OS_AGENTIC_GIT_WORKFLOW_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_FALLBACK_AND_INCIDENT_RECOVERY_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_CHAT_TO_PREVIEW_AND_GIT_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_STORAGE_AND_ROUTING_MATRIX.md`
 
 ## Identite
 

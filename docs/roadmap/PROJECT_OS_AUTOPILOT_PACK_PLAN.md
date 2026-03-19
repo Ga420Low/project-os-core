@@ -213,6 +213,13 @@ Fermer les contrats avant l'infra.
 Reference immediate:
 
 - `docs/architecture/PROJECT_OS_CANONICAL_DATA_MODEL_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_CONTROL_PLANE_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_REMOTE_RUNNER_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_LOCAL_RUNNER_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_HOME_RELAY_CONTRACT.md`
+- `docs/workflow/PROJECT_OS_AGENTIC_GIT_WORKFLOW_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_FALLBACK_AND_INCIDENT_RECOVERY_CONTRACT.md`
+- `docs/architecture/PROJECT_OS_STORAGE_AND_ROUTING_MATRIX.md`
 
 #### Verification
 
@@ -228,6 +235,20 @@ Reference immediate:
 #### Gate
 
 - si un contrat cle reste flou, on ne provisionne rien
+
+#### Sortie attendue
+
+Le `Pack 0` est considere ferme cote documentation quand les fichiers suivants sont
+ecrits et alignes:
+
+1. `docs/architecture/PROJECT_OS_CANONICAL_DATA_MODEL_CONTRACT.md`
+2. `docs/architecture/PROJECT_OS_CONTROL_PLANE_CONTRACT.md`
+3. `docs/architecture/PROJECT_OS_REMOTE_RUNNER_CONTRACT.md`
+4. `docs/architecture/PROJECT_OS_LOCAL_RUNNER_CONTRACT.md`
+5. `docs/architecture/PROJECT_OS_HOME_RELAY_CONTRACT.md`
+6. `docs/workflow/PROJECT_OS_AGENTIC_GIT_WORKFLOW_CONTRACT.md`
+7. `docs/architecture/PROJECT_OS_FALLBACK_AND_INCIDENT_RECOVERY_CONTRACT.md`
+8. `docs/architecture/PROJECT_OS_STORAGE_AND_ROUTING_MATRIX.md`
 
 ### Pack 1 - Accounts And Provider Baseline
 
@@ -438,6 +459,7 @@ Faire de la web app le centre reel dans le cadre V1.
 - PDF explorer
 - timeline
 - run inspector
+- preview workspace / preview URL ou preuve equivalente avant push
 - approvals
 - decision log
 - founder preference registry
@@ -448,6 +470,7 @@ Faire de la web app le centre reel dans le cadre V1.
 1. l'operateur suit un run sans shell
 2. l'operateur retrouve un doc/PDF/decision depuis l'app
 3. une preference confirmee s'applique et reste visible
+4. un changement UI peut etre vu avant push GitHub
 
 #### Gate
 
