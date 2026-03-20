@@ -325,3 +325,8 @@ La phase fondation est acceptable si:
 3. la separation code / etat / config / admin est maintenue
 4. les patterns critiques de `runbook`, `coolify` et `localclaw` sont internalises dans nos propres docs
 5. on peut ensuite attaquer la couche entreprise sans reouvrir l'architecture de base
+
+## Docs de support
+
+- `docs/roadmap/OPENCLAW_SUBSTRATE_READINESS_CHECKLIST.md`
+- `docs/roadmap/OPENCLAW_STATE_CONFIG_PROFILE_LAYOUT.md`

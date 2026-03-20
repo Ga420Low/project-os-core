@@ -109,6 +109,8 @@ On n'adopte pas:
 Livrable cree:
 
 - `docs/roadmap/OPENCLAW_V1_SERVER_RUNBOOK.md`
+- `docs/roadmap/OPENCLAW_SUBSTRATE_READINESS_CHECKLIST.md`
+- `docs/roadmap/OPENCLAW_STATE_CONFIG_PROFILE_LAYOUT.md`
 
 ## Definition of done
 
