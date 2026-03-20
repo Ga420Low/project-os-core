@@ -226,6 +226,19 @@ Contrat securite retenu:
 - l'allowlist d'utilisateurs Tailscale doit rester plus etroite que le tailnet si possible
 - le token gateway peut rester comme break-glass technique, pas comme UX operateur quotidienne
 
+### Voix via le lien VPS
+
+Etat honnete:
+
+- le lien VPS `OpenClaw` fournit deja une dictée navigateur via le bouton micro de l'UI
+- cela repose sur les APIs navigateur de reconnaissance vocale
+- ce n'est pas un vrai call voix temps reel full-duplex
+
+Regle:
+
+- on garde la dictée navigateur 1:1 tant qu'elle aide l'operateur
+- on ne pretend pas que cela remplace une future lane voix `Project OS`
+
 ## Guardrails `runbook` adoptes maintenant
 
 ### Hardening obligatoire
