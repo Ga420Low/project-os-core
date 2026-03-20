@@ -31,6 +31,7 @@ Les references prioritaires de cap sont:
 - `docs/architecture/PROJECT_OS_MOTHER_CONTROL_PLANE_ARCHITECTURE.md`
 - `docs/roadmap/PROJECT_OS_AUTOPILOT_PACK_PLAN.md`
 - `docs/roadmap/PROJECT_OS_V1_BUDGET_OVH_PLAN.md`
+- `docs/roadmap/PROJECT_OS_PACK1_PROVIDER_BASELINE.md`
 - `docs/roadmap/OVH_SERVICE_RUNWAY_MATRIX.md`
 - `docs/roadmap/PROJECT_OS_PWA_VM_V0_1_PLAN.md`
 - `docs/roadmap/BUILD_STATUS_CHECKLIST.md`
@@ -254,6 +255,14 @@ Doctrine:
 - `OpenClaw` doit rester le plus upstream possible au debut
 - `Codex CLI` est l'executor officiel, pas un gadget secondaire
 - `Project OS` doit concentrer la vraie valeur proprietaire
+
+Doctrine de reconstruction:
+
+- `OpenClaw` est considere comme une bonne fondation technique, pas comme un simple concurrent a contourner
+- si une petite brique `Project OS` doit etre recuperee dans le nouveau systeme, on prefere la recreer proprement au-dessus des primitives `OpenClaw` plutot que la transplanter brutalement
+- le bon merge est donc un merge par `contrats -> adapters -> wrappers -> policies -> UI`, pas un copier-coller de morceaux de runtime
+- on accepte de reecrire des petits bouts si cela permet de rester lisible, upstream-compatible et extractible
+- on refuse de deverser des couches heterogenes `Project OS` dans le coeur `OpenClaw` juste pour aller plus vite
 
 Ce qu'il faut eviter:
 
