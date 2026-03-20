@@ -55,6 +55,10 @@ Done quand:
 - la version upstream retenue est documentee
 - aucune confusion repo/runtime n'existe
 
+Reference de travail immediate:
+
+- `docs/roadmap/PROJECT_OS_SPRINT1_OPENCLAW_SUBSTRATE_PLAN.md`
+
 ## Sprint 2 - Contrats entreprise minimaux
 
 Objectif:
