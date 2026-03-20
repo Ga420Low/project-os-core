@@ -75,13 +75,13 @@ Pourquoi:
 
 Valeur retenue:
 
-- `loopback`
+- `lan` pour la lane dockerisee `main`
 
 Pourquoi:
 
-- conforme a notre politique d'exposition privee
-- compatible avec `Tailscale Serve`
-- evite un bind public brut
+- l'upstream Docker documente qu'un `bind=loopback` dans le conteneur casse l'acces host via le port publie
+- la vraie frontiere privee est tenue au niveau host avec `127.0.0.1:18789:18789`
+- cela garde une exposition effective privee sans bind public brut
 
 ### `gateway.auth.mode`
 
@@ -100,12 +100,14 @@ Pourquoi:
 Valeur retenue:
 
 - token explicite serveur
-- genere et stocke hors repo source
+- injecte par `OPENCLAW_GATEWAY_TOKEN`
+- stocke dans `/srv/project-os/config/env/openclaw/main.env`
 
 Regle:
 
 - pas de token commite
 - pas de token laisse implicite
+- pas de plaintext token dans `openclaw.json` si l'env serveur suffit
 
 ### `gateway.auth.allowTailscale`
 
@@ -115,19 +117,20 @@ Valeur retenue:
 
 Pourquoi:
 
-- fluidifie l'acces prive au dashboard et aux surfaces web
+- permet d'accepter les headers d'identite Tailscale envoyes par le host quand `tailscale serve` proxyfie le gateway
 - reste coherent avec notre politique `Tailscale first`
 
 ### `gateway.tailscale.mode`
 
 Valeur retenue:
 
-- `serve`
+- `off`
 
 Pourquoi:
 
-- exposition privee propre
-- pas besoin de bind public
+- `tailscaled` vit sur le host, pas dans le conteneur `OpenClaw`
+- la surface privee est geree par `tailscale serve` sur le host
+- on evite d'ajouter une dependance runtime inutile dans le conteneur
 
 ### `logging.redactSensitive`
 
@@ -142,10 +145,25 @@ Pourquoi:
 
 ## Contraintes
 
-1. non-loopback interdit tant qu'une raison forte n'existe pas
+1. bind non-prive interdit au niveau host
 2. auth `none` interdite
 3. `tools.profile=full` interdit pour la lane `main`
 4. aucun secret dans le repo
+5. `gateway.tailscale.mode=serve` interdit dans le conteneur tant que `tailscaled` reste host-only
+
+## Note d'implementation Docker
+
+La lane `main` est executee en conteneur sur OVH.
+
+Le mode retenu est donc:
+
+- `gateway.bind=lan` dans le conteneur
+- port publie uniquement sur `127.0.0.1` cote host
+- `tailscale serve` lance sur le host pour le chemin distant prive
+
+La propriete de securite retenue n'est pas "loopback dans le conteneur", mais:
+
+- "surface privee effective au niveau host"
 
 ## Outcome attendu
 
@@ -157,4 +175,6 @@ Quand cette spec sera materialisee:
 
 ## Exemple de fichier
 
+- `docs/roadmap/OPENCLAW_MAIN_LANE_ENV_EXAMPLE.env`
 - `docs/roadmap/OPENCLAW_MAIN_LANE_OPENCLAW_JSON_EXAMPLE.jsonc`
+- `docs/roadmap/OPENCLAW_MAIN_LANE_DOCKER_COMPOSE_EXAMPLE.yml`

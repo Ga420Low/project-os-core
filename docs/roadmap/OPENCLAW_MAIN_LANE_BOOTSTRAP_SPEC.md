@@ -48,15 +48,24 @@ Ce n'est pas:
 
 ### Bind
 
-- bind retenu:
-  - `loopback`
+- bind runtime retenu:
+  - `lan` dans le conteneur `OpenClaw`
+- publication host retenue:
+  - `127.0.0.1:18789 -> 18789`
+
+Pourquoi:
+
+- l'upstream Docker documente qu'un `bind=loopback` dans le conteneur casse l'acces host via le port publie
+- la vraie frontiere privee doit donc etre tenue au niveau host
+- cette combinaison garde une exposition effective privee tout en laissant `Tailscale Serve` proxyfier le host
 
 ### Exposition distante
 
 - acces distant prive d'abord
 - chemin retenu:
-  - `Tailscale`
+  - `Tailscale Serve` gere par le host
 - pas de bind public brut
+- pas de `tailscaled` dans le conteneur `OpenClaw`
 
 ### Auth gateway
 
@@ -69,6 +78,36 @@ Pourquoi:
 - plus propre pour une surface distante privee
 - plus defensable qu'un mode sans auth
 - compatible avec l'approche `Tailscale + surface privee`
+
+Source retenue:
+
+- `OPENCLAW_GATEWAY_TOKEN` dans `/srv/project-os/config/env/openclaw/main.env`
+
+## Artefacts materialises sur le noeud
+
+Fichiers runtime poses:
+
+- env serveur:
+  - `/srv/project-os/config/env/openclaw/main.env`
+- config OpenClaw:
+  - `/srv/project-os/data/openclaw/main/openclaw.json`
+- compose lane `main`:
+  - `/srv/project-os/compose/openclaw/main/docker-compose.yml`
+
+Exemples redacts suivis dans le repo canon:
+
+- `docs/roadmap/OPENCLAW_MAIN_LANE_ENV_EXAMPLE.env`
+- `docs/roadmap/OPENCLAW_MAIN_LANE_OPENCLAW_JSON_EXAMPLE.jsonc`
+- `docs/roadmap/OPENCLAW_MAIN_LANE_DOCKER_COMPOSE_EXAMPLE.yml`
+
+Etat runtime valide:
+
+- image:
+  - `ghcr.io/openclaw/openclaw:2026.3.13-1`
+- conteneur:
+  - `openclaw-main-gateway`
+- sante:
+  - `healthz` et `readyz` OK
 
 ## Fichiers attendus dans la lane `main`
 
@@ -92,10 +131,11 @@ Pourquoi:
 Le fichier `openclaw.json` serveur devra refléter explicitement:
 
 1. workspace explicite
-2. bind `loopback`
+2. bind runtime docker `lan`
 3. port `18789`
 4. auth explicite
 5. surface privee d'exposition
+6. `gateway.tailscale.mode` desactive dans le conteneur
 
 ## Auth et credentials
 
@@ -117,11 +157,11 @@ Regle:
 Cette spec doit permettre de cocher ensuite dans la checklist substrate:
 
 - [x] racine d'etat `OpenClaw` dediee definie
-- [ ] fichier de config serveur `OpenClaw` defini
-- [x] bind `loopback` retenu pour le gateway
+- [x] fichier de config serveur `OpenClaw` defini
+- [x] bind runtime docker + publication host privee retenus pour le gateway
 - [x] auth gateway retenue explicitement
 - [x] workspace `OpenClaw` retenu explicitement
-- [x] politique d'exposition distante retenue (`Tailscale` d'abord)
+- [x] politique d'exposition distante retenue (`Tailscale` host d'abord)
 
 ## Outcome attendu
 

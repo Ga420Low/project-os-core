@@ -84,11 +84,20 @@ Valeurs retenues:
 A valider avant de dire "OpenClaw runtime pret":
 
 - [x] racine d'etat `OpenClaw` dediee definie
-- [ ] fichier de config serveur `OpenClaw` defini
-- [x] bind `loopback` retenu pour le gateway
+- [x] fichier de config serveur `OpenClaw` defini
+- [x] bind runtime docker + publication host privee retenus pour le gateway
 - [x] auth gateway retenue explicitement
 - [x] workspace `OpenClaw` retenu explicitement
-- [x] politique d'exposition distante retenue (`Tailscale` d'abord)
+- [x] politique d'exposition distante retenue (`Tailscale` host d'abord)
+
+Etat reel maintenant:
+
+- `/srv/project-os/config/env/openclaw/main.env` pose
+- `/srv/project-os/data/openclaw/main/openclaw.json` pose
+- `/srv/project-os/compose/openclaw/main/docker-compose.yml` pose
+- `openclaw-main-gateway` demarre et passe `healthz` / `readyz`
+- contrat UID runtime aligne avec le owner host (`1001:1001`) pour eviter les `EACCES` sur la lane data
+- route Tailscale dediee du dashboard pas encore publiee sur le host
 
 Reference:
 

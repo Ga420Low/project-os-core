@@ -67,15 +67,22 @@ Canon documentaire:
 |   `-- project-os-core/
 |-- compose/
 |   |-- base/
+|   |-- openclaw/
+|   |   `-- main/
 |   `-- tools/
 |-- config/
 |   `-- env/
+|       `-- openclaw/
 |-- data/
+|   |-- openclaw/
+|   |   `-- main/
 |   |-- postgres/
 |   |-- redis/
 |   `-- code-server/
 |-- logs/
 |   |-- control-plane/
+|   |-- openclaw/
+|   |   `-- main/
 |   |-- runner/
 |   `-- code-server/
 `-- backups/
@@ -97,6 +104,7 @@ Interdit:
 
 Etat present:
 
+- `OpenClaw main` -> `/srv/project-os/data/openclaw/main`
 - `postgres` -> `/srv/project-os/data/postgres`
 - `redis` -> `/srv/project-os/data/redis`
 - `code-server` -> `/srv/project-os/data/code-server`
@@ -114,6 +122,8 @@ Etat cible a tenir pour OpenClaw:
 Config serveur:
 
 - sous `/srv/project-os/config/env`
+- lane `OpenClaw main`:
+  - `/srv/project-os/config/env/openclaw/main.env`
 
 Regle:
 
@@ -125,18 +135,18 @@ Regle:
 
 Ports actifs maintenant:
 
+- `18789` -> `OpenClaw` main, publish host `127.0.0.1:18789`
 - `5432` -> `postgres`, bind local `127.0.0.1`
 - `6379` -> `redis`, bind local `127.0.0.1`
 - `8443` -> `code-server`, bind local `127.0.0.1`
 
 Ports de substrate a reserver mentalement:
 
-- `18789` -> `OpenClaw` main lane attendue
 - `18790+` -> lanes/profils additionnels si un besoin apparait
 
 Regle:
 
-- bind local uniquement quand possible
+- frontiere privee au niveau host quand la lane tourne en Docker
 - exposition externe seulement via surface privee (`Tailscale`, tunnel prive)
 
 ## Surfaces admin privees
@@ -176,6 +186,27 @@ Regle:
 - on privilegie le prive
 - on n'ouvre pas de surface admin brute sur Internet pour "aller plus vite"
 
+### `OpenClaw` dashboard prive
+
+Etat actuel:
+
+- gateway `OpenClaw` sain localement sur `127.0.0.1:18789`
+- publication Tailscale dediee encore non activee sur le host
+
+Commande d'activation retenue sur le noeud:
+
+```bash
+sudo tailscale set --operator=theo
+tailscale serve --bg --https=18789 http://127.0.0.1:18789
+tailscale serve status
+```
+
+Pourquoi:
+
+- on garde `code-server` sur la racine HTTPS actuelle
+- on donne a `OpenClaw` un endpoint Tailscale propre sur un port dedie
+- on evite les collisions de chemins et les hypotheses fragiles sur le dashboard/websocket
+
 ## Guardrails `runbook` adoptes maintenant
 
 ### Hardening obligatoire
@@ -204,6 +235,24 @@ Avant toute grosse modif infra:
 1. savoir quel compose est touche
 2. savoir quel volume data est implique
 3. savoir comment revenir a l'etat precedent
+
+### Contrat UID bind mounts
+
+Etat reel du noeud:
+
+- user operateur: `theo`
+- uid/gid host: `1001:1001`
+- state root `OpenClaw main`: owner `1001:1001`
+
+Regle pour cette lane:
+
+- le conteneur `openclaw-main-gateway` tourne en `1001:1001`
+- ne pas revenir par reflexe au user upstream `node:1000` tant que les bind mounts host restent possedes par `theo`
+
+Raison:
+
+- sinon le gateway devient "vivant" mais n'arrive plus a persister `openclaw.json`, `cron`, `canvas`
+- c'est un faux positif d'exploitation, pas un detail
 
 ### Surface privee avant surface publique
 

@@ -1,0 +1,67 @@
+services:
+  openclaw-main-gateway:
+    image: ghcr.io/openclaw/openclaw:2026.3.13-1
+    container_name: openclaw-main-gateway
+    restart: unless-stopped
+    user: "1001:1001"
+    env_file:
+      - /srv/project-os/config/env/openclaw/main.env
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+      TZ: Europe/Paris
+    volumes:
+      - /srv/project-os/data/openclaw/main:/home/node/.openclaw
+      - /srv/project-os/data/openclaw/main/workspace:/home/node/.openclaw/workspace
+    ports:
+      - "127.0.0.1:18789:18789"
+    init: true
+    command:
+      [
+        "node",
+        "openclaw.mjs",
+        "gateway",
+        "--allow-unconfigured",
+        "--bind",
+        "lan",
+        "--port",
+        "18789"
+      ]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:18789/healthz').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  openclaw-main-cli:
+    image: ghcr.io/openclaw/openclaw:2026.3.13-1
+    profiles: ["cli"]
+    network_mode: "service:openclaw-main-gateway"
+    cap_drop:
+      - NET_RAW
+      - NET_ADMIN
+    security_opt:
+      - no-new-privileges:true
+    env_file:
+      - /srv/project-os/config/env/openclaw/main.env
+    environment:
+      HOME: /home/node
+      TERM: xterm-256color
+      BROWSER: echo
+      TZ: Europe/Paris
+    volumes:
+      - /srv/project-os/data/openclaw/main:/home/node/.openclaw
+      - /srv/project-os/data/openclaw/main/workspace:/home/node/.openclaw/workspace
+    stdin_open: true
+    tty: true
+    init: true
+    entrypoint: ["node", "dist/index.js"]
+    depends_on:
+      - openclaw-main-gateway

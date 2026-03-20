@@ -10,18 +10,13 @@
   "gateway": {
     "mode": "local",
     "port": 18789,
-    "bind": "loopback",
+    "bind": "lan",
     "auth": {
       "mode": "token",
-      "allowTailscale": true,
-      "tokenRef": {
-        "source": "env",
-        "provider": "default",
-        "id": "OPENCLAW_GATEWAY_TOKEN"
-      }
+      "allowTailscale": true
     },
     "tailscale": {
-      "mode": "serve"
+      "mode": "off"
     }
   },
   "logging": {
