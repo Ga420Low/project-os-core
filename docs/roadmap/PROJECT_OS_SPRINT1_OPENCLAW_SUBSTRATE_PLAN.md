@@ -2,7 +2,7 @@
 
 ## Statut
 
-ACTIVE - Concrete server plan for `Sprint 1 / Pack B`
+IN_PROGRESS - upstream substrate cloned and pinned on OVH
 
 ## But
 
@@ -22,6 +22,14 @@ Sur le noeud OVH:
 - `postgres` et `redis` actifs
 - `code-server` actif sur le noeud en acces prive
 - racine de travail `Project OS` deja posee dans `/srv/project-os`
+
+Etat substrate execute:
+
+- repo upstream clone dans `/srv/project-os/apps/openclaw-upstream`
+- remote confirme: `https://github.com/openclaw/openclaw.git`
+- tag pinne: `v2026.3.13-1`
+- commit pinne: `61d171ab0b2fe4abc9afe89c518586274b4b76c2`
+- dernier commit du tag: `fix(browser): restore batch playwright dispatch`
 
 ## Arborescence cible du sprint
 
@@ -107,6 +115,12 @@ Actions:
 2. le documenter dans la roadmap
 3. interdire mentalement le `tracking flou de main`
 
+Execution confirmee:
+
+- upstream clone sur OVH
+- tag stable le plus recent retenu
+- HEAD detache volontairement sur le tag pour eviter le drift implicite
+
 ### Etape 4 - Inventaire substrate
 
 Actions:
@@ -133,6 +147,20 @@ Le sprint est termine si:
 3. la separation `upstream runtime` / `project-os-core canon` est visible sur disque
 4. un inventaire substrate ecrit existe
 5. aucune couche entreprise n'a encore ete injectee dans le coeur upstream
+
+## Selection upstream retenue
+
+Decision:
+
+- base runtime retenue = `openclaw/openclaw`
+- mode d'usage = upstream pinne, pas fork actif pour `Sprint 1`
+
+Justification:
+
+- upstream officiel le plus vivant et le mieux maintenu
+- releases stables frequentes
+- docs officielles et onboarding vivants
+- aucune preuve trouvee qu'un fork soit objectivement plus mature pour notre cible sans nous enfermer dans une divergence precoce
 
 ## Ce qu'on ne fait pas dans ce sprint
 
