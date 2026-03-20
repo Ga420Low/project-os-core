@@ -164,3 +164,11 @@ Pour le VPS V1:
 - `openclaw-upstream` reste le code
 - `/srv/project-os/data/openclaw/main` devient la racine d'etat runtime cible
 - `Project OS` gardera sa propre verite operatoire au-dessus
+
+## Materialisation serveur
+
+Le layout de base a deja ete cree sur le noeud pour la lane `main`:
+
+- `/srv/project-os/data/openclaw/main/...`
+- `/srv/project-os/logs/openclaw/main`
+- `/srv/project-os/config/env/openclaw`

@@ -82,12 +82,16 @@ Valeurs retenues:
 
 A valider avant de dire "OpenClaw runtime pret":
 
-- [ ] racine d'etat `OpenClaw` dediee definie
+- [x] racine d'etat `OpenClaw` dediee definie
 - [ ] fichier de config serveur `OpenClaw` defini
-- [ ] bind `loopback` retenu pour le gateway
-- [ ] auth gateway retenue explicitement
-- [ ] workspace `OpenClaw` retenu explicitement
-- [ ] politique d'exposition distante retenue (`Tailscale` d'abord)
+- [x] bind `loopback` retenu pour le gateway
+- [x] auth gateway retenue explicitement
+- [x] workspace `OpenClaw` retenu explicitement
+- [x] politique d'exposition distante retenue (`Tailscale` d'abord)
+
+Reference:
+
+- `docs/roadmap/OPENCLAW_MAIN_LANE_BOOTSTRAP_SPEC.md`
 
 ### G. Interdits encore actifs
 
