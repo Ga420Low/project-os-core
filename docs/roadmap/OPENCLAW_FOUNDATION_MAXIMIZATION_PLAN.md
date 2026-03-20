@@ -176,3 +176,4 @@ A la fin de cette phase:
 ## Reference de mise en oeuvre
 
 - `docs/roadmap/OPENCLAW_FOUNDATION_ADOPT_NOW_CHECKLIST.md`
+- `docs/roadmap/OPENCLAW_V1_SERVER_RUNBOOK.md`

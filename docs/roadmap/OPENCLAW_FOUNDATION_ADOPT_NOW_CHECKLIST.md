@@ -106,6 +106,10 @@ On n'adopte pas:
 4. poser une checklist readiness substrate
 5. conserver tous ces apports dans nos docs, pas dans le coeur upstream
 
+Livrable cree:
+
+- `docs/roadmap/OPENCLAW_V1_SERVER_RUNBOOK.md`
+
 ## Definition of done
 
 Cette phase est terminee si:
