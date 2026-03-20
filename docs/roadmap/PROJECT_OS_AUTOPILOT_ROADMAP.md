@@ -44,6 +44,14 @@ La `V1` retenue est:
 3. `home relay`
 4. `runner local Linux`
 
+Override produit complementaire:
+
+- la `V1` de reconstruction visee n'est plus `repo actuel deploye tel quel`
+- la `V1` visee est `OpenClaw + notre couche entreprise`
+- `OpenClaw` sert de fondation runtime sur OVH
+- `project-os-core` sert de canon de migration, contrats, docs, policies et couches a reconstituer
+- la reconstruction se fait par couches propres au-dessus de la fondation, pas par collage du vieux runtime
+
 La `V2` robuste reportee plus tard:
 
 1. separera `control plane` et `runner distant`

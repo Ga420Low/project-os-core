@@ -243,6 +243,15 @@ La base technique retenue du systeme est:
 - `Codex CLI` pour l'execution forte: code, shell, patch, repo work, file ops
 - `Project OS` pour la couche produit: maison mere, memoire, docs, audit, policies, surfaces operateur
 
+Version de reconstruction retenue:
+
+- la `V1` que l'on veut maintenant construire est une `OpenClaw foundation version`
+- `OpenClaw` sert de fondation runtime sur le noeud OVH
+- `Project OS` y ajoute progressivement la couche entreprise: control plane, memoire, canon docs, policies, audit, approvals, surfaces operateur
+- `project-os-core` reste le repo canonique de doctrine, contrats, migration et couches metier a reconstituer proprement
+- le but n'est plus de deployer aveuglement le repo actuel comme base finale
+- le but est de reconstruire une base propre `OpenClaw + notre entreprise`
+
 La topologie cible retenue est maintenant:
 
 - `control plane distant always-on`
@@ -263,6 +272,13 @@ Doctrine de reconstruction:
 - le bon merge est donc un merge par `contrats -> adapters -> wrappers -> policies -> UI`, pas un copier-coller de morceaux de runtime
 - on accepte de reecrire des petits bouts si cela permet de rester lisible, upstream-compatible et extractible
 - on refuse de deverser des couches heterogenes `Project OS` dans le coeur `OpenClaw` juste pour aller plus vite
+
+Clarification memoire:
+
+- `OpenClaw` peut rendre le systeme plus fort sur la continuite, la discipline de session, la compaction, le routing et les hooks de runtime utiles a la memoire
+- `OpenClaw` n'est pas pour autant la memoire d'entreprise finale
+- la memoire canonique profonde reste `Project OS`: preferences, decisions, tasks, docs, PDF, timeline, evidence et retrieval structure
+- la vraie puissance vient donc de `OpenClaw` comme meilleur systeme nerveux runtime + `Project OS` comme vraie memoire d'entreprise
 
 Ce qu'il faut eviter:
 

@@ -51,6 +51,7 @@ Cette matrice consolide les choix deja presents dans:
 | Runner distant always-on | `aucun` / `runner distant minimal always-on` / `tout sur le distant` | `runner distant minimal always-on` | garde chat, shell, Git workspaces et jobs standards quand le PC tombe | `aucun` refuse ; `tout sur le distant` refuse car sous-utilise le PC |
 | Home relay / wake-recovery | `aucun` / `wake-on-lan ad hoc` / `home relay always-on` | `home relay always-on` | permet wake, restart, relance VM/services et etat local sans faire du PC la maison mere | `wake-on-lan ad hoc` trop fragile ; `aucun` prive de reprise locale elegante |
 | Role d'OpenClaw | `facade primaire` / `substrate upstream adapte` / `fork massif` | `substrate upstream adapte` | garde les primitives runtime utiles sans salir le coeur | `fork massif` refuse ; facade primaire non retenue pour la V0.1 |
+| Strategie V1 de reconstruction | `deployer project-os-core tel quel` / `OpenClaw foundation + couche entreprise Project OS` / `fork massif OpenClaw` | `OpenClaw foundation + couche entreprise Project OS` | meilleur compromis entre fondation runtime forte, migration propre et conservation de notre capital produit | `deployer project-os-core tel quel` refuse comme base finale ; `fork massif` refuse |
 | Role de Codex CLI | `chat annexe` / `executor officiel` | `executor officiel` | c'est le bon moteur pour code, shell, patch et repo work | `chat annexe` refuse |
 | Role de Project OS | `runtime complet unique` / `couche produit au-dessus` | `couche produit au-dessus` | concentre la vraie valeur: maison mere, docs, audit, memory, approvals, UI | reimplementer tout OpenClaw/Codex dans Project OS refuse |
 | Verite du code | `clone Windows` / `workspace runner` / `GitHub prive` | `GitHub prive` | seule source saine pour branches, PR, reviews et historique | clones locaux et workspaces ne sont que des copies de travail |
@@ -116,7 +117,7 @@ La `V2` robuste reportee contient:
 
 ## Phrase de reference
 
-`La meilleure combinaison retenue pour la V1 est: PWA privee + noeud distant OVH unique portant control plane et runner minimal + runner Linux local sur le PC + home relay + OpenClaw upstream adapte + Codex CLI executor + GitHub pour le code + Project OS DB pour l'etat operateur + stockage local structure en V1 + 8 To local pour l'archive; la V2 extraira ensuite control plane, runner distant et stockage externe.`
+`La meilleure combinaison retenue pour la V1 est: PWA privee + noeud distant OVH unique portant control plane et runner minimal + runner Linux local sur le PC + home relay + OpenClaw upstream adapte comme fondation + Codex CLI executor + couche entreprise Project OS au-dessus + GitHub pour le code + Project OS DB pour l'etat operateur + stockage local structure en V1 + 8 To local pour l'archive; la V2 extraira ensuite control plane, runner distant et stockage externe.`
 
 ## References
 

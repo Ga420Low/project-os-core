@@ -33,6 +33,14 @@ La V1 retenue est:
 5. `home relay local always-on`
 6. `runner local Linux sur le PC`
 
+Lecture produit obligatoire:
+
+- cette `V1` n'est pas l'idee `on deploie project-os-core tel quel sur le VPS`
+- cette `V1` est la version `OpenClaw foundation + notre couche entreprise`
+- `OpenClaw` sert de socle runtime et channel substrate
+- `Project OS` y remonte progressivement les couches de maison mere, memoire, canon docs, audit, approvals, routing et surfaces operateur
+- `project-os-core` reste le canon de migration et de reimplementation
+
 Le noeud distant unique porte en V1:
 
 - `project-os-web`
