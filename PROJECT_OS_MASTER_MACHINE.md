@@ -537,6 +537,16 @@ Les branches majeures sont:
 
 ## Stack finale retenue
 
+`OBSOLETE - ancienne doctrine locale pre-OpenClaw foundation`
+
+Ne pas lire ce bloc comme le canon actif.
+Il decrit une ancienne cible de stack locale qui a ete depassee par:
+
+- `OpenClaw foundation + couche entreprise Project OS`
+- `Project OS DB` comme verite operatoire
+- `MEMORY_STORAGE_AND_OPS_BLUEPRINT.md` pour la doctrine memoire et stockage
+- `PROJECT_OS_V1_OPENCLAW_ENTERPRISE_REBUILD_ROADMAP.md` pour la reconstruction V1
+
 - `OpenClaw`: shell operateur, Discord, inbox, acces distant
 - `LangGraph`: orchestration durable
 - `OpenMemory`: logique de memoire long terme locale
@@ -672,6 +682,16 @@ Ils ne remplacent pas les skills locaux de l'agent.
 
 ## Etat operationnel actuel
 
+`HISTORIQUE LOCAL - ne pas lire comme le canon runtime V1 actuel`
+
+Ce bloc decrit l'etat d'un noyau local historique avant le pivot
+`OpenClaw foundation + couche entreprise`.
+Il reste utile pour la migration, mais ne definit plus:
+
+- la verite memoire canonique
+- la topologie V1 retenue
+- la base runtime finale a deployer sur OVH
+
 Le noyau local a maintenant les fondations suivantes en etat reel:
 
 - `OpenMemory` actif comme memoire primaire
@@ -739,6 +759,18 @@ Ce qui reste avant de considerer le lot 4 totalement termine:
 - rejouer un vrai message operateur Discord/WebChat amont si on veut une preuve humaine stricte distincte de la preuve canonique runtime
 
 ## Memory OS locale
+
+`OBSOLETE - ancienne doctrine local-first`
+
+Ne pas lire ce bloc comme la doctrine memoire canonique actuelle.
+Il documente une ancienne cible `local-first sur le PC`.
+Le canon actif est maintenant:
+
+- `GitHub` = verite du code
+- `DB centrale / control plane` = verite operatoire
+- `object storage` = verite des artefacts lourds
+- `8 To local` = miroir, archive, cold memory
+- `OpenClaw` = support runtime utile a la memoire, pas memoire d'entreprise finale
 
 La memoire finale doit vivre sur ton PC.
 Le systeme ne doit jamais dependre d'un prompt geant ou d'un cache distant pour sa continuite.

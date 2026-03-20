@@ -16,6 +16,10 @@ Le but n'est pas de pousser tout l'ancien projet dans le VPS.
 Le but est de reconstruire une base plus propre en reprenant seulement ce qui merite
 d'etre reconstitue au-dessus d'une fondation plus saine.
 
+Lecture execution immediate:
+
+- `docs/roadmap/PROJECT_OS_V1_OPENCLAW_ENTERPRISE_EXECUTION_PLAN.md`
+
 ## Phrase de reference
 
 `La V1 de reconstruction retenue est: OpenClaw comme fondation runtime, Codex CLI comme moteur d'execution, et Project OS comme couche entreprise qui remonte progressivement docs, memoire, policies, audit, approvals, routing et surfaces operateur.`
