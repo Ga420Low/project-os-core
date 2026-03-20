@@ -102,7 +102,7 @@ On n'adopte pas:
 
 1. documenter les chemins d'etat de l'upstream clone OVH
 2. documenter les ports utilises et reserves
-3. ecrire le mini runbook serveur `OpenClaw V1`
+3. ecrire le runbook serveur `OpenClaw V1`
 4. poser une checklist readiness substrate
 5. conserver tous ces apports dans nos docs, pas dans le coeur upstream
 
@@ -111,6 +111,7 @@ Livrable cree:
 - `docs/roadmap/OPENCLAW_V1_SERVER_RUNBOOK.md`
 - `docs/roadmap/OPENCLAW_SUBSTRATE_READINESS_CHECKLIST.md`
 - `docs/roadmap/OPENCLAW_STATE_CONFIG_PROFILE_LAYOUT.md`
+- `docs/roadmap/OPENCLAW_MAIN_LANE_CONFIG_SPEC.md`
 
 ## Definition of done
 

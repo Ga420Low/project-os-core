@@ -58,6 +58,7 @@ Note:
   - les logs
   - la reponse web
 - ne pas conclure a une panne sans verifier ces 3 points
+- sur notre noeud, ce healthcheck a ete corrige pour utiliser `curl` et le conteneur est maintenant `healthy`
 
 ### D. Separation des repos
 
@@ -92,6 +93,7 @@ A valider avant de dire "OpenClaw runtime pret":
 Reference:
 
 - `docs/roadmap/OPENCLAW_MAIN_LANE_BOOTSTRAP_SPEC.md`
+- `docs/roadmap/OPENCLAW_MAIN_LANE_CONFIG_SPEC.md`
 
 ### G. Interdits encore actifs
 

@@ -87,9 +87,9 @@ Pourquoi:
 `-- workspace/
 ```
 
-## Valeurs de config minimales a imposer
+## Valeurs de config obligatoires
 
-Le fichier `openclaw.json` serveur devra au minimum refléter:
+Le fichier `openclaw.json` serveur devra refléter explicitement:
 
 1. workspace explicite
 2. bind `loopback`

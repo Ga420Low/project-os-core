@@ -1,0 +1,30 @@
+{
+  "agents": {
+    "defaults": {
+      "workspace": "/srv/project-os/data/openclaw/main/workspace"
+    }
+  },
+  "tools": {
+    "profile": "coding"
+  },
+  "gateway": {
+    "mode": "local",
+    "port": 18789,
+    "bind": "loopback",
+    "auth": {
+      "mode": "token",
+      "allowTailscale": true,
+      "tokenRef": {
+        "source": "env",
+        "provider": "default",
+        "id": "OPENCLAW_GATEWAY_TOKEN"
+      }
+    },
+    "tailscale": {
+      "mode": "serve"
+    }
+  },
+  "logging": {
+    "redactSensitive": "tools"
+  }
+}

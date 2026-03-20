@@ -2,7 +2,7 @@
 
 ## Statut
 
-ACTIVE - mini runbook operable pour la fondation `OpenClaw` sur le noeud OVH V1
+ACTIVE - runbook operable pour la fondation `OpenClaw` sur le noeud OVH V1
 
 ## But
 
@@ -20,7 +20,7 @@ Ce runbook couvre:
 2. l'upstream `OpenClaw` clone et pinne
 3. les services d'infra deja poses
 4. les surfaces admin privees
-5. les guardrails minimums a respecter
+5. les guardrails obligatoires a respecter
 
 Ce runbook ne couvre pas encore:
 
@@ -38,7 +38,7 @@ Noeud:
 - OS: `Ubuntu 24.04`
 - acces admin: `theo` par cle SSH
 - acces public SSH par mot de passe: coupe
-- hardening minimum: `ufw` + `fail2ban`
+- hardening de fondation: `ufw` + `fail2ban`
 
 Services deja poses:
 
@@ -178,7 +178,7 @@ Regle:
 
 ## Guardrails `runbook` adoptes maintenant
 
-### Hardening minimal obligatoire
+### Hardening obligatoire
 
 Doit rester vrai:
 
@@ -330,3 +330,4 @@ La phase fondation est acceptable si:
 
 - `docs/roadmap/OPENCLAW_SUBSTRATE_READINESS_CHECKLIST.md`
 - `docs/roadmap/OPENCLAW_STATE_CONFIG_PROFILE_LAYOUT.md`
+- `docs/roadmap/OPENCLAW_MAIN_LANE_CONFIG_SPEC.md`
