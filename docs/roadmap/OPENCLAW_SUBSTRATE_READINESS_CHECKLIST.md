@@ -49,6 +49,7 @@ Cette checklist s'applique a:
 - [x] `Tailscale` connecte au tailnet
 - [x] `code-server` accessible via URL privee Tailscale
 - [x] acces mobile 5G confirme
+- [x] dashboard `OpenClaw` accessible via URL privee Tailscale sans collage manuel de token
 
 Note:
 
@@ -97,7 +98,9 @@ Etat reel maintenant:
 - `/srv/project-os/compose/openclaw/main/docker-compose.yml` pose
 - `openclaw-main-gateway` demarre et passe `healthz` / `readyz`
 - contrat UID runtime aligne avec le owner host (`1001:1001`) pour eviter les `EACCES` sur la lane data
-- route Tailscale dediee du dashboard pas encore publiee sur le host
+- route Tailscale dediee du dashboard publiee sur `:18789`
+- auth operateur privee alignee sur `trusted-proxy` derriere `tailscale serve`
+- plus de collage manuel de token requis pour la Control UI privee quotidienne
 
 Reference:
 

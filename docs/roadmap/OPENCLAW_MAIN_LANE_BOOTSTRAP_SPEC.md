@@ -71,17 +71,25 @@ Pourquoi:
 
 Mode cible retenu:
 
-- `token`
+- `trusted-proxy`
 
 Pourquoi:
 
-- plus propre pour une surface distante privee
-- plus defensable qu'un mode sans auth
-- compatible avec l'approche `Tailscale + surface privee`
+- notre pattern reel est `host tailscale serve -> conteneur OpenClaw`
+- l'auth manuelle par token dans l'UI est acceptable en secours, pas comme UX operateur quotidienne
+- le bon compromis V1 prive est: `Tailscale` comme auth visible, securite applicative plus riche plus tard dans la web app unifiee `Project OS`
 
-Source retenue:
+Source retenue cote gateway:
 
-- `OPENCLAW_GATEWAY_TOKEN` dans `/srv/project-os/config/env/openclaw/main.env`
+- `gateway.auth.trustedProxy.userHeader=tailscale-user-login`
+- `gateway.auth.trustedProxy.requiredHeaders=x-forwarded-for,x-forwarded-host,x-forwarded-proto`
+- `gateway.auth.trustedProxy.allowUsers=<operateur(s) du tailnet>`
+- `gateway.trustedProxies=<proxy host vu depuis Docker>`
+
+Usage du token:
+
+- le token gateway peut subsister comme break-glass technique
+- il ne doit plus etre la methode primaire d'ouverture du dashboard prive
 
 ## Artefacts materialises sur le noeud
 
@@ -128,12 +136,12 @@ Etat runtime valide:
 
 ## Valeurs de config obligatoires
 
-Le fichier `openclaw.json` serveur devra refléter explicitement:
+Le fichier `openclaw.json` serveur devra reflechir explicitement:
 
 1. workspace explicite
 2. bind runtime docker `lan`
 3. port `18789`
-4. auth explicite
+4. auth explicite `trusted-proxy` pour la surface Tailscale privee
 5. surface privee d'exposition
 6. `gateway.tailscale.mode` desactive dans le conteneur
 
@@ -170,3 +178,5 @@ Quand cette spec sera materialisee sur le noeud:
 - la lane `main` sera claire
 - le bootstrap runtime ne dependra plus d'une convention floue
 - on pourra lancer `OpenClaw` sans melanger le substrate et la couche entreprise
+- le dashboard prive sera pilotable sans friction token manuelle sur desktop et mobile via Tailscale
+

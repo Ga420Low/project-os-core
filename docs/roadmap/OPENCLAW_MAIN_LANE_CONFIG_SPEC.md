@@ -18,9 +18,11 @@ Les cles suivantes sont explicitement visibles dans la documentation upstream:
 - `gateway.port`
 - `gateway.bind`
 - `gateway.auth.mode`
-- `gateway.auth.token`
-- `gateway.auth.allowTailscale`
+- `gateway.auth.trustedProxy.userHeader`
+- `gateway.auth.trustedProxy.requiredHeaders`
+- `gateway.auth.trustedProxy.allowUsers`
 - `gateway.tailscale.mode`
+- `gateway.trustedProxies`
 - `logging.redactSensitive`
 
 ## Decisions de config lane `main`
@@ -87,38 +89,38 @@ Pourquoi:
 
 Valeur retenue:
 
-- `token`
+- `trusted-proxy`
 
 Pourquoi:
 
-- auth explicite
-- plus defensable qu'un mode `none`
-- alignement avec exposition privee et Control UI distante
+- notre pattern reel est `Docker + host tailscale serve`, pas le mode upstream integre `tailscale serve` dans le meme process
+- le flux `allowTailscale` ne supprime pas le collage manuel du token dans cette topologie
+- `trusted-proxy` est le mode coherent quand l'identite est delivree par le proxy Tailscale
 
-### `gateway.auth.token`
+### `gateway.auth.trustedProxy`
 
 Valeur retenue:
 
-- token explicite serveur
-- injecte par `OPENCLAW_GATEWAY_TOKEN`
-- stocke dans `/srv/project-os/config/env/openclaw/main.env`
+- `userHeader=tailscale-user-login`
+- `requiredHeaders=x-forwarded-for,x-forwarded-host,x-forwarded-proto`
+- `allowUsers` restreint aux identites operateur du tailnet
 
 Regle:
 
-- pas de token commite
-- pas de token laisse implicite
-- pas de plaintext token dans `openclaw.json` si l'env serveur suffit
+- l'UI privee quotidienne ne doit pas demander de token a coller a chaque ouverture
+- la confiance est delegatee au proxy Tailscale prive
+- l'allowlist d'utilisateurs doit rester plus etroite que le tailnet si possible
 
-### `gateway.auth.allowTailscale`
+### `gateway.trustedProxies`
 
 Valeur retenue:
 
-- `true` pour la surface privee Tailscale de la lane `main`
+- IP(s) minimales du proxy host vues depuis le conteneur
 
 Pourquoi:
 
-- permet d'accepter les headers d'identite Tailscale envoyes par le host quand `tailscale serve` proxyfie le gateway
-- reste coherent avec notre politique `Tailscale first`
+- OpenClaw ne doit accepter les headers d'identite que depuis le proxy effectif
+- sur notre noeud Docker actuel, la vue gateway du proxy host passe par l'IP bridge `172.20.0.1`
 
 ### `gateway.tailscale.mode`
 
@@ -150,6 +152,7 @@ Pourquoi:
 3. `tools.profile=full` interdit pour la lane `main`
 4. aucun secret dans le repo
 5. `gateway.tailscale.mode=serve` interdit dans le conteneur tant que `tailscaled` reste host-only
+6. collage manuel d'un token dans la Control UI interdit comme UX operateur quotidienne pour la surface Tailscale privee
 
 ## Note d'implementation Docker
 
@@ -165,6 +168,11 @@ La propriete de securite retenue n'est pas "loopback dans le conteneur", mais:
 
 - "surface privee effective au niveau host"
 
+La propriete UX retenue n'est pas "plusieurs secrets visibles", mais:
+
+- "une seule auth visible pour l'operateur prive: Tailscale"
+- les couches de securite supplementaires reviendront ensuite dans la web app `Project OS`
+
 ## Outcome attendu
 
 Quand cette spec sera materialisee:
@@ -172,6 +180,7 @@ Quand cette spec sera materialisee:
 - `openclaw.json` ne sera plus flou
 - la lane `main` sera exploitable proprement
 - la fondation restera suffisamment solide pour recevoir ensuite la couche entreprise
+- l'operateur n'aura plus a recoller un token manuel pour ouvrir le dashboard prive sur son tailnet
 
 ## Exemple de fichier
 

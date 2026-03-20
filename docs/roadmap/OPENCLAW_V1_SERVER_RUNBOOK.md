@@ -191,7 +191,13 @@ Regle:
 Etat actuel:
 
 - gateway `OpenClaw` sain localement sur `127.0.0.1:18789`
-- publication Tailscale dediee encore non activee sur le host
+- publication Tailscale dediee active sur le host
+- URL privee:
+  - `https://<magicdns-host>:18789/`
+- auth gateway operateur:
+  - `trusted-proxy`
+- source d'identite:
+  - header `tailscale-user-login`
 
 Commande d'activation retenue sur le noeud:
 
@@ -206,6 +212,19 @@ Pourquoi:
 - on garde `code-server` sur la racine HTTPS actuelle
 - on donne a `OpenClaw` un endpoint Tailscale propre sur un port dedie
 - on evite les collisions de chemins et les hypotheses fragiles sur le dashboard/websocket
+
+Contrat UX retenu:
+
+- pour la surface privee operateur quotidienne, `Tailscale` est l'unique auth visible
+- le collage manuel du token gateway n'est pas accepte comme flux normal
+- les couches de securite applicatives plus riches seront remontees ensuite dans la web app `Project OS`
+
+Contrat securite retenu:
+
+- la confiance est delegatee au proxy Tailscale prive
+- `OpenClaw` accepte seulement les headers d'identite venant des `trustedProxies`
+- l'allowlist d'utilisateurs Tailscale doit rester plus etroite que le tailnet si possible
+- le token gateway peut rester comme break-glass technique, pas comme UX operateur quotidienne
 
 ## Guardrails `runbook` adoptes maintenant
 
